@@ -193,6 +193,137 @@ struct Stats: ParsableCommand {
     }
 }
 
+// MARK: - regenerate-thumbnails
+
+struct RegenerateThumbnails: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "regenerate-thumbnails",
+        abstract: "(Re-)generate the thumbnail previews for image entries.",
+        discussion: """
+        Image entries captured before v1.1.0 don't have a row in the previews
+        table; this backfills them. Also useful if a schema change adds a new
+        thumbnail size and existing rows need to catch up.
+
+        By default, only entries with no preview are processed. Use --force to
+        rebuild thumbnails for every image entry, replacing whatever's there.
+        """
+    )
+
+    @Flag(name: .long, help: "Regenerate even for entries that already have a preview.")
+    var force: Bool = false
+
+    @Option(name: .shortAndLong, help: "Cap the number of entries processed (for spot-checks).")
+    var limit: Int?
+
+    /// UTI priority when an entry has multiple image flavors. Matches
+    /// PasteboardSnapshot.imageFlavorData — keeps ingestion and backfill
+    /// producing thumbnails from the same source where possible.
+    private static let imageUtiPriority = [
+        "public.png",
+        "public.jpeg",
+        "public.tiff",
+        "public.heic",
+        "public.image",
+    ]
+
+    func run() throws {
+        let store = try Store.open()
+        let blobs = BlobStore()
+
+        // Find candidate entry ids.
+        let candidates: [Int64] = try store.dbQueue.read { db in
+            var sql = """
+                SELECT e.id FROM entries e
+                WHERE e.kind = 'image' AND e.deleted_at IS NULL
+            """
+            if !force {
+                sql += """
+
+                      AND NOT EXISTS (
+                          SELECT 1 FROM previews p
+                          WHERE p.entry_id = e.id
+                            AND (p.thumb_large IS NOT NULL OR p.thumb_small IS NOT NULL)
+                      )
+                """
+            }
+            sql += " ORDER BY e.created_at DESC"
+            if let limit = limit {
+                sql += " LIMIT \(limit)"
+            }
+            return try Int64.fetchAll(db, sql: sql)
+        }
+
+        if candidates.isEmpty {
+            print("Nothing to do — all image entries already have thumbnails.")
+            return
+        }
+
+        Log.stderr("Processing \(candidates.count) image entries…")
+
+        var generated = 0
+        var decodeFailed = 0
+        var noImageFlavor = 0
+
+        for entryId in candidates {
+            let imageData = try Self.loadImageBytes(entryId: entryId, store: store, blobs: blobs)
+            guard let imageData = imageData else {
+                noImageFlavor += 1
+                continue
+            }
+
+            let thumbs = Thumbnailer.generate(from: imageData)
+            guard thumbs.small != nil || thumbs.large != nil else {
+                decodeFailed += 1
+                continue
+            }
+
+            try store.dbQueue.write { db in
+                var preview = PreviewRecord(
+                    entryId: entryId,
+                    thumbSmall: thumbs.small,
+                    thumbLarge: thumbs.large
+                )
+                try preview.insert(db, onConflict: .replace)
+            }
+
+            generated += 1
+            if generated % 25 == 0 {
+                Log.stderr("  … \(generated) / \(candidates.count)")
+            }
+        }
+
+        print("Done.")
+        print("  generated            : \(generated)")
+        print("  decode failures      : \(decodeFailed)")
+        print("  no image flavor      : \(noImageFlavor)")
+    }
+
+    /// Find the best image flavor for an entry and return its decoded bytes
+    /// (inline or spilled). Returns nil if the entry has no image flavor —
+    /// rare but possible for legacy rows.
+    private static func loadImageBytes(
+        entryId: Int64,
+        store: Store,
+        blobs: BlobStore
+    ) throws -> Data? {
+        try store.dbQueue.read { db in
+            for uti in imageUtiPriority {
+                if let row = try Row.fetchOne(
+                    db,
+                    sql: "SELECT data, blob_key FROM entry_flavors WHERE entry_id = ? AND uti = ?",
+                    arguments: [entryId, uti]
+                ) {
+                    return try blobs.load(
+                        inline: row["data"] as Data?,
+                        blobKey: row["blob_key"] as String?
+                    )
+                }
+            }
+            return nil
+        }
+    }
+}
+
 // MARK: - gc
 
 struct Gc: ParsableCommand {
