@@ -13,7 +13,7 @@ struct CpdbCommand: ParsableCommand {
         for the Paste app (com.wiheads.paste), and it can import an existing
         Paste database.
         """,
-        version: "0.1.0-dev",
+        version: CpdbVersion.current,
         subcommands: [
             Daemon.self,
             ImportCommand.self,
