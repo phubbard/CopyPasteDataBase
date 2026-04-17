@@ -62,6 +62,23 @@ public struct PasteboardSnapshot: Sendable {
         return nil
     }
 
+    /// Raw bytes of the best image flavor, or nil if there isn't one.
+    ///
+    /// Preference order mirrors macOS's decoding reliability: PNG first
+    /// (lossless, ubiquitous), then JPEG, TIFF, HEIC. Used by the daemon
+    /// to generate thumbnails on capture — see `Thumbnailer` / `Ingestor`.
+    public var imageFlavorData: Data? {
+        let priority = ["public.png", "public.jpeg", "public.tiff", "public.heic", "public.image"]
+        for uti in priority {
+            for item in items {
+                for flavor in item.flavors where flavor.uti == uti {
+                    return flavor.data
+                }
+            }
+        }
+        return nil
+    }
+
     /// Classify the snippet using a tiered heuristic against the UTIs present.
     public var kind: EntryKind {
         let utis = Set(items.flatMap { $0.flavors.map(\.uti) })

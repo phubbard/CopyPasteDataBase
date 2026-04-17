@@ -27,15 +27,18 @@ struct PopupRootView: View {
         HStack(spacing: 10) {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(.secondary)
-            // Real SearchField lands in step 10; for now use a SwiftUI
-            // TextField so we have a placeholder + binding to exercise.
             TextField("Search clipboard history…", text: $state.query)
                 .textFieldStyle(.plain)
                 .font(.system(size: 15))
             Spacer()
-            Text("\(state.totalLive) items")
-                .font(.system(size: 11, design: .monospaced))
-                .foregroundStyle(.tertiary)
+            HStack(spacing: 8) {
+                Text("\(state.totalLive) items")
+                Text("·")
+                    .foregroundStyle(.quaternary)
+                Text("v\(CpdbVersion.current)")
+            }
+            .font(.system(size: 11, design: .monospaced))
+            .foregroundStyle(.tertiary)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)

@@ -25,6 +25,13 @@ final class PopupState {
     /// Highlight/selection index within `rows`. Clamped to valid range.
     var selectedIndex: Int = 0
 
+    /// Monotonically-bumped token used to trigger a "scroll to newest" on
+    /// every summon. Hiding the popup resets `selectedIndex` to 0 and
+    /// `refresh()` repopulates `rows`, but neither of those changes on
+    /// their own — `PopupController.show()` bumps this token so
+    /// `EntryStripView` knows to snap the first card to the leading edge.
+    var scrollToken: Int = 0
+
     /// Lifecycle banner. Set by `DaemonLifecycle` via the AppDelegate.
     var captureMode: CaptureMode = .capturing
 

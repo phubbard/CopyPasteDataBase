@@ -86,6 +86,25 @@ public struct Ingestor {
                 }
             }
 
+            // Generate thumbnails for image-bearing captures. Runs inline
+            // inside the write transaction — 256/640 px JPEG encodes are
+            // sub-10ms on Apple Silicon, so the capture loop doesn't care.
+            // Image I/O reads the raw flavor bytes (any supported format)
+            // and produces two sizes that match what the Paste importer
+            // already populates, so `ImageCard` renders uniformly for
+            // both imported and freshly-captured image entries.
+            if snapshot.kind == .image, let imageData = snapshot.imageFlavorData {
+                let thumbs = Thumbnailer.generate(from: imageData)
+                if thumbs.small != nil || thumbs.large != nil {
+                    var preview = PreviewRecord(
+                        entryId: entryId,
+                        thumbSmall: thumbs.small,
+                        thumbLarge: thumbs.large
+                    )
+                    try preview.insert(db, onConflict: .replace)
+                }
+            }
+
             // Maintain FTS5 index.
             try FtsIndex.indexEntry(
                 db: db,

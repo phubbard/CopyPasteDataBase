@@ -42,6 +42,9 @@ final class PopupController {
         }
         previousApp = NSWorkspace.shared.frontmostApplication
         state.refresh()
+        // Bump after refresh so EntryStripView's onChange sees the freshly
+        // populated `rows.first` when it scrolls to the newest entry.
+        state.scrollToken &+= 1
         repositionOnActiveScreen(panel)
         panel.makeKeyAndOrderFront(nil)
         installMonitors()

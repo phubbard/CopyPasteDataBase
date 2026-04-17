@@ -40,6 +40,16 @@ struct EntryStripView: View {
                     proxy.scrollTo(id, anchor: .center)
                 }
             }
+            // On every popup summon (bumped by PopupController), snap the
+            // first card to the leading edge so the user always lands on
+            // the newest entry, regardless of where they were scrolled
+            // last time. Anchor differs from the selectedIndex handler
+            // above (leading vs. center) — this one is a reset, the other
+            // a navigation follow.
+            .onChange(of: state.scrollToken) { _, _ in
+                guard let firstId = state.rows.first?.entry.id else { return }
+                proxy.scrollTo(firstId, anchor: .leading)
+            }
         }
     }
 }
