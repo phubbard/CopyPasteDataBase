@@ -1,0 +1,35 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: swift test
+    runs-on: macos-15
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Show toolchain
+        # GitHub's macos-15 runners ship with Xcode preinstalled and
+        # xcode-select already pointing at it — that gives us swift-testing
+        # (Testing.framework) and the #Preview macro plugin that
+        # KeyboardShortcuts needs. No custom xcode-select required.
+        run: |
+          xcodebuild -version
+          swift --version
+
+      - name: Build
+        run: swift build
+
+      - name: Run tests
+        # Three Paste.db-fixture tests (`.enabled(if: pasteInstalled)`) skip
+        # cleanly on CI because the real Paste database isn't present —
+        # that's expected and not a failure.
+        run: swift test
