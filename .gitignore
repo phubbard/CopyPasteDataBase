@@ -1,0 +1,19 @@
+# Swift Package Manager build artefacts
+/.build/
+/.swiftpm/
+Package.resolved.*
+*.xcodeproj/
+DerivedData/
+
+# macOS
+.DS_Store
+
+# Editor
+.vscode/
+.idea/
+*.swp
+
+# Secrets — just in case
+*.p12
+*.cer
+*.mobileprovision
