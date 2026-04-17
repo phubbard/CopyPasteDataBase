@@ -80,20 +80,51 @@ public struct PasteboardSnapshot: Sendable {
     }
 
     /// Classify the snippet using a tiered heuristic against the UTIs present.
+    ///
+    /// Image detection wins over file-url when there's a *substantive* image
+    /// flavor (>= 1 KB). This handles screenshot tools like CleanShot that
+    /// put both `public.file-url` and `public.png` on the pasteboard: the
+    /// PNG bytes are the payload, the file-url is just breadcrumb metadata,
+    /// so we want to treat it as an image (thumbnail, image preview) rather
+    /// than a file reference that depends on the file still existing.
+    ///
+    /// Files copied from Finder *without* inline image bytes keep `kind=file`
+    /// — those legitimately want file-reference rendering.
     public var kind: EntryKind {
         let utis = Set(items.flatMap { $0.flavors.map(\.uti) })
         if utis.contains("public.url") || utis.contains("public.file-url") == false && utis.contains(where: { $0.hasSuffix(".source-url") || $0 == "public.url-name" }) {
-            // Prefer link when we have an explicit URL flavor but not a file URL.
             if utis.contains("public.url") { return .link }
         }
+        if hasSubstantiveImageFlavor { return .image }
         if utis.contains("public.file-url") { return .file }
-        if utis.contains(where: { $0.hasPrefix("public.png") || $0.hasPrefix("public.jpeg") || $0.hasPrefix("public.tiff") || $0 == "public.image" }) {
-            return .image
-        }
         if utis.contains("com.apple.cocoa.pasteboard.color") || utis.contains("public.color") {
             return .color
         }
         if plainText != nil { return .text }
         return .other
     }
+
+    /// True if any flavor is an image UTI (png/jpeg/tiff/heic/image) with at
+    /// least `Self.minImageBytes` bytes of payload. The threshold exists so
+    /// a zero-byte placeholder flavor doesn't masquerade as the primary
+    /// content.
+    public var hasSubstantiveImageFlavor: Bool {
+        for item in items {
+            for flavor in item.flavors {
+                let uti = flavor.uti
+                let isImage = uti.hasPrefix("public.png")
+                    || uti.hasPrefix("public.jpeg")
+                    || uti.hasPrefix("public.tiff")
+                    || uti == "public.heic"
+                    || uti == "public.heif"
+                    || uti == "public.image"
+                if isImage && flavor.data.count >= Self.minImageBytes {
+                    return true
+                }
+            }
+        }
+        return false
+    }
+
+    public static let minImageBytes = 1024
 }

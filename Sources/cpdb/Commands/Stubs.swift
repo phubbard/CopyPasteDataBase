@@ -198,19 +198,31 @@ struct Stats: ParsableCommand {
 struct RegenerateThumbnails: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "regenerate-thumbnails",
-        abstract: "(Re-)generate the thumbnail previews for image entries.",
+        abstract: "(Re-)generate thumbnail previews and fix misclassified image entries.",
         discussion: """
-        Image entries captured before v1.1.0 don't have a row in the previews
-        table; this backfills them. Also useful if a schema change adds a new
-        thumbnail size and existing rows need to catch up.
+        Handles two related jobs:
 
-        By default, only entries with no preview are processed. Use --force to
-        rebuild thumbnails for every image entry, replacing whatever's there.
+        1. Generates thumbnails for kind=image entries that don't have them
+           (image entries captured before v1.1.0, or from the Paste import
+           that only got a large thumbnail).
+
+        2. Reclassifies kind=file entries whose pasteboard actually contained
+           a substantive image payload (>= 1 KB of PNG/JPEG/TIFF/HEIC) and
+           was misclassified as 'file' by the old heuristic. Screenshot tools
+           like CleanShot copy both a file-URL and the inline PNG — the
+           image is the real content, so these should render as images, not
+           generic file icons.
+
+        By default, only entries with no preview are processed. Use --force
+        to rebuild thumbnails for every image entry.
         """
     )
 
     @Flag(name: .long, help: "Regenerate even for entries that already have a preview.")
     var force: Bool = false
+
+    @Flag(name: .long, help: "Skip the reclassification pass; only touch thumbnails.")
+    var noReclassify: Bool = false
 
     @Option(name: .shortAndLong, help: "Cap the number of entries processed (for spot-checks).")
     var limit: Int?
@@ -230,7 +242,16 @@ struct RegenerateThumbnails: ParsableCommand {
         let store = try Store.open()
         let blobs = BlobStore()
 
-        // Find candidate entry ids.
+        var reclassified = 0
+        if !noReclassify {
+            reclassified = try reclassifyMisclassifiedFileEntries(store: store, blobs: blobs)
+            if reclassified > 0 {
+                Log.stderr("Reclassified \(reclassified) file entries to image.")
+            }
+        }
+
+        // Find candidate entry ids for thumbnail generation. Runs after the
+        // reclassification pass so newly-minted image entries get thumbs too.
         let candidates: [Int64] = try store.dbQueue.read { db in
             var sql = """
                 SELECT e.id FROM entries e
@@ -253,8 +274,8 @@ struct RegenerateThumbnails: ParsableCommand {
             return try Int64.fetchAll(db, sql: sql)
         }
 
-        if candidates.isEmpty {
-            print("Nothing to do — all image entries already have thumbnails.")
+        if candidates.isEmpty && reclassified == 0 {
+            print("Nothing to do.")
             return
         }
 
@@ -293,9 +314,51 @@ struct RegenerateThumbnails: ParsableCommand {
         }
 
         print("Done.")
-        print("  generated            : \(generated)")
-        print("  decode failures      : \(decodeFailed)")
-        print("  no image flavor      : \(noImageFlavor)")
+        print("  reclassified file→image : \(reclassified)")
+        print("  thumbnails generated    : \(generated)")
+        print("  decode failures         : \(decodeFailed)")
+        print("  no image flavor         : \(noImageFlavor)")
+    }
+
+    /// Find `kind=file` entries whose flavor set contains a substantive image
+    /// payload (>= 1 KB of PNG/JPEG/TIFF/HEIC) and bump their kind to
+    /// 'image'. This retroactively applies the v1.1.1 classifier to entries
+    /// ingested by the earlier file-wins heuristic.
+    private func reclassifyMisclassifiedFileEntries(store: Store, blobs: BlobStore) throws -> Int {
+        let imageUtis = [
+            "public.png",
+            "public.jpeg",
+            "public.tiff",
+            "public.heic",
+            "public.heif",
+            "public.image",
+        ]
+        // Parameterise the IN clause.
+        let placeholders = Array(repeating: "?", count: imageUtis.count).joined(separator: ",")
+        let ids: [Int64] = try store.dbQueue.read { db in
+            try Int64.fetchAll(
+                db,
+                sql: """
+                    SELECT DISTINCT e.id
+                    FROM entries e
+                    JOIN entry_flavors f ON f.entry_id = e.id
+                    WHERE e.kind = 'file'
+                      AND e.deleted_at IS NULL
+                      AND f.uti IN (\(placeholders))
+                      AND f.size >= \(PasteboardSnapshot.minImageBytes)
+                    ORDER BY e.created_at DESC
+                """,
+                arguments: StatementArguments(imageUtis)
+            )
+        }
+        guard !ids.isEmpty else { return 0 }
+        try store.dbQueue.write { db in
+            let idList = ids.map(String.init).joined(separator: ",")
+            try db.execute(
+                sql: "UPDATE entries SET kind = 'image' WHERE id IN (\(idList))"
+            )
+        }
+        return ids.count
     }
 
     /// Find the best image flavor for an entry and return its decoded bytes
