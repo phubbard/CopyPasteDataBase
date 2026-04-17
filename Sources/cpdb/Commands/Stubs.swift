@@ -364,7 +364,7 @@ struct RegenerateThumbnails: ParsableCommand {
     /// Find the best image flavor for an entry and return its decoded bytes
     /// (inline or spilled). Returns nil if the entry has no image flavor —
     /// rare but possible for legacy rows.
-    private static func loadImageBytes(
+    static func loadImageBytes(
         entryId: Int64,
         store: Store,
         blobs: BlobStore
@@ -383,6 +383,179 @@ struct RegenerateThumbnails: ParsableCommand {
                 }
             }
             return nil
+        }
+    }
+}
+
+// MARK: - analyze-images
+
+struct AnalyzeImages: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "analyze-images",
+        abstract: "Run Apple's on-device OCR + image classifier over image entries.",
+        discussion: """
+        Extracts any readable text (`VNRecognizeTextRequest`, .accurate) and
+        up to a dozen confident content tags (`VNClassifyImageRequest`) from
+        each image entry, and folds the results into the FTS5 search index.
+
+        Runs on the Neural Engine — no network, no external model.
+
+        By default, only entries where `analyzed_at IS NULL` are touched.
+        Use --force to re-analyze every image entry, or --retry-failed to
+        only re-hit entries whose previous analysis returned empty.
+        """
+    )
+
+    @Flag(name: .long, help: "Re-analyze every image entry, replacing existing OCR/tags.")
+    var force: Bool = false
+
+    @Flag(name: .long, help: "Re-analyze only entries whose previous analysis returned empty text AND empty tags.")
+    var retryFailed: Bool = false
+
+    @Option(name: .shortAndLong, help: "Cap the number of entries processed (for spot-checks).")
+    var limit: Int?
+
+    @Option(
+        name: .long,
+        parsing: .upToNextOption,
+        help: "OCR recognition languages (overrides Preferences). e.g. --languages en-US fr-FR"
+    )
+    var languages: [String] = []
+
+    @Flag(name: .long, help: "Skip OCR for this run (only run the classifier).")
+    var noOcr: Bool = false
+
+    @Flag(name: .long, help: "Skip classifier for this run (only run OCR).")
+    var noTags: Bool = false
+
+    func run() throws {
+        let store = try Store.open()
+        let blobs = BlobStore()
+
+        // Resolve the prefs to use for this run. CLI flags override whatever
+        // Preferences has; if neither is set, fall back to defaults.
+        let prefsBase = AnalysisPrefs.load()
+        let prefs = AnalysisPrefs(
+            recognitionLanguages: languages.isEmpty ? prefsBase.recognitionLanguages : languages,
+            tagConfidenceThreshold: prefsBase.tagConfidenceThreshold
+        )
+        Log.stderr("Languages: \(prefs.recognitionLanguages.joined(separator: ", "))  threshold: \(prefs.tagConfidenceThreshold)")
+
+        let candidates: [Int64] = try store.dbQueue.read { db in
+            var sql = """
+                SELECT id FROM entries
+                WHERE kind = 'image' AND deleted_at IS NULL
+            """
+            if force {
+                // Everyone.
+            } else if retryFailed {
+                sql += """
+
+                      AND analyzed_at IS NOT NULL
+                      AND COALESCE(ocr_text, '') = ''
+                      AND COALESCE(image_tags, '') = ''
+                """
+            } else {
+                sql += "\n  AND analyzed_at IS NULL"
+            }
+            sql += "\nORDER BY created_at DESC"
+            if let limit = limit {
+                sql += "\nLIMIT \(limit)"
+            }
+            return try Int64.fetchAll(db, sql: sql)
+        }
+
+        if candidates.isEmpty {
+            print("Nothing to analyze.")
+            return
+        }
+
+        Log.stderr("Analyzing \(candidates.count) image entries…")
+
+        var processed = 0
+        var emptyResults = 0
+        var noImageFlavor = 0
+        var analyzerErrors = 0
+
+        for entryId in candidates {
+            guard let imageData = try RegenerateThumbnails.loadImageBytes(
+                entryId: entryId, store: store, blobs: blobs
+            ) else {
+                noImageFlavor += 1
+                continue
+            }
+
+            do {
+                let analysis = try ImageAnalyzer.analyze(
+                    imageData: imageData,
+                    recognitionLanguages: prefs.recognitionLanguages,
+                    tagConfidenceThreshold: prefs.tagConfidenceThreshold
+                )
+                let ocrText = noOcr ? "" : analysis.ocrText
+                let tagsCSV = noTags ? "" : analysis.tagsCSV
+
+                try writeAnalysis(
+                    entryId: entryId,
+                    ocrText: ocrText,
+                    imageTags: tagsCSV,
+                    store: store
+                )
+                if ocrText.isEmpty && tagsCSV.isEmpty {
+                    emptyResults += 1
+                }
+            } catch {
+                analyzerErrors += 1
+                Log.importer.error("analyze failed for entry \(entryId, privacy: .public): \(String(describing: error), privacy: .public)")
+            }
+
+            processed += 1
+            if processed % 25 == 0 {
+                Log.stderr("  … \(processed) / \(candidates.count)")
+            }
+        }
+
+        print("Done.")
+        print("  analyzed            : \(processed)")
+        print("  empty results       : \(emptyResults)")
+        print("  analyzer errors     : \(analyzerErrors)")
+        print("  no image flavor     : \(noImageFlavor)")
+    }
+
+    private func writeAnalysis(
+        entryId: Int64,
+        ocrText: String,
+        imageTags: String,
+        store: Store
+    ) throws {
+        let now = Date().timeIntervalSince1970
+        try store.dbQueue.write { db in
+            try db.execute(
+                sql: """
+                    UPDATE entries
+                    SET ocr_text = ?, image_tags = ?, analyzed_at = ?
+                    WHERE id = ?
+                """,
+                arguments: [ocrText, imageTags, now, entryId]
+            )
+            if let row = try Row.fetchOne(
+                db,
+                sql: """
+                    SELECT e.title, e.text_preview, a.name AS app_name
+                    FROM entries e LEFT JOIN apps a ON a.id = e.source_app_id
+                    WHERE e.id = ?
+                """,
+                arguments: [entryId]
+            ) {
+                try FtsIndex.indexEntry(
+                    db: db,
+                    entryId: entryId,
+                    title: row["title"],
+                    text: row["text_preview"],
+                    appName: row["app_name"],
+                    ocrText: ocrText,
+                    imageTags: imageTags
+                )
+            }
         }
     }
 }

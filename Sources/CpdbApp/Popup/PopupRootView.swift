@@ -30,7 +30,17 @@ struct PopupRootView: View {
             TextField("Search clipboard history…", text: $state.query)
                 .textFieldStyle(.plain)
                 .font(.system(size: 15))
-            Spacer()
+
+            // Scope toggles. Persisted via `PopupState.searchScope`'s didSet.
+            HStack(spacing: 4) {
+                ScopeChip(label: "text",
+                          isOn: $state.searchScope.text)
+                ScopeChip(label: "OCR",
+                          isOn: $state.searchScope.ocr)
+                ScopeChip(label: "tags",
+                          isOn: $state.searchScope.tags)
+            }
+
             HStack(spacing: 8) {
                 Text("\(state.totalLive) items")
                 Text("·")
@@ -74,5 +84,36 @@ struct PopupRootView: View {
         .padding(.vertical, 6)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.orange.opacity(0.1))
+    }
+}
+
+/// Small capsule toggle used in the popup header to gate FTS columns.
+private struct ScopeChip: View {
+    let label: String
+    @Binding var isOn: Bool
+
+    var body: some View {
+        Button {
+            isOn.toggle()
+        } label: {
+            Text(label)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(isOn ? .primary : .secondary)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(
+                    Capsule()
+                        .fill(isOn ? Color.accentColor.opacity(0.22) : Color.clear)
+                )
+                .overlay(
+                    Capsule()
+                        .strokeBorder(
+                            isOn ? Color.accentColor.opacity(0.45) : Color.secondary.opacity(0.25),
+                            lineWidth: 1
+                        )
+                )
+        }
+        .buttonStyle(.plain)
+        .help("Search the \(label) column")
     }
 }

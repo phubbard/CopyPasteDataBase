@@ -22,6 +22,12 @@ public struct Entry: Codable, FetchableRecord, MutablePersistableRecord, Hashabl
     public var contentHash: Data      // sha256, 32 bytes
     public var totalSize: Int64
     public var deletedAt: Double?
+    /// Populated by the image-analysis pipeline for image entries. Nil for
+    /// non-image entries and for image entries that haven't been analysed
+    /// yet.
+    public var ocrText: String?
+    public var imageTags: String?     // comma-separated, lowercased
+    public var analyzedAt: Double?    // NULL = never analysed; set even on empty results
 
     public static let databaseTableName = "entries"
 
@@ -38,6 +44,9 @@ public struct Entry: Codable, FetchableRecord, MutablePersistableRecord, Hashabl
         case contentHash     = "content_hash"
         case totalSize       = "total_size"
         case deletedAt       = "deleted_at"
+        case ocrText         = "ocr_text"
+        case imageTags       = "image_tags"
+        case analyzedAt      = "analyzed_at"
     }
 
     public mutating func didInsert(_ inserted: InsertionSuccess) {
@@ -56,7 +65,10 @@ public struct Entry: Codable, FetchableRecord, MutablePersistableRecord, Hashabl
         textPreview: String? = nil,
         contentHash: Data,
         totalSize: Int64,
-        deletedAt: Double? = nil
+        deletedAt: Double? = nil,
+        ocrText: String? = nil,
+        imageTags: String? = nil,
+        analyzedAt: Double? = nil
     ) {
         self.id = id
         self.uuid = uuid
@@ -70,6 +82,9 @@ public struct Entry: Codable, FetchableRecord, MutablePersistableRecord, Hashabl
         self.contentHash = contentHash
         self.totalSize = totalSize
         self.deletedAt = deletedAt
+        self.ocrText = ocrText
+        self.imageTags = imageTags
+        self.analyzedAt = analyzedAt
     }
 }
 

@@ -47,13 +47,25 @@ public struct EntryRepository {
         }
     }
 
+    /// A search hit with the fully-hydrated entry row + FTS snippet + the
+    /// source column that actually matched (text / OCR / tag).
+    public struct SearchHit: Sendable {
+        public var row: EntryRow
+        public var snippet: String
+        public var source: FtsIndex.MatchSource
+    }
+
     /// FTS5 search that returns fully-hydrated rows (not just hits).
     /// Preserves BM25 rank order and joins through to the live entry row.
-    public func search(query: String, limit: Int) throws -> [(row: EntryRow, snippet: String)] {
+    public func search(
+        query: String,
+        scope: FtsIndex.SearchScope = .all,
+        limit: Int
+    ) throws -> [SearchHit] {
         try store.dbQueue.read { db in
-            let hits = try FtsIndex.search(db: db, query: query, limit: limit)
+            let hits = try FtsIndex.search(db: db, query: query, scope: scope, limit: limit)
             guard !hits.isEmpty else { return [] }
-            var results: [(row: EntryRow, snippet: String)] = []
+            var results: [SearchHit] = []
             results.reserveCapacity(hits.count)
             for hit in hits {
                 guard let row = try Row.fetchOne(
@@ -67,9 +79,10 @@ public struct EntryRepository {
                     arguments: [hit.entryId]
                 ) else { continue }
                 let entry = try Entry(row: row)
-                results.append((
-                    EntryRow(entry: entry, appName: row["app_name_"], appBundleId: row["app_bundle_id_"]),
-                    hit.snippet
+                results.append(SearchHit(
+                    row: EntryRow(entry: entry, appName: row["app_name_"], appBundleId: row["app_bundle_id_"]),
+                    snippet: hit.snippet,
+                    source: hit.source
                 ))
             }
             return results

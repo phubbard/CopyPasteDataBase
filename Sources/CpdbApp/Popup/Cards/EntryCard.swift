@@ -7,6 +7,9 @@ import CpdbCore
 struct EntryCard: View {
     let row: EntryRepository.EntryRow
     let snippet: String?
+    /// Which FTS column contained the user's search hit. Nil when the
+    /// popup is in "most recent" mode (no active query).
+    let matchSource: FtsIndex.MatchSource?
     let isSelected: Bool
 
     static let cardSize = CGSize(width: 320, height: 360)
@@ -24,7 +27,39 @@ struct EntryCard: View {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .strokeBorder(selectionColor, lineWidth: isSelected ? 3 : 1)
         )
+        .overlay(alignment: .topTrailing) {
+            matchBadge
+        }
         .shadow(color: .black.opacity(isSelected ? 0.22 : 0.10), radius: isSelected ? 10 : 4, y: 2)
+    }
+
+    /// Tiny corner chip that surfaces WHY this card showed up in search
+    /// results. Hidden for plain-text matches (the common case — no need
+    /// to shout about it) and hidden entirely when no query is active.
+    @ViewBuilder
+    private var matchBadge: some View {
+        if let source = matchSource {
+            switch source {
+            case .ocr:
+                badgeCapsule(label: "OCR", color: .accentColor)
+            case .tag:
+                badgeCapsule(label: "tag", color: .green)
+            case .multiple:
+                badgeCapsule(label: "•••", color: .purple)
+            case .text:
+                EmptyView()
+            }
+        }
+    }
+
+    private func badgeCapsule(label: String, color: Color) -> some View {
+        Text(label)
+            .font(.system(size: 9, weight: .bold, design: .rounded))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .background(Capsule().fill(color))
+            .padding(8)
     }
 
     @ViewBuilder

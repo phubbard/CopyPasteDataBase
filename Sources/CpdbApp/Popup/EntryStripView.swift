@@ -18,6 +18,7 @@ struct EntryStripView: View {
                         EntryCard(
                             row: row,
                             snippet: state.snippetsById[row.entry.id!],
+                            matchSource: state.matchSourcesById[row.entry.id!],
                             isSelected: index == state.selectedIndex
                         )
                         .id(row.entry.id!)

@@ -111,5 +111,56 @@ enum Schema {
                 );
             """)
         }
+
+        migrator.registerMigration("v2") { db in
+            // Two new columns on entries for the image-analysis pipeline.
+            // `analyzed_at` is the NULL-vs-non-NULL sentinel that tells the
+            // backfill command which rows still need processing.
+            try db.execute(sql: "ALTER TABLE entries ADD COLUMN ocr_text TEXT;")
+            try db.execute(sql: "ALTER TABLE entries ADD COLUMN image_tags TEXT;")
+            try db.execute(sql: "ALTER TABLE entries ADD COLUMN analyzed_at REAL;")
+
+            // FTS5 virtual tables can't be ALTERed. Drop + recreate with the
+            // new 5-column layout, then reindex every live row. The reindex
+            // is O(n) but cheap — title/text/app_name fit inline in RAM for
+            // a 10k-entry corpus.
+            try db.execute(sql: "DROP TABLE entries_fts;")
+            try db.execute(sql: """
+                CREATE VIRTUAL TABLE entries_fts USING fts5(
+                    title,
+                    text,
+                    app_name,
+                    ocr_text,
+                    image_tags,
+                    tokenize='porter unicode61 remove_diacritics 2'
+                );
+            """)
+
+            // Reindex. OCR and image_tags are empty because we haven't
+            // run the analyzer yet — `cpdb analyze-images` backfills them.
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT e.id, e.title, e.text_preview, a.name AS app_name,
+                       e.ocr_text, e.image_tags
+                FROM entries e
+                LEFT JOIN apps a ON a.id = e.source_app_id
+                WHERE e.deleted_at IS NULL
+            """)
+            for row in rows {
+                try db.execute(
+                    sql: """
+                        INSERT INTO entries_fts(rowid, title, text, app_name, ocr_text, image_tags)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    arguments: [
+                        row["id"] as Int64,
+                        (row["title"] as String?) ?? "",
+                        (row["text_preview"] as String?) ?? "",
+                        (row["app_name"] as String?) ?? "",
+                        (row["ocr_text"] as String?) ?? "",
+                        (row["image_tags"] as String?) ?? "",
+                    ]
+                )
+            }
+        }
     }
 }

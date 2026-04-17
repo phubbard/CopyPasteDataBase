@@ -30,7 +30,35 @@ public struct Ingestor {
         guard !snapshot.items.isEmpty else { return .skipped(reason: "empty") }
         let hash = CanonicalHash.hash(items: snapshot.flavorItemsForHashing)
 
-        return try store.dbQueue.write { db in
+        let outcome = try doIngest(snapshot, sourceApp: sourceApp, deviceId: deviceId, hash: hash)
+
+        // Kick off image analysis after the write transaction has committed.
+        // Vision's `.accurate` OCR can run hundreds of milliseconds; the
+        // capture loop returns immediately while the analyzer fills in
+        // `ocr_text` / `image_tags` / `analyzed_at` asynchronously.
+        if case .inserted(let entryId) = outcome,
+           snapshot.kind == .image,
+           let imageData = snapshot.imageFlavorData {
+            let store = self.store
+            Task.detached(priority: .utility) {
+                ImageIndexer.analyzeAndStore(
+                    entryId: entryId,
+                    imageData: imageData,
+                    store: store
+                )
+            }
+        }
+
+        return outcome
+    }
+
+    private func doIngest(
+        _ snapshot: PasteboardSnapshot,
+        sourceApp: FrontmostAppInfo?,
+        deviceId: Int64,
+        hash: Data
+    ) throws -> Outcome {
+        try store.dbQueue.write { db in
             // Dedup: if the same hash already exists and isn't tombstoned, bump its created_at.
             if let existingId = try Int64.fetchOne(
                 db,
