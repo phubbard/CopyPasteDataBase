@@ -60,6 +60,13 @@ public final class PasteboardWatcher {
     }
 
     private func handle(snapshot: PasteboardSnapshot, appInfo: FrontmostAppInfo?) async {
+        // Source-app blocklist — applies in addition to the UTI-based
+        // TransientFilter so apps that don't self-flag (Apple's Passwords,
+        // Keychain Access) still get skipped.
+        if IgnoredApps.shouldIgnore(bundleId: appInfo?.bundleId) {
+            Log.capture.info("skipped ignored-source-app entry (bundleId=\(appInfo?.bundleId ?? "nil", privacy: .public))")
+            return
+        }
         do {
             let outcome = try ingestor.ingest(snapshot, sourceApp: appInfo, deviceId: deviceId)
             switch outcome {

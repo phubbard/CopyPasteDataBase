@@ -560,6 +560,90 @@ struct AnalyzeImages: ParsableCommand {
     }
 }
 
+// MARK: - forget-source-app
+
+struct ForgetSourceApp: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "forget-source-app",
+        abstract: "Permanently delete every entry captured from a given source app.",
+        discussion: """
+        Hard-deletes rows (not a soft tombstone) — use when you discover
+        the daemon was capturing from an app that should never have been
+        recorded (password managers being the common case). Removes the
+        entry, every flavor blob inline, the FTS row, and the previews row.
+
+        Does NOT touch the content-addressed blob store on disk; that's
+        `cpdb gc`'s job.
+        """
+    )
+
+    @Argument(help: "Source-app bundle identifier, e.g. com.apple.Passwords")
+    var bundleId: String
+
+    @Flag(name: .long, help: "List what would be deleted without deleting.")
+    var dryRun: Bool = false
+
+    func run() throws {
+        let store = try Store.open()
+        let candidates: [Int64] = try store.dbQueue.read { db in
+            try Int64.fetchAll(
+                db,
+                sql: """
+                    SELECT e.id FROM entries e
+                    JOIN apps a ON a.id = e.source_app_id
+                    WHERE a.bundle_id = ? AND e.deleted_at IS NULL
+                """,
+                arguments: [bundleId]
+            )
+        }
+
+        if candidates.isEmpty {
+            print("No entries from \(bundleId) found.")
+            return
+        }
+
+        print("\(candidates.count) entries from \(bundleId):")
+        try store.dbQueue.read { db in
+            let sample = try Row.fetchAll(
+                db,
+                sql: """
+                    SELECT e.id, e.kind, e.title, datetime(e.created_at,'unixepoch') AS when_
+                    FROM entries e JOIN apps a ON a.id = e.source_app_id
+                    WHERE a.bundle_id = ? AND e.deleted_at IS NULL
+                    ORDER BY e.created_at DESC LIMIT 10
+                """,
+                arguments: [bundleId]
+            )
+            for row in sample {
+                let id: Int64 = row["id"]
+                let kind: String = row["kind"]
+                let title: String = row["title"] ?? ""
+                let when: String = row["when_"]
+                let truncatedTitle = title.count > 40 ? String(title.prefix(40)) + "…" : title
+                print("  \(id)  \(when)  \(kind.padding(toLength: 5, withPad: " ", startingAt: 0))  \(truncatedTitle)")
+            }
+            if candidates.count > 10 {
+                print("  …and \(candidates.count - 10) more")
+            }
+        }
+
+        if dryRun {
+            print("(--dry-run — nothing deleted)")
+            return
+        }
+
+        // ON DELETE CASCADE from entries handles entry_flavors, previews,
+        // pinboard_entries. FTS doesn't have FK cascade; delete it ourselves.
+        try store.dbQueue.write { db in
+            let idList = candidates.map(String.init).joined(separator: ",")
+            try db.execute(sql: "DELETE FROM entries_fts WHERE rowid IN (\(idList))")
+            try db.execute(sql: "DELETE FROM entries WHERE id IN (\(idList))")
+        }
+        print("Deleted \(candidates.count) entries.")
+        print("(Run `cpdb gc` to reclaim any now-orphan blobs on disk.)")
+    }
+}
+
 // MARK: - gc
 
 struct Gc: ParsableCommand {

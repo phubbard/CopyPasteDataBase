@@ -24,6 +24,7 @@ struct CpdbCommand: ParsableCommand {
             Stats.self,
             RegenerateThumbnails.self,
             AnalyzeImages.self,
+            ForgetSourceApp.self,
             Gc.self,
         ],
         defaultSubcommand: ListCommand.self
