@@ -32,4 +32,23 @@ public enum IgnoredApps {
         guard let id = bundleId, !id.isEmpty else { return false }
         return load(defaults: defaults).contains(id)
     }
+
+    /// Returns the first ignored bundle ID found in the current-frontmost +
+    /// recent-frontmost-history set, or nil if none matched. Used by
+    /// `PasteboardWatcher` to catch the Passwords-app race: the app is
+    /// frontmost for only ~50 ms during a copy, so it's gone by the time
+    /// our 150 ms poll samples `NSWorkspace.frontmostApplication`.
+    @MainActor
+    public static func firstIgnoredRecentBundle(
+        currentBundleId: String?,
+        defaults: UserDefaults = .standard
+    ) -> String? {
+        let ignored = load(defaults: defaults)
+        if let id = currentBundleId, ignored.contains(id) { return id }
+        let recent = FrontmostAppMonitor.shared.recentBundleIds(window: 5)
+        for bid in recent where ignored.contains(bid) {
+            return bid
+        }
+        return nil
+    }
 }

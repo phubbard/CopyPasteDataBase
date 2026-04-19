@@ -59,12 +59,26 @@ public final class PasteboardWatcher {
         }
     }
 
+    @MainActor
     private func handle(snapshot: PasteboardSnapshot, appInfo: FrontmostAppInfo?) async {
         // Source-app blocklist — applies in addition to the UTI-based
         // TransientFilter so apps that don't self-flag (Apple's Passwords,
-        // Keychain Access) still get skipped.
-        if IgnoredApps.shouldIgnore(bundleId: appInfo?.bundleId) {
-            Log.capture.info("skipped ignored-source-app entry (bundleId=\(appInfo?.bundleId ?? "nil", privacy: .public))")
+        // Keychain Access) still get skipped. We check both the current
+        // frontmost app AND the last 5 s of activations, because Apple's
+        // Passwords is frontmost for <100 ms during a copy and typically
+        // already dismissed by the time our 150 ms poll looks.
+        if let ignored = IgnoredApps.firstIgnoredRecentBundle(currentBundleId: appInfo?.bundleId) {
+            Log.capture.info("skipped ignored-source-app entry (matched \(ignored, privacy: .public))")
+            return
+        }
+
+        // Safety net: Apple's Strong Password format (6-6-6 alphanumeric,
+        // hyphen-separated, exactly 20 chars) is proprietary enough that
+        // we refuse to store anything matching it, regardless of source
+        // app. Catches Passwords-app copies that slip past the frontmost-
+        // app history when the monitor misses the activation notification.
+        if snapshot.looksLikeApplePassword {
+            Log.capture.info("skipped Apple Strong Password shape")
             return
         }
         do {

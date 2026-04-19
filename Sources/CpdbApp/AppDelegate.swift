@@ -16,6 +16,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         Log.cli.info("cpdb.app starting (pid \(ProcessInfo.processInfo.processIdentifier, privacy: .public))")
 
+        // Subscribe to frontmost-app activations BEFORE we start the
+        // PasteboardWatcher, so the 5 s sliding window is already
+        // populated when the first clipboard event fires.
+        FrontmostAppMonitor.warmUp()
+
         var captureMode: PopupState.CaptureMode = .capturing
         do {
             self.store = try lifecycle.start()

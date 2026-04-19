@@ -79,6 +79,29 @@ public struct PasteboardSnapshot: Sendable {
         return nil
     }
 
+    /// True iff the snapshot's plain-text content matches Apple's "Strong
+    /// Password" format: three hyphen-separated groups of exactly six
+    /// alphanumeric characters (total length 20). Used as a safety net
+    /// when frontmost-app-history heuristics miss a Passwords-app copy.
+    ///
+    /// The format is proprietary and stable enough that false positives are
+    /// vanishingly unlikely. Apple's memorable-password format (`word_word_Word`)
+    /// is a separate shape we do **not** filter on here — those are long
+    /// enough and varied enough that frontmost-app history reliably catches
+    /// them, and matching on them risks flagging real content.
+    public var looksLikeApplePassword: Bool {
+        guard let raw = plainText else { return false }
+        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard text.count == 20 else { return false }
+        let parts = text.split(separator: "-", omittingEmptySubsequences: false)
+        guard parts.count == 3, parts.allSatisfy({ $0.count == 6 }) else { return false }
+        return parts.allSatisfy { part in
+            part.allSatisfy { c in
+                c.isASCII && (c.isLetter || c.isNumber)
+            }
+        }
+    }
+
     /// Classify the snippet using a tiered heuristic against the UTIs present.
     ///
     /// Image detection wins over file-url when there's a *substantive* image
