@@ -49,6 +49,20 @@ struct PopupRootView: View {
             }
             .font(.system(size: 11, design: .monospaced))
             .foregroundStyle(.tertiary)
+
+            // Small gear opens Preferences — the status-bar menu is
+            // non-obvious because the popup hijacks focus, so keep this
+            // affordance reachable while the popup is up.
+            Button {
+                PopupController.shared.hide()
+                PreferencesWindowController.shared.show()
+            } label: {
+                Image(systemName: "gearshape")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Open cpdb Preferences")
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
