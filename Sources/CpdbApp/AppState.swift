@@ -72,14 +72,16 @@ final class PopupState {
 
     let store: Store
     private let repository: EntryRepository
-    private let recentLimit: Int
+    /// Maximum number of rows we fetch per refresh. Exposed so the header
+    /// can show a `+` on the results counter when we've hit the cap.
+    let searchLimit: Int
     /// Monotonic token so stale async results don't overwrite newer ones.
     private var generation: Int = 0
 
     init(store: Store, recentLimit: Int = 200) {
         self.store = store
         self.repository = EntryRepository(store: store)
-        self.recentLimit = recentLimit
+        self.searchLimit = recentLimit
     }
 
     /// Re-run the current query. Called when the popup is shown, when
@@ -98,7 +100,7 @@ final class PopupState {
         isSearching = !q.isEmpty
         do {
             if q.isEmpty {
-                let fetched = try repository.recent(limit: recentLimit)
+                let fetched = try repository.recent(limit: searchLimit)
                 guard gen == generation else { return }
                 rows = fetched
                 snippetsById = [:]
@@ -107,7 +109,7 @@ final class PopupState {
                 let results = try repository.search(
                     query: q,
                     scope: searchScope,
-                    limit: recentLimit
+                    limit: searchLimit
                 )
                 guard gen == generation else { return }
                 rows = results.map(\.row)

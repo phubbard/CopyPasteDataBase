@@ -159,14 +159,30 @@ public enum FtsIndex {
         }
     }
 
-    /// Quote user input so FTS5 treats it as literal terms. Users who want
-    /// advanced MATCH syntax can route through a future raw-query path.
+    /// Quote user input so FTS5 treats it as literal terms, and append the
+    /// FTS5 prefix operator (`*`) so each token matches anything that
+    /// starts with it.
+    ///
+    /// Why prefix by default: this is a live-search field. A user typing
+    /// `tgncha` expects to find entries containing `tgnchat` — matching
+    /// complete-token-only (FTS5 default) feels broken because adding one
+    /// character can take you from "no results" to "many results."
+    /// Prefix matching makes the result set narrow monotonically as you
+    /// type.
+    ///
+    /// Shape: `"token1"* "token2"*` — each token individually quoted and
+    /// suffixed with `*`. Quoting protects against special chars; the
+    /// trailing `*` is FTS5's prefix-on-phrase operator, which also works
+    /// on single-token phrases.
+    ///
+    /// Users who want exact/advanced MATCH syntax can route through a
+    /// future raw-query path.
     static func escapeForFts5(_ query: String) -> String {
         let tokens = query.split(whereSeparator: { $0.isWhitespace })
         if tokens.isEmpty { return "\"\"" }
         return tokens.map { token in
             let doubled = token.replacingOccurrences(of: "\"", with: "\"\"")
-            return "\"\(doubled)\""
+            return "\"\(doubled)\"*"
         }.joined(separator: " ")
     }
 }

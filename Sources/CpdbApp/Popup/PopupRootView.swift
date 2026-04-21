@@ -42,7 +42,15 @@ struct PopupRootView: View {
             }
 
             HStack(spacing: 8) {
-                Text("\(state.totalLive) items")
+                if state.isSearching {
+                    // While searching, the useful count is how many rows
+                    // currently match. When we've hit the fetch cap we
+                    // suffix a `+` so the user knows there may be more.
+                    let atCap = state.rows.count >= state.searchLimit
+                    Text("\(state.rows.count)\(atCap ? "+" : "") matches")
+                } else {
+                    Text("\(state.totalLive) items")
+                }
                 Text("·")
                     .foregroundStyle(.quaternary)
                 Text("v\(CpdbVersion.current)")
