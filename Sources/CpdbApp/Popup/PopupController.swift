@@ -8,6 +8,11 @@ import SwiftUI
 /// Singleton because the status item menu, the hotkey, and `PasteAction` all
 /// need to talk to the same panel. Configured exactly once at startup via
 /// `configure(store:)`.
+///
+/// One-window-at-a-time contract with Quick Look: when the user summons QL
+/// from the popup, we dismiss the popup so there's a single foreground
+/// window (matches Finder). Re-summoning with the hotkey takes priority
+/// over any QL that happens to still be open.
 @MainActor
 final class PopupController {
     static let shared = PopupController()
@@ -40,6 +45,11 @@ final class PopupController {
             Log.cli.error("PopupController.show called before configure")
             return
         }
+        // If a QL panel is still visible from a prior preview, close it —
+        // the summon means the user wants the picker, not whatever they
+        // last looked at.
+        PreviewCoordinator.shared.dismiss()
+
         previousApp = NSWorkspace.shared.frontmostApplication
         state.refresh()
         // Bump after refresh so EntryStripView's onChange sees the freshly
@@ -51,20 +61,43 @@ final class PopupController {
         Log.cli.info("popup shown (previous=\(self.previousApp?.bundleIdentifier ?? "nil", privacy: .public))")
     }
 
-    func hide() {
+    /// Fully hide the popup AND close any open Quick Look. This is the
+    /// default; the preview-summon path uses `hide(closeQL: false)` because
+    /// QL is the thing we're trying to surface.
+    ///
+    /// Preserves the current `query` + `selectedIndex` when this is a
+    /// preview-triggered dismiss AND the user has opted in via the
+    /// "Remember position when opening Quick Look" preference — so the
+    /// next summon resumes where they were. Any other dismissal path
+    /// (Escape, outside-click, paste) always resets to a clean slate.
+    func hide(closeQL: Bool = true) {
+        let preservePosition = !closeQL && (state?.rememberScrollOnPreview ?? false)
+
         removeMonitors()
         panel?.orderOut(nil)
-        // Reset for the next summon: clear the search (so yesterday's query
-        // doesn't persist) and move selection back to the top. `query`'s
-        // didSet triggers a refresh, and `show()` refreshes again anyway,
-        // so the UI is consistent on the next appearance.
-        state?.query = ""
-        state?.selectedIndex = 0
-        Log.cli.info("popup hidden")
+        if closeQL {
+            PreviewCoordinator.shared.dismiss()
+        }
+        if !preservePosition {
+            state?.query = ""
+            state?.selectedIndex = 0
+        }
+        Log.cli.info("popup hidden (closeQL=\(closeQL, privacy: .public), preserved=\(preservePosition, privacy: .public))")
     }
 
     func toggle() {
         if panel?.isVisible == true { hide() } else { show() }
+    }
+
+    /// Called on ⌘Y or space-when-search-empty. Hands the currently
+    /// selected entry to Quick Look and then dismisses the popup so QL is
+    /// the only visible window (Finder-like one-at-a-time semantics).
+    /// The popup's `previousApp` capture survives the dismissal, so if the
+    /// user eventually pastes after QL, focus returns correctly.
+    func previewSelected() {
+        guard let state = state, let id = state.selectedEntry?.id else { return }
+        PreviewCoordinator.shared.preview(entryId: id, store: state.store)
+        hide(closeQL: false)
     }
 
     /// Called when the user hits Return on a selected entry. Runs the full
@@ -121,6 +154,17 @@ final class PopupController {
                 case 36, 76: // Return / Enter
                     self.pasteSelected()
                     return nil
+                case 16 where event.modifierFlags.contains(.command):
+                    // ⌘Y — universal QL shortcut, works regardless of
+                    // whether the search field has content.
+                    self.previewSelected()
+                    return nil
+                case 49 where (self.state?.query.isEmpty ?? false):
+                    // Space — QL shortcut, but only when the search field
+                    // is empty. If the user is typing, space remains a
+                    // literal character into the query.
+                    self.previewSelected()
+                    return nil
                 default:
                     return event
                 }
@@ -144,4 +188,3 @@ final class PopupController {
         }
     }
 }
-

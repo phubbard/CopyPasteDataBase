@@ -1,4 +1,5 @@
 import AppKit
+import Quartz
 
 /// Non-activating popup window that floats above other apps without stealing
 /// focus from them.
@@ -47,4 +48,23 @@ final class PopupPanel: NSPanel {
     // window — which would fight with the app it's floating over.
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
+
+    // MARK: - QLPreviewPanelController (responder-chain informal protocol)
+    //
+    // `QLPreviewPanel` walks the responder chain for an `NSResponder` that
+    // answers to these three methods. The popup panel is the key window
+    // when the user hits ⌘Y / space-when-empty, so these overrides put us
+    // at the front of the queue and AppKit never reaches higher.
+
+    override func acceptsPreviewPanelControl(_ panel: QLPreviewPanel!) -> Bool {
+        PreviewCoordinator.shared.acceptsPanelControl(panel)
+    }
+
+    override func beginPreviewPanelControl(_ panel: QLPreviewPanel!) {
+        PreviewCoordinator.shared.beginPanelControl(panel)
+    }
+
+    override func endPreviewPanelControl(_ panel: QLPreviewPanel!) {
+        PreviewCoordinator.shared.endPanelControl(panel)
+    }
 }

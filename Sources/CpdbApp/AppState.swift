@@ -36,6 +36,22 @@ final class PopupState {
         }
     }
 
+    /// When true, dismissing the popup to launch Quick Look preserves
+    /// the current search query and selection so the next summon
+    /// resumes from the same spot — useful if the user has scrolled
+    /// deep into history. When false (default), preview-triggered
+    /// dismiss resets to the top like a normal close.
+    var rememberScrollOnPreview: Bool = PopupState.loadRememberScroll() {
+        didSet {
+            if rememberScrollOnPreview != oldValue {
+                UserDefaults.standard.set(
+                    rememberScrollOnPreview,
+                    forKey: PopupState.rememberScrollKey
+                )
+            }
+        }
+    }
+
     /// Highlight/selection index within `rows`. Clamped to valid range.
     var selectedIndex: Int = 0
 
@@ -130,6 +146,19 @@ final class PopupState {
         if let data = try? JSONEncoder().encode(scope) {
             UserDefaults.standard.set(data, forKey: scopeDefaultsKey)
         }
+    }
+
+    // MARK: - Remember-scroll-on-preview persistence
+
+    static let rememberScrollKey = "cpdb.popup.rememberScrollOnPreview"
+
+    private static func loadRememberScroll() -> Bool {
+        // Default is false — preview-triggered dismiss matches the rest of
+        // the app's "reset to top on close" model unless the user opts in.
+        if UserDefaults.standard.object(forKey: rememberScrollKey) == nil {
+            return false
+        }
+        return UserDefaults.standard.bool(forKey: rememberScrollKey)
     }
 
     func selectNext() {

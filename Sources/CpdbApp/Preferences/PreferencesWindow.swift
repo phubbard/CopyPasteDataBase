@@ -56,6 +56,10 @@ private struct PreferencesView: View {
     @State private var tagThreshold: Double = Double(AnalysisPrefs.load().tagConfidenceThreshold)
     @State private var reanalyzeStatus: String = ""
 
+    // Popup UX
+    @State private var rememberScrollOnPreview: Bool = UserDefaults.standard
+        .bool(forKey: PopupState.rememberScrollKey)
+
     var body: some View {
         Form {
             Section("Hotkey") {
@@ -78,6 +82,16 @@ private struct PreferencesView: View {
                             Log.cli.error("launch at login toggle failed: \(String(describing: error), privacy: .public)")
                         }
                     }
+            }
+
+            Section("Popup") {
+                Toggle("Remember position when opening Quick Look", isOn: $rememberScrollOnPreview)
+                    .onChange(of: rememberScrollOnPreview) { _, newValue in
+                        UserDefaults.standard.set(newValue, forKey: PopupState.rememberScrollKey)
+                    }
+                Text("When on, pressing ⌘Y or Space dismisses the popup but keeps your search and scroll position. Re-summon the popup and you'll resume where you were.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section("Image analysis") {
