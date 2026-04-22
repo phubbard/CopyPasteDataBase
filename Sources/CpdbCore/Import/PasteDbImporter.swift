@@ -1,6 +1,7 @@
 import Foundation
 import CryptoKit
 import GRDB
+import CpdbShared
 
 /// Ingests a Paste (`com.wiheads.paste`) Core Data SQLite store into the
 /// cpdb database.

@@ -1,5 +1,6 @@
 import SwiftUI
 import CpdbCore
+import CpdbShared
 
 /// Top-level card renderer. Dispatches on `entry.kind` to the per-kind
 /// sub-views in this folder, then wraps everything in a consistent

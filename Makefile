@@ -14,7 +14,7 @@ RELEASE_DIR      = $(BUILD_DIR)/release-artifacts
 # Source of truth for the version. Parsed out of Version.swift so every
 # Makefile target that cares (release zip filename, verify-version) stays
 # consistent without a separate VERSION file to drift against.
-VERSION := $(shell sed -nE 's/.*static let current = "([^"]+)".*/\1/p' Sources/CpdbCore/Version.swift)
+VERSION := $(shell sed -nE 's/.*static let current = "([^"]+)".*/\1/p' Sources/CpdbShared/Version.swift)
 
 # Use the full Xcode toolchain for everything in this Makefile. The app target
 # depends on KeyboardShortcuts, which uses `#Preview` macros that the Command

@@ -5,6 +5,7 @@ import CoreText
 import ImageIO
 import UniformTypeIdentifiers
 @testable import CpdbCore
+@testable import CpdbShared
 
 @Suite("Image analyzer")
 struct ImageAnalyzerTests {

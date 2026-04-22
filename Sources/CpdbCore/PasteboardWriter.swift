@@ -1,6 +1,7 @@
 import Foundation
 import AppKit
 import GRDB
+import CpdbShared
 
 /// Rebuilds an entry into `NSPasteboardItem`s and writes it to a pasteboard.
 ///

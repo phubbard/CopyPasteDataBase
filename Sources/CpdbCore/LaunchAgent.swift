@@ -1,4 +1,5 @@
 import Foundation
+import CpdbShared
 
 /// Helpers for writing / removing the user's LaunchAgent plist.
 ///

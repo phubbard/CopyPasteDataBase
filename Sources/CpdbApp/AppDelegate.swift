@@ -1,5 +1,6 @@
 import AppKit
 import CpdbCore
+import CpdbShared
 import KeyboardShortcuts
 
 /// Central coordinator for the menu-bar app. Owns the status item, the

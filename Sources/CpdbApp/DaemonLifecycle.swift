@@ -1,5 +1,6 @@
 import Foundation
 import CpdbCore
+import CpdbShared
 
 /// Manages the in-process `PasteboardWatcher` lifetime for the menu-bar app.
 ///

@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import CpdbShared
 
 /// Tracks frontmost-app activations in a short sliding window.
 ///

@@ -1,5 +1,6 @@
 import SwiftUI
 import CpdbCore
+import CpdbShared
 
 /// Horizontal, Paste-style card scroller.
 ///

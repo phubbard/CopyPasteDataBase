@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import CpdbShared
 
 /// Backwards-compatible restore API. All the real work now lives in
 /// `PasteboardWriter`; this type stays so existing CLI callers and tests

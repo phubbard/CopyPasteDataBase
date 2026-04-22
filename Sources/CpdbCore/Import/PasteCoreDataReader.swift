@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import CpdbShared
 
 /// Read-only view over a Paste (`com.wiheads.paste`) Core Data SQLite store.
 ///

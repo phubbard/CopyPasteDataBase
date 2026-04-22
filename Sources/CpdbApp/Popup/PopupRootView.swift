@@ -1,5 +1,6 @@
 import SwiftUI
 import CpdbCore
+import CpdbShared
 
 /// Top-level SwiftUI view hosted inside `PopupPanel`.
 struct PopupRootView: View {

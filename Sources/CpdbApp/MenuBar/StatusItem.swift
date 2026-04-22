@@ -1,5 +1,6 @@
 import AppKit
 import CpdbCore
+import CpdbShared
 
 /// Owns the `NSStatusBarItem` and its dropdown menu.
 ///

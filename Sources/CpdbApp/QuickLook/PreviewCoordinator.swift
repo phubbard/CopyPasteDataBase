@@ -1,6 +1,7 @@
 import AppKit
 import Quartz
 import CpdbCore
+import CpdbShared
 
 /// Drives `QLPreviewPanel` for the currently-selected entry.
 ///

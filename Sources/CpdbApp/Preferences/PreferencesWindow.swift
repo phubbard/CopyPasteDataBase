@@ -3,6 +3,7 @@ import SwiftUI
 import KeyboardShortcuts
 import ServiceManagement
 import CpdbCore
+import CpdbShared
 
 /// Lazily-created Preferences window. One instance reused across opens.
 ///

@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import CpdbCore
+import CpdbShared
 
 /// Observable state backing the popup view.
 ///

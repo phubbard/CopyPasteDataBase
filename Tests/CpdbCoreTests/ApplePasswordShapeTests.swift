@@ -1,6 +1,7 @@
 import Testing
 import Foundation
 @testable import CpdbCore
+@testable import CpdbShared
 
 @Suite("Apple Strong Password shape")
 struct ApplePasswordShapeTests {

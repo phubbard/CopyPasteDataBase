@@ -2,6 +2,7 @@ import Testing
 import Foundation
 import GRDB
 @testable import CpdbCore
+@testable import CpdbShared
 
 @Suite("FTS index")
 struct FtsIndexTests {

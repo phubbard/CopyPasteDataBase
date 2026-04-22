@@ -1,5 +1,6 @@
 import Testing
 @testable import CpdbCore
+@testable import CpdbShared
 
 @Suite("Paths")
 struct PathsTests {

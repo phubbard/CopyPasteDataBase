@@ -1,6 +1,7 @@
 import Testing
 import Foundation
 @testable import CpdbCore
+@testable import CpdbShared
 
 @Suite("Quick Look item builder")
 struct QuickLookItemBuilderTests {

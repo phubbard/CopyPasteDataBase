@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import CpdbShared
 
 public struct FrontmostAppInfo: Sendable {
     public var bundleId: String

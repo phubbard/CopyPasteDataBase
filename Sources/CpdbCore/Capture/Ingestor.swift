@@ -1,6 +1,7 @@
 import Foundation
 import GRDB
 import IOKit
+import CpdbShared
 
 /// Takes a `PasteboardSnapshot` and writes it to the store — or bumps the
 /// existing row's `created_at` if we've seen this content before.

@@ -2,6 +2,7 @@ import SwiftUI
 import AppKit
 import GRDB
 import CpdbCore
+import CpdbShared
 
 /// Rendering for `image` entries. Reads the stored JPEG thumbnail from
 /// `previews.thumb_large` (fallback `thumb_small`) and fills the card

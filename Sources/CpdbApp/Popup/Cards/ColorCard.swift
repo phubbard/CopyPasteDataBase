@@ -1,5 +1,6 @@
 import SwiftUI
 import CpdbCore
+import CpdbShared
 
 /// Rendering for `color` entries. Full-bleed swatch + hex label.
 ///

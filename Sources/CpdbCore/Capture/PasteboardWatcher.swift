@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import CpdbShared
 
 /// Polls `NSPasteboard.general.changeCount` and hands new snapshots to an
 /// `Ingestor`.

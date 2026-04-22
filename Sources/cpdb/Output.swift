@@ -1,6 +1,7 @@
 import Foundation
 import GRDB
 import CpdbCore
+import CpdbShared
 
 /// Pretty-printing helpers shared across commands.
 enum Output {

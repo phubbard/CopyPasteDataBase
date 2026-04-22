@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import CpdbShared
 
 /// Implements the community `nspasteboard.org` convention: clipboard managers
 /// must skip items that carry any of these "don't store me" marker UTIs.

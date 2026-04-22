@@ -1,5 +1,6 @@
 import ArgumentParser
 import CpdbCore
+import CpdbShared
 import Foundation
 
 @main

@@ -9,6 +9,7 @@ let package = Package(
     products: [
         .executable(name: "cpdb", targets: ["cpdb"]),
         .executable(name: "CpdbApp", targets: ["CpdbApp"]),
+        .library(name: "CpdbShared", targets: ["CpdbShared"]),
         .library(name: "CpdbCore", targets: ["CpdbCore"]),
     ],
     dependencies: [
@@ -21,6 +22,7 @@ let package = Package(
             name: "cpdb",
             dependencies: [
                 "CpdbCore",
+                "CpdbShared",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ]
         ),
@@ -28,6 +30,7 @@ let package = Package(
             name: "CpdbApp",
             dependencies: [
                 "CpdbCore",
+                "CpdbShared",
                 .product(name: "KeyboardShortcuts", package: "KeyboardShortcuts"),
             ],
             // Info.plist lives under Resources/, but SPM can't actually write
@@ -36,9 +39,20 @@ let package = Package(
             // source or try to process it as a resource.
             exclude: ["Resources/Info.plist"]
         ),
+        // Cross-platform library: pure data, GRDB storage, Vision analysis,
+        // FTS5 search, Quick Look item building. iOS + macOS both link this.
+        .target(
+            name: "CpdbShared",
+            dependencies: [
+                .product(name: "GRDB", package: "GRDB.swift"),
+            ]
+        ),
+        // macOS-only library: NSPasteboard plumbing, Paste.db import,
+        // launchd helpers, daemon lock. Layers on top of CpdbShared.
         .target(
             name: "CpdbCore",
             dependencies: [
+                "CpdbShared",
                 .product(name: "GRDB", package: "GRDB.swift"),
             ]
         ),
@@ -46,6 +60,7 @@ let package = Package(
             name: "CpdbCoreTests",
             dependencies: [
                 "CpdbCore",
+                "CpdbShared",
                 .product(name: "GRDB", package: "GRDB.swift"),
             ]
             // Note: `swift test` needs a full Xcode toolchain for Testing.framework.

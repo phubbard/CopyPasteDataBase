@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import CpdbCore
+import CpdbShared
 
 /// The "pick an entry → paste into the previously focused app" flow.
 ///

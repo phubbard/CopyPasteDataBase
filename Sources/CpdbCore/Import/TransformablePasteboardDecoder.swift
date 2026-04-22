@@ -1,4 +1,5 @@
 import Foundation
+import CpdbShared
 
 /// Decodes the `ZSNIPPETDATA.ZPASTEBOARDITEMS` BLOB from a Paste (`com.wiheads.paste`)
 /// database back into a concrete `[PasteboardSnapshot.Item]`.

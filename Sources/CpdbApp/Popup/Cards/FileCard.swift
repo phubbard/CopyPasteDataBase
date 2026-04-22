@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import CpdbCore
+import CpdbShared
 
 /// Rendering for `file` entries. We don't own the file's bytes; we own the
 /// `public.file-url` flavor, which points at the real file on disk.

@@ -1,5 +1,6 @@
 import AppKit
 import CpdbCore
+import CpdbShared
 import SwiftUI
 
 /// Owns the `PopupPanel` and its lifecycle: creation, positioning, showing,
