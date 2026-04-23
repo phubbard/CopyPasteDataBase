@@ -338,6 +338,16 @@ public actor CloudKitSyncer {
                 case .failure(let error):
                     let kind = "entry:\(Self.describe(error))"
                     errorKindCounts[kind, default: 0] += 1
+                    // CKErrorDomain:22 (batchRequestFailed) means this
+                    // record was fine — another record in our cluster
+                    // hit a server-side conflict and cascade-failed us
+                    // along with it. Don't bump attempt_count; let the
+                    // next tick retry. This is the common case with
+                    // multiple devices concurrently pushing the same
+                    // content-addressed recordIDs.
+                    if let ck = error as? CKError, ck.code == .batchRequestFailed {
+                        continue
+                    }
                     if let entryId = idMap[recordID] {
                         try PushQueue.markFailure(
                             entryId: entryId,
