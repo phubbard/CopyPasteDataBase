@@ -188,25 +188,32 @@ final class StatusItemController {
     }
 
     @objc func streamLogs() {
-        // Drive Terminal via AppleScript: open a new window and run
-        // `log stream` filtered to our subsystem. Terminal is on every
-        // Mac, so this works without shipping our own terminal UI.
-        // The escaping is messy because we need the AppleScript `do
-        // script` literal to contain a double-quoted log predicate —
-        // each `\"` here becomes a literal `"` in the AppleScript
-        // string, which in turn gets passed to the shell.
-        let source = """
-        tell application "Terminal"
-            activate
-            do script "log stream --predicate 'subsystem == \\"net.phfactor.cpdb\\"' --level info"
-        end tell
+        // Write a `.command` shell script to /tmp and ask Launch Services
+        // to open it. .command files are bound to Terminal by default,
+        // so this spawns a Terminal window running our log-stream
+        // command without needing the Apple-events Automation
+        // entitlement (which the hardened runtime requires for direct
+        // AppleScript control, and our signed binary doesn't grant).
+        //
+        // Kept at a fixed filename per-process so repeat clicks reuse
+        // the same script rather than littering /tmp. `exec` swaps the
+        // shell so Cmd-. actually kills `log stream` cleanly.
+        let scriptURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cpdb-stream-logs.command")
+        let body = """
+        #!/bin/bash
+        echo 'cpdb log stream — Ctrl-C to exit'
+        exec log stream --predicate 'subsystem == "net.phfactor.cpdb"' --level info
         """
-        var errorDict: NSDictionary? = nil
-        if let script = NSAppleScript(source: source) {
-            script.executeAndReturnError(&errorDict)
-            if let err = errorDict {
-                Log.cli.error("stream logs: AppleScript error \(String(describing: err), privacy: .public)")
-            }
+        do {
+            try body.write(to: scriptURL, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o755],
+                ofItemAtPath: scriptURL.path
+            )
+            NSWorkspace.shared.open(scriptURL)
+        } catch {
+            Log.cli.error("stream logs: \(String(describing: error), privacy: .public)")
         }
     }
 }
