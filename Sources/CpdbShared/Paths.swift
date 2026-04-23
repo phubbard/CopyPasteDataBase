@@ -15,16 +15,31 @@ public enum Paths {
     /// when we rename.
     public static let legacyBundleId = "local.cpdb"
 
-    /// `~/Library/Application Support/net.phfactor.cpdb/`
+    /// Platform-specific support directory.
+    ///
+    /// On macOS: `~/Library/Application Support/net.phfactor.cpdb/`
+    /// (shared across apps, which is why we subdirectory by bundle id).
+    ///
+    /// On iOS: the app's own Application Support directory (already
+    /// sandboxed per-app, no bundle-id subdirectory needed).
     public static var supportDirectory: URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        #if os(macOS)
         return base.appendingPathComponent(bundleId, isDirectory: true)
+        #else
+        return base
+        #endif
     }
 
-    /// Where v1.x stored its data. Used only by the one-time migrator.
+    /// Where v1.x stored its data. Used only by the one-time migrator
+    /// on macOS — iOS has never had a v1.x to migrate from.
     public static var legacySupportDirectory: URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        #if os(macOS)
         return base.appendingPathComponent(legacyBundleId, isDirectory: true)
+        #else
+        return base.appendingPathComponent(legacyBundleId, isDirectory: true)
+        #endif
     }
 
     /// `~/Library/Application Support/net.phfactor.cpdb/cpdb.db`
@@ -37,13 +52,17 @@ public enum Paths {
         supportDirectory.appendingPathComponent("blobs", isDirectory: true)
     }
 
-    /// `~/Library/Logs/cpdb/`
+    #if os(macOS)
+    /// `~/Library/Logs/cpdb/` — macOS LaunchAgent stdout/stderr sink.
+    /// iOS apps log only through `os_log`; no equivalent filesystem
+    /// location and no need for one.
     public static var logsDirectory: URL {
         let home = FileManager.default.homeDirectoryForCurrentUser
         return home.appendingPathComponent("Library/Logs/cpdb", isDirectory: true)
     }
 
-    /// `~/Library/LaunchAgents/net.phfactor.cpdb.daemon.plist`
+    /// `~/Library/LaunchAgents/net.phfactor.cpdb.daemon.plist`.
+    /// LaunchAgents don't exist on iOS.
     public static var launchAgentPlistURL: URL {
         let home = FileManager.default.homeDirectoryForCurrentUser
         return home
@@ -52,12 +71,14 @@ public enum Paths {
     }
 
     /// Canonical location of Paste's Core Data store for import.
+    /// Paste is macOS-only and so is this importer path.
     public static var defaultPasteDatabaseURL: URL {
         let home = FileManager.default.homeDirectoryForCurrentUser
         return home
             .appendingPathComponent("Library/Application Support/com.wiheads.paste", isDirectory: true)
             .appendingPathComponent("Paste.db", isDirectory: false)
     }
+    #endif
 
     /// Content-addressed path under `blobsDirectory` for a given sha256 hex string.
     /// Two-level fan-out: `blobs/ab/cd/<full hex>`.
@@ -71,10 +92,15 @@ public enum Paths {
             .appendingPathComponent(hex, isDirectory: false)
     }
 
-    /// Ensures `supportDirectory`, `blobsDirectory`, and `logsDirectory` exist.
+    /// Ensures the data directories exist. `logsDirectory` is macOS-only.
     public static func ensureDirectoriesExist() throws {
         let fm = FileManager.default
-        for dir in [supportDirectory, blobsDirectory, logsDirectory] {
+        #if os(macOS)
+        let dirs = [supportDirectory, blobsDirectory, logsDirectory]
+        #else
+        let dirs = [supportDirectory, blobsDirectory]
+        #endif
+        for dir in dirs {
             if !fm.fileExists(atPath: dir.path) {
                 try fm.createDirectory(at: dir, withIntermediateDirectories: true)
             }

@@ -5,10 +5,12 @@ let package = Package(
     name: "cpdb",
     platforms: [
         .macOS(.v14),
+        .iOS(.v17),
     ],
     products: [
         .executable(name: "cpdb", targets: ["cpdb"]),
         .executable(name: "CpdbApp", targets: ["CpdbApp"]),
+        .executable(name: "CpdbiOS", targets: ["CpdbiOS"]),
         .library(name: "CpdbShared", targets: ["CpdbShared"]),
         .library(name: "CpdbCore", targets: ["CpdbCore"]),
     ],
@@ -59,6 +61,23 @@ let package = Package(
             dependencies: [
                 "CpdbShared",
                 .product(name: "GRDB", package: "GRDB.swift"),
+            ]
+        ),
+        // iOS companion app. Shares CpdbShared with the Mac side
+        // (schema, mapper, syncer, blob store all cross-platform).
+        // No dependency on CpdbCore because that's macOS-only
+        // (NSPasteboard, launchd, AppKit). Building requires Xcode
+        // with an iOS destination selected — plain
+        // `swift build --product CpdbiOS` builds for the Mac host
+        // which won't link because UIKit isn't on the Mac SDK.
+        .executableTarget(
+            name: "CpdbiOS",
+            dependencies: [
+                "CpdbShared",
+            ],
+            exclude: [
+                "Resources/Info.plist",
+                "Resources/cpdb-ios.entitlements",
             ]
         ),
         .testTarget(
