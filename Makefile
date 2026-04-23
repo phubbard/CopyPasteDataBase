@@ -89,6 +89,19 @@ build-app: verify-version stamp-build
 	else \
 	    echo "warning: AppIcon.icns not found; run scripts/make-icon.swift first"; \
 	fi
+	# SPM-generated resource bundles — each Swift Package that declares
+	# resources produces a `<Package>_<Target>.bundle` at build time.
+	# `Bundle.module` inside the package looks for these next to the
+	# main binary. On a second-Mac install (no .build tree) the fallback
+	# search path is gone; missing bundle → fatal assertion at the first
+	# `Bundle.module` access (killed axiom + thor when Preferences opened
+	# and KeyboardShortcuts.Recorder initialized).
+	@for b in $(BUILD_DIR)/$(BUILD_CONFIG)/*.bundle; do \
+	    if [ -d "$$b" ]; then \
+	        cp -R "$$b" $(APP_BUNDLE_DIR)/Contents/Resources/; \
+	        echo "  bundled $$(basename $$b)"; \
+	    fi; \
+	done
 	# The `cpdb` CLI is NOT shipped inside the app bundle. AMFI rejects
 	# nested bare binaries that claim restricted entitlements (iCloud,
 	# APNs) with "No matching profile found" — profile inheritance only
