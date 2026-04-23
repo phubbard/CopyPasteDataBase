@@ -63,6 +63,28 @@ final class AppContainer {
         }
     }
 
+    /// Ask the user's target Mac to paste the given entry by writing
+    /// an ActionRequest CKRecord to the shared zone. The Mac's syncer
+    /// consumes the request on its next pull (or silent push) and
+    /// writes the entry's flavors to its NSPasteboard; the user on
+    /// that Mac then presses ⌘V to paste. Throws on CloudKit error.
+    func sendPasteRequest(
+        entryContentHash: Data,
+        targetDeviceIdentifier: String
+    ) async throws {
+        guard let syncer = syncer else {
+            throw NSError(
+                domain: "cpdb.ios",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Sync not ready"]
+            )
+        }
+        try await syncer.sendPasteRequest(
+            entryContentHash: entryContentHash,
+            targetDeviceIdentifier: targetDeviceIdentifier
+        )
+    }
+
     /// Force a pull. Called on pull-to-refresh and from the toolbar.
     func pullNow() async {
         guard let syncer = syncer else { return }

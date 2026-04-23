@@ -21,6 +21,7 @@ struct EntryDetailView: View {
 
     @State private var loaded: Loaded?
     @State private var copyToastVisible: Bool = false
+    @State private var showPushSheet: Bool = false
 
     struct Loaded {
         var entry: Entry
@@ -77,6 +78,14 @@ struct EntryDetailView: View {
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 HStack(spacing: 16) {
+                    Button {
+                        showPushSheet = true
+                    } label: {
+                        Image(systemName: "desktopcomputer.and.arrow.down")
+                    }
+                    .disabled(loaded == nil)
+                    .accessibilityLabel("Push to Mac")
+
                     if let payload = loaded?.sharePayload {
                         shareButton(payload)
                     }
@@ -88,6 +97,12 @@ struct EntryDetailView: View {
                     .disabled(loaded == nil)
                     .accessibilityLabel("Copy to clipboard")
                 }
+            }
+        }
+        .sheet(isPresented: $showPushSheet) {
+            if let entry = loaded?.entry {
+                DevicePickerSheet(entry: entry)
+                    .presentationDetents([.medium, .large])
             }
         }
         .overlay(alignment: .top) {

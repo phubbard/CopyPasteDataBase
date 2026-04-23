@@ -85,6 +85,16 @@ public actor CloudKitSyncer {
     private let zoneID: CKRecordZone.ID
     private let device: DeviceInfo
     private let blobs: BlobStore
+    /// Invoked during a pull when a pending ActionRequest targeted at
+    /// THIS device asks for a paste action. The closure receives the
+    /// local `Entry` the request refers to (looked up by content_hash)
+    /// and is expected to write its flavors to the system pasteboard.
+    /// The syncer deletes the ActionRequest record after the closure
+    /// returns, whether it succeeded or not.
+    ///
+    /// Only set on the Mac (AppDelegate wires `Restorer`); iOS never
+    /// consumes requests — it only sends them.
+    private let onPasteAction: (@Sendable (Entry) async -> Void)?
 
     /// Upper bound on how many entries to pull off the queue per push
     /// call. Actual batch size is also gated by byte budget (see
@@ -112,7 +122,8 @@ public actor CloudKitSyncer {
         ),
         device: DeviceInfo,
         batchSize: Int = 20,
-        blobs: BlobStore = BlobStore()
+        blobs: BlobStore = BlobStore(),
+        onPasteAction: (@Sendable (Entry) async -> Void)? = nil
     ) {
         self.store = store
         self.client = client
@@ -120,6 +131,29 @@ public actor CloudKitSyncer {
         self.device = device
         self.batchSize = batchSize
         self.blobs = blobs
+        self.onPasteAction = onPasteAction
+    }
+
+    // MARK: - Public: action requests
+
+    /// Send a "paste this entry on the target Mac" request. Called
+    /// from iOS. The target Mac's running syncer picks the request
+    /// up on its next pull (or APNs silent push) and writes the
+    /// entry's flavors to its own `NSPasteboard`.
+    public func sendPasteRequest(
+        entryContentHash: Data,
+        targetDeviceIdentifier: String
+    ) async throws {
+        try await ensureZoneIfNeeded()
+        let record = ActionRequestMapper.buildPasteRequest(
+            targetDeviceIdentifier: targetDeviceIdentifier,
+            entryContentHash: entryContentHash,
+            in: zoneID
+        )
+        let result = try await client.modifyRecords(saving: [record], deleting: [])
+        if case .failure(let error) = result.saveResults[record.recordID] {
+            throw error
+        }
     }
 
     /// Ensure the custom zone exists and drain the push queue once.
@@ -711,6 +745,7 @@ public actor CloudKitSyncer {
         // insert the child. Unknown types are skipped with a log line.
         var decodedEntries: [EntryRecordMapper.Decoded] = []
         var decodedFlavors: [DecodedFlavorBytes] = []
+        var myActions: [ActionRequestMapper.Decoded] = []
         var skippedCount = 0
         for record in result.changedRecords {
             switch record.recordType {
@@ -733,9 +768,18 @@ public actor CloudKitSyncer {
                 } catch {
                     skippedCount += 1
                 }
+            case CKSchema.RecordType.actionRequest:
+                do {
+                    let req = try ActionRequestMapper.decode(record)
+                    // Only act on requests targeting THIS device.
+                    // Other devices' requests pass through as no-ops.
+                    if req.targetDeviceIdentifier == device.identifier {
+                        myActions.append(req)
+                    }
+                } catch {
+                    skippedCount += 1
+                }
             default:
-                // ActionRequest records will land here when step 7
-                // ships; for now, unknown type → skip.
                 skippedCount += 1
             }
         }
@@ -777,6 +821,42 @@ public actor CloudKitSyncer {
                 )
             }
             return (ins, upd, tomb)
+        }
+
+        // Process ActionRequests targeting THIS device AFTER the
+        // write txn closes so the executor (e.g. Mac's Restorer,
+        // which opens its own DB read) doesn't deadlock against
+        // our write. Delete each request record after executing
+        // so it doesn't fire again on the next pull.
+        if !myActions.isEmpty, let handler = onPasteAction {
+            for req in myActions {
+                guard req.kind == CKSchema.ActionKind.paste else { continue }
+                let entry: Entry? = try await store.dbQueue.read { db in
+                    try Entry
+                        .filter(Column("content_hash") == req.entryContentHash)
+                        .filter(Column("deleted_at") == nil)
+                        .fetchOne(db)
+                }
+                if let entry = entry {
+                    Log.cli.info(
+                        "action request: paste entry id=\(entry.id ?? 0, privacy: .public) kind=\(entry.kind.rawValue, privacy: .public)"
+                    )
+                    await handler(entry)
+                } else {
+                    Log.cli.info(
+                        "action request: entry not present locally for content_hash, dropping"
+                    )
+                }
+                do {
+                    _ = try await client.modifyRecords(
+                        saving: [], deleting: [req.recordID]
+                    )
+                } catch {
+                    Log.cli.error(
+                        "action request delete failed: \(String(describing: error), privacy: .public)"
+                    )
+                }
+            }
         }
 
         return PullReport(

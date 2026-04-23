@@ -92,6 +92,13 @@ actor FakeCloudKitClient: CloudKitClient {
     enum TestError: Error { case injected }
 }
 
+/// Small actor that collects counts across async boundaries, used
+/// by tests that need to assert a callback fired N times.
+actor Counter {
+    private(set) var value: Int = 0
+    func bump() { value += 1 }
+}
+
 @Suite("CloudKit syncer — push path")
 struct CloudKitSyncerTests {
 
@@ -481,6 +488,95 @@ struct CloudKitSyncerTests {
             let count = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM entry_flavors") ?? 0
             #expect(count == 0)
         }
+    }
+
+    // MARK: - Action requests (step 7)
+
+    @Test("pull: paste action targeting this device invokes handler + deletes the record")
+    func pullAppliesPasteActionForSelf() async throws {
+        let (store, ids) = try seed(entryCount: 1)
+        let (entryHash, _) = try await store.dbQueue.read { db -> (Data, String) in
+            let e = try Entry.fetchOne(db, key: ids[0])!
+            return (e.contentHash, "TEST-HW-UUID")
+        }
+        let client = FakeCloudKitClient()
+
+        // Enqueue a paste request TARGETING this device's identifier.
+        let actionRecord = ActionRequestMapper.buildPasteRequest(
+            targetDeviceIdentifier: Self.device.identifier,
+            entryContentHash: entryHash,
+            in: Self.zone
+        )
+        // Pre-seed the fake's saved map so the later .delete
+        // succeeds (fake throws nothing for unknown IDs, but a
+        // realistic sim: the record exists server-side first).
+        _ = try await client.modifyRecords(saving: [actionRecord], deleting: [])
+        await client.seedPull(changed: [actionRecord])
+
+        // Wire a paste handler that records invocation.
+        let invoked = Counter()
+        let syncer = CloudKitSyncer(
+            store: store,
+            client: client,
+            zoneID: Self.zone,
+            device: Self.device,
+            batchSize: 50,
+            onPasteAction: { _ in await invoked.bump() }
+        )
+        _ = try await syncer.pullRemoteChanges()
+
+        #expect(await invoked.value == 1)
+        // The syncer should have deleted the request record after
+        // handling it. Check the fake's saved set.
+        let saved = await client.savedRecords
+        #expect(saved[actionRecord.recordID] == nil, "action request should have been deleted")
+    }
+
+    @Test("pull: paste action for a DIFFERENT device is ignored")
+    func pullIgnoresForeignActions() async throws {
+        let (store, ids) = try seed(entryCount: 1)
+        let hash = try await store.dbQueue.read { db in
+            try Entry.fetchOne(db, key: ids[0])!.contentHash
+        }
+        let client = FakeCloudKitClient()
+        let actionRecord = ActionRequestMapper.buildPasteRequest(
+            targetDeviceIdentifier: "SOMEBODY-ELSE",
+            entryContentHash: hash,
+            in: Self.zone
+        )
+        await client.seedPull(changed: [actionRecord])
+
+        let invoked = Counter()
+        let syncer = CloudKitSyncer(
+            store: store,
+            client: client,
+            zoneID: Self.zone,
+            device: Self.device,
+            batchSize: 50,
+            onPasteAction: { _ in await invoked.bump() }
+        )
+        _ = try await syncer.pullRemoteChanges()
+
+        #expect(await invoked.value == 0, "handler should not fire for foreign action")
+    }
+
+    @Test("sendPasteRequest saves a record into the zone")
+    func sendPasteRequestSaves() async throws {
+        let (store, _) = try seed(entryCount: 0)
+        let client = FakeCloudKitClient()
+        let syncer = makeSyncer(store: store, client: client)
+
+        let hash = Data(repeating: 0x77, count: 32)
+        try await syncer.sendPasteRequest(
+            entryContentHash: hash,
+            targetDeviceIdentifier: "HW-TARGET"
+        )
+        let saved = await client.savedRecords
+        #expect(saved.count == 1)
+        let rec = saved.values.first!
+        #expect(rec.recordType == CKSchema.RecordType.actionRequest)
+        #expect(rec[CKSchema.ActionRequestField.targetDeviceIdentifier] as? String == "HW-TARGET")
+        #expect(rec[CKSchema.ActionRequestField.kind] as? String == CKSchema.ActionKind.paste)
     }
 
     @Test("ensureSubscription installs our zone subscription id")

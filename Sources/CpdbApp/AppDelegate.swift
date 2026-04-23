@@ -145,10 +145,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let client = LiveCloudKitClient(containerIdentifier: containerID)
         let deviceName = Host.current().localizedName ?? ProcessInfo.processInfo.hostName
         let deviceID = DeviceIdentity.hardwareUUID() ?? ProcessInfo.processInfo.hostName
+        // `onPasteAction`: the iOS companion writes an ActionRequest
+        // CKRecord targeting this Mac; the syncer consumes it during
+        // the next pull and invokes this closure with the local
+        // Entry. Writing to NSPasteboard lives in Restorer so this
+        // closure is a thin adapter. Note the escape hatch: Restorer
+        // is macOS-only so we can't move it into CpdbShared, which is
+        // why the syncer accepts a closure rather than calling
+        // Restorer directly.
+        let pasteHandler: @Sendable (Entry) async -> Void = { entry in
+            guard let id = entry.id else { return }
+            let restorer = Restorer(store: store)
+            do {
+                try restorer.restoreToPasteboard(entryId: id)
+                Log.cli.info(
+                    "remote paste: wrote entry \(id, privacy: .public) to NSPasteboard"
+                )
+            } catch {
+                Log.cli.error(
+                    "remote paste failed for entry \(id, privacy: .public): \(String(describing: error), privacy: .public)"
+                )
+            }
+        }
         let syncer = CloudKitSyncer(
             store: store,
             client: client,
-            device: .init(identifier: deviceID, name: deviceName)
+            device: .init(identifier: deviceID, name: deviceName),
+            onPasteAction: pasteHandler
         )
         self.syncer = syncer
 
