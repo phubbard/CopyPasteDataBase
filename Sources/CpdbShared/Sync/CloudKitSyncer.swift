@@ -436,7 +436,34 @@ public actor CloudKitSyncer {
 
     static func describe(_ error: any Error) -> String {
         let ns = error as NSError
-        return "\(ns.domain):\(ns.code) \(ns.localizedDescription)"
+        // CloudKit often hides the real cause behind a .batchRequestFailed
+        // (code 22) cascade error. The actual offending per-record error
+        // usually lives in `userInfo[CKRecordChangedErrorServerRecordKey]`
+        // sibling — specifically the `NSUnderlyingError` key. Pull those
+        // out so our log lines carry the signal, not just the cascade
+        // label.
+        var parts = ["\(ns.domain):\(ns.code) \(ns.localizedDescription)"]
+        if let underlying = ns.userInfo[NSUnderlyingErrorKey] as? NSError {
+            parts.append("<- underlying: \(underlying.domain):\(underlying.code) \(underlying.localizedDescription)")
+        }
+        if let reasonKey = ns.userInfo["ServerErrorDescription"] as? String {
+            parts.append("<- server: \(reasonKey)")
+        }
+        // Dump any remaining userInfo keys (excluding the noisy ones
+        // we know about) — truncated so we don't flood the log.
+        let skip: Set<String> = [
+            NSUnderlyingErrorKey, "ServerErrorDescription",
+            "CKErrorDescription", "NSLocalizedFailureReason"
+        ]
+        let extra = ns.userInfo
+            .filter { !skip.contains($0.key) }
+            .map { "\($0.key)=\(String(describing: $0.value).prefix(120))" }
+            .sorted()
+            .joined(separator: "; ")
+        if !extra.isEmpty {
+            parts.append("userInfo: \(extra.prefix(400))")
+        }
+        return parts.joined(separator: " ")
     }
 
     // MARK: - Pull path
