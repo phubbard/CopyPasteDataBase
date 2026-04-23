@@ -248,10 +248,30 @@ public actor CloudKitSyncer {
         let result: CKModifyResult
         do {
             result = try await client.modifyRecords(saving: builtRecords, deleting: [])
+        } catch let ckError as CKError where ckError.code == .zoneBusy || ckError.code == .requestRateLimited {
+            // Zone-level concurrency conflict (CAS op-lock lost to
+            // another device's simultaneous write) or rate limit. This
+            // is expected during bulk catch-up with multiple devices
+            // pushing the same zone. Don't mark failures — the queue
+            // rows stay untouched and the next periodic tick retries.
+            // We sleep the retry-after hint inside this call so the
+            // caller's loop can continue without knowing the detail.
+            let retry = ckError.retryAfterSeconds ?? 2.0
+            Log.cli.info(
+                "cloudkit push: zone busy / rate-limited, waiting \(retry, privacy: .public)s before next try"
+            )
+            let ns = UInt64(max(retry, 0.5) * 1_000_000_000)
+            try? await Task.sleep(nanoseconds: ns)
+            return PushReport(
+                attempted: 0,
+                saved: 0,
+                failed: 0,
+                remaining: try await remainingCount()
+            )
         } catch {
-            // Whole-batch failure (network down, auth error, …).
-            // Mark every row as a failed attempt; backoff handled by
-            // whoever calls us next.
+            // Other whole-batch failure (network down, auth error, …).
+            // Mark every row as a failed attempt so they skip to the
+            // back of the queue and get exponential-backoff handling.
             try await store.dbQueue.write { db in
                 for pendingRow in pending {
                     try PushQueue.markFailure(
