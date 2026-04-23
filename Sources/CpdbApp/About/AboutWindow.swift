@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import CloudKit
+import GRDB
 import CpdbShared
 
 /// Lazily-created About window. Mirrors `PreferencesWindowController`'s
@@ -30,7 +31,7 @@ final class AboutWindowController {
             window.title = "About cpdb"
             window.styleMask = [.titled, .closable]
             window.isReleasedWhenClosed = false
-            window.setContentSize(NSSize(width: 420, height: 430))
+            window.setContentSize(NSSize(width: 420, height: 520))
             window.center()
             self.window = window
         }
@@ -57,6 +58,10 @@ private struct AboutView: View {
     @State private var lastSyncText: String = AboutView.formattedLastSync()
     @State private var samples: [SyncSample] = []
     @State private var pollTask: Task<Void, Never>? = nil
+    /// Live-entry counts per kind (keyed by EntryKind.rawValue). Drawn
+    /// on the library stats block; refreshed on the same 1 s tick as
+    /// the sync samples.
+    @State private var kindCounts: [String: Int] = [:]
 
     private static let repoURL = URL(string: "https://github.com/phubbard/CopyPasteDataBase")!
 
@@ -104,10 +109,17 @@ private struct AboutView: View {
             }
             .padding(.horizontal, 24)
 
+            if !kindCounts.isEmpty {
+                Divider()
+                    .padding(.horizontal, 24)
+                libraryStatsBlock()
+                    .padding(.horizontal, 24)
+            }
+
             Spacer(minLength: 0)
         }
         .padding(.vertical, 20)
-        .frame(width: 420, height: 430)
+        .frame(width: 420, height: 520)
         .task {
             await loadCloudStatus()
         }
@@ -147,6 +159,41 @@ private struct AboutView: View {
                     Text(rateString())
                         .font(.system(size: 11, design: .monospaced))
                         .foregroundStyle(.tertiary)
+                }
+            }
+        }
+    }
+
+    /// Library-wide stats by EntryKind. `Total` is the sum — cheap to
+    /// compute locally but we show it first for quick-glance "how big
+    /// is my history".
+    @ViewBuilder
+    private func libraryStatsBlock() -> some View {
+        // Display order: total on top, then kinds in a user-friendly
+        // sequence. Values default to 0 when a kind isn't present.
+        let total = kindCounts.values.reduce(0, +)
+        let rows: [(String, Int)] = [
+            ("Text",   kindCounts["text"]   ?? 0),
+            ("Links",  kindCounts["link"]   ?? 0),
+            ("Images", kindCounts["image"]  ?? 0),
+            ("Files",  kindCounts["file"]   ?? 0),
+            ("Colors", kindCounts["color"]  ?? 0),
+            ("Other",  kindCounts["other"]  ?? 0),
+        ]
+        VStack(spacing: 4) {
+            AboutRow(label: "Library", value: "\(total) entries")
+            ForEach(rows, id: \.0) { label, count in
+                if count > 0 {
+                    HStack {
+                        Text(label)
+                            .font(.system(size: 12))
+                            .foregroundStyle(.tertiary)
+                            .padding(.leading, 10)
+                        Spacer()
+                        Text("\(count)")
+                            .font(.system(size: 12, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
         }
@@ -203,13 +250,48 @@ private struct AboutView: View {
     private func startPolling() {
         pollTask?.cancel()
         pollTask = Task { @MainActor in
+            var tickCount = 0
             while !Task.isCancelled {
                 if let sample = await pollSample() {
                     appendSample(sample)
                 }
                 lastSyncText = AboutView.formattedLastSync()
+                // Kind counts are a full GROUP BY over entries — cheap
+                // for 10k rows but not free. Refresh every 5 ticks (~5 s)
+                // so the display feels live without hitting the DB on
+                // every paint.
+                if tickCount % 5 == 0 {
+                    if let counts = await pollKindCounts() {
+                        kindCounts = counts
+                    }
+                }
+                tickCount &+= 1
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
             }
+        }
+    }
+
+    /// `SELECT kind, COUNT(*) FROM entries WHERE deleted_at IS NULL
+    /// GROUP BY kind` — one row per EntryKind that has at least one
+    /// live entry.
+    private func pollKindCounts() async -> [String: Int]? {
+        guard let store = AboutWindowController.shared.store else { return nil }
+        do {
+            return try await store.dbQueue.read { db in
+                var result: [String: Int] = [:]
+                let rows = try Row.fetchAll(
+                    db,
+                    sql: "SELECT kind, COUNT(*) as n FROM entries WHERE deleted_at IS NULL GROUP BY kind"
+                )
+                for row in rows {
+                    let kind: String = row["kind"]
+                    let n: Int = row["n"]
+                    result[kind] = n
+                }
+                return result
+            }
+        } catch {
+            return nil
         }
     }
 
