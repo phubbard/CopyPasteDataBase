@@ -16,6 +16,11 @@ import CpdbShared
 struct SearchRow: Identifiable {
     let entry: Entry
     let linkURL: String?
+    /// Small JPEG thumbnail bytes for image-kind entries, pulled from
+    /// the `previews` table in the same query pass so the list
+    /// doesn't incur an N+1 row-level load. nil for non-image kinds
+    /// or images without a generated thumbnail.
+    let thumbSmall: Data?
     var id: Int64? { entry.id }
 }
 
@@ -63,7 +68,11 @@ struct SearchView: View {
 
                     ForEach(results) { row in
                         NavigationLink(value: row.entry.id) {
-                            EntryRow(entry: row.entry, linkURL: row.linkURL)
+                            EntryRow(
+                                entry: row.entry,
+                                linkURL: row.linkURL,
+                                thumbSmall: row.thumbSmall
+                            )
                         }
                         .onAppear {
                             // Load-more trigger: when the last row
@@ -278,19 +287,34 @@ struct SearchView: View {
                     .limit(limit)
                     .fetchAll(db)
 
-                // For link-kind entries with no usable preview, pull
-                // the URL bytes from the joined flavor. We look for
-                // `public.url` first (exact URL), falling back to
-                // `public.utf8-plain-text` which Safari etc. also
-                // populate with the URL.
+                // Per-row post-processing:
+                //   - Link entries with no usable preview → pull the
+                //     URL bytes from entry_flavors.
+                //   - Image entries → pull thumb_small from previews
+                //     for inline rendering in EntryRow.
                 return try entries.map { entry -> SearchRow in
-                    guard entry.kind == .link,
-                          (entry.title?.isEmpty ?? true) && (entry.textPreview?.isEmpty ?? true)
-                    else {
-                        return SearchRow(entry: entry, linkURL: nil)
+                    var linkURL: String? = nil
+                    var thumbSmall: Data? = nil
+
+                    if entry.kind == .link,
+                       (entry.title?.isEmpty ?? true) && (entry.textPreview?.isEmpty ?? true)
+                    {
+                        linkURL = try Self.resolveLinkURL(entryId: entry.id!, in: db)
                     }
-                    let url = try Self.resolveLinkURL(entryId: entry.id!, in: db)
-                    return SearchRow(entry: entry, linkURL: url)
+
+                    if entry.kind == .image {
+                        thumbSmall = try Data.fetchOne(
+                            db,
+                            sql: "SELECT thumb_small FROM previews WHERE entry_id = ?",
+                            arguments: [entry.id!]
+                        )
+                    }
+
+                    return SearchRow(
+                        entry: entry,
+                        linkURL: linkURL,
+                        thumbSmall: thumbSmall
+                    )
                 }
             }
             if !Task.isCancelled {

@@ -1,3 +1,4 @@
+#if os(macOS)
 import Foundation
 import GRDB
 import CpdbCore
@@ -114,3 +115,4 @@ private extension String {
         return String(repeating: " ", count: length - count) + self
     }
 }
+#endif

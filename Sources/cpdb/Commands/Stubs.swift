@@ -1,3 +1,4 @@
+#if os(macOS)
 import ArgumentParser
 import CpdbCore
 import CpdbShared
@@ -661,3 +662,4 @@ struct Gc: ParsableCommand {
         Log.stderr("VACUUM complete. (Orphan blob cleanup not yet implemented.)")
     }
 }
+#endif

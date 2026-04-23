@@ -10,7 +10,6 @@ let package = Package(
     products: [
         .executable(name: "cpdb", targets: ["cpdb"]),
         .executable(name: "CpdbApp", targets: ["CpdbApp"]),
-        .executable(name: "CpdbiOS", targets: ["CpdbiOS"]),
         .library(name: "CpdbShared", targets: ["CpdbShared"]),
         .library(name: "CpdbCore", targets: ["CpdbCore"]),
     ],
@@ -63,31 +62,14 @@ let package = Package(
                 .product(name: "GRDB", package: "GRDB.swift"),
             ]
         ),
-        // iOS companion app. Shares CpdbShared with the Mac side
-        // (schema, mapper, syncer, blob store all cross-platform).
-        // No dependency on CpdbCore because that's macOS-only
-        // (NSPasteboard, launchd, AppKit). Building requires Xcode
-        // with an iOS destination selected — plain
-        // `swift build --product CpdbiOS` builds for the Mac host
-        // which won't link because UIKit isn't on the Mac SDK.
-        //
-        // Code signing: Configure in Xcode with your Apple Developer account.
-        // See iOS-SIGNING-SETUP.md for detailed setup instructions.
-        // Bundle ID: net.phfactor.cpdb.ios
-        // Required capabilities: iCloud (CloudKit), Push Notifications
-        .executableTarget(
-            name: "CpdbiOS",
-            dependencies: [
-                "CpdbShared",
-            ],
-            // Info.plist + entitlements live under Resources/ but are
-            // excluded from SPM processing. Xcode will use them during
-            // the build when you select an iOS destination.
-            exclude: [
-                "Resources/Info.plist",
-                "Resources/cpdb-ios.entitlements",
-            ]
-        ),
+        // The iOS companion app lives at iOS/cpdb/cpdb.xcodeproj
+        // and depends on this package via Xcode's Local Package
+        // feature (importing CpdbShared directly). Not defined as
+        // an SPM target here because iOS apps need Xcode's full
+        // build pipeline (Info.plist, asset catalog, entitlements,
+        // code signing), which SPM's executableTarget doesn't
+        // provide. Sources live under iOS/cpdb/cpdb/ — that's the
+        // single source of truth.
         .testTarget(
             name: "CpdbCoreTests",
             dependencies: [

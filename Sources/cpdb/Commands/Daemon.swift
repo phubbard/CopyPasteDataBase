@@ -1,3 +1,4 @@
+#if os(macOS)
 import ArgumentParser
 import CpdbCore
 import CpdbShared
@@ -59,3 +60,4 @@ struct Daemon: ParsableCommand {
         RunLoop.main.run()
     }
 }
+#endif

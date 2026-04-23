@@ -1,3 +1,4 @@
+#if os(macOS)
 import ArgumentParser
 import CpdbCore
 import CpdbShared
@@ -142,3 +143,4 @@ private func runBlocking<T: Sendable>(_ block: @Sendable @escaping () async thro
         exit(1)
     }
 }
+#endif

@@ -1,3 +1,4 @@
+#if os(macOS)
 import ArgumentParser
 import CpdbCore
 import CpdbShared
@@ -32,3 +33,19 @@ struct CpdbCommand: ParsableCommand {
         defaultSubcommand: ListCommand.self
     )
 }
+
+#else
+
+/// Non-macOS stub. The iOS Xcode project has a local-package
+/// dependency on this Swift Package which pulls in every target
+/// including this CLI. On iOS the CLI has no meaning, but the
+/// executable still needs a `@main` so the linker is happy.
+@main
+enum CpdbCLIStub {
+    static func main() {
+        // Never runs on iOS — this target isn't invoked from the
+        // iOS app; we only satisfy the link step.
+    }
+}
+
+#endif

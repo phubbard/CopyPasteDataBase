@@ -1,9 +1,14 @@
 #if os(iOS)
 import SwiftUI
 import CpdbShared
+#if canImport(UIKit)
+import UIKit
+#endif
 
 /// One row in SearchView's list. Renders a kind-appropriate icon +
-/// a snippet + the source device/app + relative timestamp.
+/// a snippet + the source device/app + relative timestamp. Image
+/// entries get their small thumbnail rendered inline instead of the
+/// generic photo glyph.
 ///
 /// Intentionally compact so 7-10 rows fit on an iPhone screen without
 /// scrolling. Detail view (push from this row) shows the full entry.
@@ -14,6 +19,9 @@ struct EntryRow: View {
     /// `public.utf8-plain-text` flavor. Non-nil only in that fallback
     /// case; text/image/etc. entries get nil here.
     var linkURL: String? = nil
+    /// Small thumbnail bytes for image-kind entries. When present,
+    /// replaces the kind-icon glyph in the leading slot.
+    var thumbSmall: Data? = nil
 
     private static let relative: RelativeDateTimeFormatter = {
         let f = RelativeDateTimeFormatter()
@@ -23,10 +31,8 @@ struct EntryRow: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
-            Image(systemName: kindIcon)
-                .font(.system(size: 16))
-                .foregroundStyle(kindColor)
-                .frame(width: 22, alignment: .center)
+            leadingIcon
+                .frame(width: 44, height: 44, alignment: .center)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(snippet)
@@ -49,6 +55,40 @@ struct EntryRow: View {
             }
         }
         .padding(.vertical, 2)
+    }
+
+    /// Leading slot: small thumbnail for image entries, kind-icon
+    /// glyph for everything else. 44×44 so the column width is
+    /// consistent regardless of which branch renders.
+    @ViewBuilder
+    private var leadingIcon: some View {
+        #if canImport(UIKit)
+        if entry.kind == .image,
+           let data = thumbSmall,
+           let image = UIImage(data: data)
+        {
+            Image(uiImage: image)
+                .resizable()
+                .scaledToFill()
+                .frame(width: 44, height: 44)
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6)
+                        .stroke(.quaternary, lineWidth: 0.5)
+                )
+        } else {
+            kindGlyph
+        }
+        #else
+        kindGlyph
+        #endif
+    }
+
+    @ViewBuilder
+    private var kindGlyph: some View {
+        Image(systemName: kindIcon)
+            .font(.system(size: 20))
+            .foregroundStyle(kindColor)
     }
 
     private var snippet: String {
