@@ -12,6 +12,12 @@ final class StatusItemController {
 
     init() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        // Give the status item a stable `autosaveName` so macOS tracks
+        // its visibility and position across launches. Without this,
+        // macOS Sonoma+ is free to park newly-created status items in
+        // Control Center overflow on first run and never surface them.
+        item.autosaveName = "net.phfactor.cpdb.statusItem"
+        item.behavior = .removalAllowed
         if let button = item.button {
             button.image = Self.normalImage
         }
