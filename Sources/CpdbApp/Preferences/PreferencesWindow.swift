@@ -1,4 +1,5 @@
 import AppKit
+import CloudKit
 import SwiftUI
 import KeyboardShortcuts
 import ServiceManagement
@@ -14,8 +15,16 @@ import CpdbShared
 final class PreferencesWindowController {
     static let shared = PreferencesWindowController()
     private var window: NSWindow?
+    /// Injected by AppDelegate post-launch. The iCloud section's
+    /// "Reset change token" and "Re-push everything" actions need a
+    /// Store; pause is pure UserDefaults and works without one.
+    private(set) var store: Store?
 
     private init() {}
+
+    func configure(store: Store) {
+        self.store = store
+    }
 
     func show() {
         if window == nil {
@@ -24,7 +33,7 @@ final class PreferencesWindowController {
             window.title = "cpdb Preferences"
             window.styleMask = [.titled, .closable]
             window.isReleasedWhenClosed = false
-            window.setContentSize(NSSize(width: 480, height: 420))
+            window.setContentSize(NSSize(width: 480, height: 520))
             window.center()
             self.window = window
         }
@@ -61,11 +70,62 @@ private struct PreferencesView: View {
     @State private var rememberScrollOnPreview: Bool = UserDefaults.standard
         .bool(forKey: PopupState.rememberScrollKey)
 
+    // iCloud / CloudKit sync
+    @State private var syncPaused: Bool = CloudKitSyncer.isPaused
+    @State private var iCloudAccount: String = "Checking…"
+    @State private var syncQueueDepth: Int = 0
+    @State private var syncLiveEntries: Int = 0
+    @State private var syncLastPullText: String = PreferencesView.formattedLastSync()
+    @State private var syncActionStatus: String = ""
+    @State private var syncPollTask: Task<Void, Never>? = nil
+
     var body: some View {
         Form {
             Section("Hotkey") {
                 KeyboardShortcuts.Recorder("Show cpdb popup", name: .summonPopup)
                 Text("Pick any key combination. Shown whenever you want to look at your clipboard history.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("iCloud sync") {
+                LabeledContent("iCloud account", value: iCloudAccount)
+
+                HStack {
+                    Text("Status")
+                    Spacer()
+                    Text(syncPaused ? "Paused" : "Running")
+                        .font(.system(size: 12, design: .monospaced))
+                        .foregroundStyle(syncPaused ? .secondary : .primary)
+                }
+
+                Toggle("Pause sync", isOn: $syncPaused)
+                    .onChange(of: syncPaused) { _, newValue in
+                        CloudKitSyncer.isPaused = newValue
+                    }
+
+                let pushed = max(0, syncLiveEntries - syncQueueDepth)
+                LabeledContent("Pushed", value: "\(pushed) of \(syncLiveEntries)")
+                LabeledContent("Last pull", value: syncLastPullText)
+
+                HStack {
+                    Button("Reset change token") {
+                        runResetChangeToken()
+                    }
+                    .help("Next pull re-fetches every record from CloudKit. Use if the local cache gets out of sync with what the Dashboard shows.")
+
+                    Button("Re-push everything") {
+                        runRequeueAll()
+                    }
+                    .help("Re-enqueue every live entry so CloudKit receives a full upload. Idempotent — server-side records are upserts.")
+                }
+                if !syncActionStatus.isEmpty {
+                    Text(syncActionStatus)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Text("Cpdb mirrors your clipboard history to your iCloud Private Database. Sync honours your iCloud account; nothing leaves your Apple ID.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -188,9 +248,134 @@ private struct PreferencesView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 480, height: 420)
+        .frame(width: 480, height: 520)
         .onAppear {
             refreshStats()
+            startSyncPolling()
+        }
+        .onDisappear {
+            stopSyncPolling()
+        }
+        .task {
+            await refreshICloudAccount()
+        }
+    }
+
+    // MARK: - Sync polling + actions
+
+    private func startSyncPolling() {
+        syncPollTask?.cancel()
+        syncPollTask = Task { @MainActor in
+            while !Task.isCancelled {
+                await refreshSyncCounts()
+                syncLastPullText = PreferencesView.formattedLastSync()
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+            }
+        }
+    }
+
+    private func stopSyncPolling() {
+        syncPollTask?.cancel()
+        syncPollTask = nil
+    }
+
+    @MainActor
+    private func refreshSyncCounts() async {
+        guard let store = PreferencesWindowController.shared.store else { return }
+        do {
+            let (queue, live) = try await store.dbQueue.read { db -> (Int, Int) in
+                let q = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM cloudkit_push_queue") ?? 0
+                let l = try Int.fetchOne(
+                    db,
+                    sql: "SELECT COUNT(*) FROM entries WHERE deleted_at IS NULL"
+                ) ?? 0
+                return (q, l)
+            }
+            syncQueueDepth = queue
+            syncLiveEntries = live
+        } catch {
+            // Swallow — no user-surfaceable progress update this tick.
+        }
+    }
+
+    @MainActor
+    private func refreshICloudAccount() async {
+        do {
+            let status = try await CKContainer(identifier: "iCloud.\(Paths.bundleId)").accountStatus()
+            iCloudAccount = PreferencesView.describe(status)
+        } catch {
+            iCloudAccount = "Could not determine"
+        }
+    }
+
+    private static func describe(_ status: CKAccountStatus) -> String {
+        switch status {
+        case .available:              return "Signed in"
+        case .noAccount:              return "Not signed in"
+        case .restricted:             return "Restricted"
+        case .couldNotDetermine:      return "Unknown"
+        case .temporarilyUnavailable: return "Temporarily unavailable"
+        @unknown default:             return "Unknown"
+        }
+    }
+
+    private static func formattedLastSync() -> String {
+        let raw = UserDefaults.standard.double(forKey: CloudKitSyncer.lastSyncSuccessKey)
+        guard raw > 0 else { return "Never" }
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .full
+        return formatter.localizedString(
+            for: Date(timeIntervalSince1970: raw),
+            relativeTo: Date()
+        )
+    }
+
+    private func runResetChangeToken() {
+        syncActionStatus = "Resetting change token…"
+        Task { @MainActor in
+            guard let store = PreferencesWindowController.shared.store else {
+                syncActionStatus = "No store available."
+                return
+            }
+            do {
+                try await store.dbQueue.write { db in
+                    try PushQueue.State.delete(PushQueue.StateKey.zoneChangeToken, in: db)
+                }
+                syncActionStatus = "Change token reset. Next pull fetches everything."
+                // Nudge the sync loop — menu bar's Pull from iCloud
+                // handler picks this notification up and drains.
+                NotificationCenter.default.post(name: .cpdbPullNow, object: nil)
+            } catch {
+                syncActionStatus = "Reset failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func runRequeueAll() {
+        syncActionStatus = "Re-enqueuing…"
+        Task { @MainActor in
+            guard let store = PreferencesWindowController.shared.store else {
+                syncActionStatus = "No store available."
+                return
+            }
+            do {
+                try await store.dbQueue.write { db in
+                    try db.execute(sql: "DELETE FROM cloudkit_push_queue;")
+                    let now = Date().timeIntervalSince1970
+                    try db.execute(
+                        sql: """
+                            INSERT INTO cloudkit_push_queue (entry_id, enqueued_at)
+                            SELECT id, ? FROM entries WHERE deleted_at IS NULL
+                        """,
+                        arguments: [now]
+                    )
+                }
+                await refreshSyncCounts()
+                syncActionStatus = "Re-enqueued \(syncLiveEntries) entries."
+                NotificationCenter.default.post(name: .cpdbSyncNow, object: nil)
+            } catch {
+                syncActionStatus = "Re-enqueue failed: \(error.localizedDescription)"
+            }
         }
     }
 

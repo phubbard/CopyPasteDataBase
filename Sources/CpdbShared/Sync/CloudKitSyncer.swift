@@ -55,6 +55,17 @@ public actor CloudKitSyncer {
     /// sees freshness without a live connection to the syncer.
     public static let lastSyncSuccessKey = "cpdb.sync.lastSuccessAt"
 
+    /// UserDefaults key: Bool. When true, `pushPendingChanges` and
+    /// `pullRemoteChanges` return immediately with empty reports. The
+    /// Preferences iCloud section toggles this; menu-bar Sync Now
+    /// respects it the same way.
+    public static let pausedKey = "cpdb.sync.paused"
+
+    public static var isPaused: Bool {
+        get { UserDefaults.standard.bool(forKey: pausedKey) }
+        set { UserDefaults.standard.set(newValue, forKey: pausedKey) }
+    }
+
     private let store: Store
     private let client: CloudKitClient
     private let zoneID: CKRecordZone.ID
@@ -109,6 +120,9 @@ public actor CloudKitSyncer {
     /// an empty report rather than running two in parallel.
     @discardableResult
     public func pushPendingChanges() async throws -> PushReport {
+        if Self.isPaused {
+            return PushReport(attempted: 0, saved: 0, failed: 0, remaining: try await remainingCount())
+        }
         if pushing {
             return PushReport(attempted: 0, saved: 0, failed: 0, remaining: try await remainingCount())
         }
@@ -390,6 +404,9 @@ public actor CloudKitSyncer {
     /// changed.
     @discardableResult
     public func pullRemoteChanges() async throws -> PullReport {
+        if Self.isPaused {
+            return PullReport(inserted: 0, updated: 0, tombstoned: 0, skipped: 0, moreComing: false)
+        }
         try await ensureZoneIfNeeded()
 
         var totals = PullReport(inserted: 0, updated: 0, tombstoned: 0, skipped: 0, moreComing: false)
@@ -423,6 +440,36 @@ public actor CloudKitSyncer {
     /// iOS app's scene launch on iOS.
     public func ensureSubscription() async throws {
         try await client.ensureZoneSubscription(zoneID: zoneID, subscriptionID: Self.zoneSubscriptionID)
+    }
+
+    /// Forget the stored zone change token so the next `pullRemoteChanges`
+    /// fetches every record in the zone as if this were first run.
+    /// Useful as a "repair" button when a device's local cache gets out
+    /// of sync with the server (e.g. records inserted directly via the
+    /// CloudKit Dashboard or a botched local deletion).
+    public func resetChangeToken() async throws {
+        try await store.dbQueue.write { db in
+            try PushQueue.State.delete(PushQueue.StateKey.zoneChangeToken, in: db)
+        }
+    }
+
+    /// Wipe the push queue and re-enqueue every live entry. Used by the
+    /// Preferences "Re-push everything" action (e.g. after a wire-format
+    /// change that requires all records to be re-uploaded, like step 4.5's
+    /// flavor addition). Because our recordIDs are deterministic, the
+    /// server-side result is an idempotent upsert of the same records.
+    public func requeueAll() async throws {
+        try await store.dbQueue.write { db in
+            try db.execute(sql: "DELETE FROM cloudkit_push_queue;")
+            let now = Date().timeIntervalSince1970
+            try db.execute(
+                sql: """
+                    INSERT INTO cloudkit_push_queue (entry_id, enqueued_at)
+                    SELECT id, ? FROM entries WHERE deleted_at IS NULL
+                """,
+                arguments: [now]
+            )
+        }
     }
 
     private func applyFetchResult(_ result: CKFetchResult) async throws -> PullReport {
