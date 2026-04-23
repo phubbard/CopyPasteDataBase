@@ -20,10 +20,22 @@ actor FakeCloudKitClient: CloudKitClient {
 
     private(set) var savedRecords: [CKRecord.ID: CKRecord] = [:]
     private(set) var ensuredZones: Set<CKRecordZone.ID> = []
+    private(set) var subscriptions: Set<String> = []
     var injected: Injected = .init()
     private(set) var modifyCallCount = 0
+    private(set) var fetchCallCount = 0
+
+    /// Records a test wants pull to "see" on the next fetch. The fake
+    /// hands them back as changedRecords and clears the buffer.
+    var pendingChanges: [CKRecord] = []
+    var pendingDeletions: [CKRecord.ID] = []
 
     func setInjected(_ i: Injected) { self.injected = i }
+
+    func seedPull(changed: [CKRecord] = [], deleted: [CKRecord.ID] = []) {
+        pendingChanges.append(contentsOf: changed)
+        pendingDeletions.append(contentsOf: deleted)
+    }
 
     func ensureZone(_ zoneID: CKRecordZone.ID) async throws {
         ensuredZones.insert(zoneID)
@@ -52,6 +64,29 @@ actor FakeCloudKitClient: CloudKitClient {
             deleteResults[id] = .success(())
         }
         return CKModifyResult(saveResults: saveResults, deleteResults: deleteResults)
+    }
+
+    func fetchRecordZoneChanges(
+        zoneID: CKRecordZone.ID,
+        sinceToken: CKServerChangeToken?
+    ) async throws -> CKFetchResult {
+        fetchCallCount += 1
+        let changed = pendingChanges
+        let deleted = pendingDeletions
+        pendingChanges = []
+        pendingDeletions = []
+        // No real token machinery in the fake — tests that care about
+        // token persistence can inspect cloudkit_state directly.
+        return CKFetchResult(
+            changedRecords: changed,
+            deletedRecordIDs: deleted,
+            newChangeToken: nil,
+            moreComing: false
+        )
+    }
+
+    func ensureZoneSubscription(zoneID: CKRecordZone.ID, subscriptionID: String) async throws {
+        subscriptions.insert(subscriptionID)
     }
 
     enum TestError: Error { case injected }
@@ -222,6 +257,143 @@ struct CloudKitSyncerTests {
     }
 
     // MARK: - Queue semantics
+
+    // MARK: - Pull path
+
+    /// Build a minimal Entry CKRecord from raw values. Mirrors what
+    /// `EntryRecordMapper.populate` writes, so decode() round-trips.
+    private func makeRecord(
+        uuid: Data = Data(repeating: 0xAB, count: 16),
+        kind: String = "text",
+        title: String = "hello",
+        devID: String = "OTHER-MAC",
+        devName: String = "Other Mac",
+        appBundle: String? = "com.example.TextEdit",
+        appName: String? = "TextEdit",
+        deletedAt: Double? = nil
+    ) -> CKRecord {
+        let id = EntryRecordMapper.recordID(forEntryUUID: uuid, in: Self.zone)
+        let record = CKRecord(recordType: CKSchema.RecordType.entry, recordID: id)
+        record[CKSchema.EntryField.uuid]        = uuid as NSData
+        record[CKSchema.EntryField.createdAt]   = 1_700_000_000.0 as NSNumber
+        record[CKSchema.EntryField.capturedAt]  = 1_700_000_000.0 as NSNumber
+        record[CKSchema.EntryField.kind]        = kind as NSString
+        record[CKSchema.EntryField.contentHash] = Data(repeating: 0x02, count: 32) as NSData
+        record[CKSchema.EntryField.totalSize]   = 100 as NSNumber
+        record[CKSchema.EntryField.title]       = title as NSString
+        record[CKSchema.EntryField.textPreview] = title as NSString
+        record[CKSchema.EntryField.deviceIdentifier] = devID as NSString
+        record[CKSchema.EntryField.deviceName]       = devName as NSString
+        if let b = appBundle { record[CKSchema.EntryField.sourceAppBundleId] = b as NSString }
+        if let n = appName   { record[CKSchema.EntryField.sourceAppName]     = n as NSString }
+        if let d = deletedAt { record[CKSchema.EntryField.deletedAt] = d as NSNumber }
+        return record
+    }
+
+    @Test("pull inserts a never-seen entry + upserts its app and device")
+    func pullInsertsRemoteEntry() async throws {
+        let (store, _) = try seed(entryCount: 0)
+        let client = FakeCloudKitClient()
+        let uuid = Data((0..<16).map { UInt8($0 + 1) })
+        await client.seedPull(changed: [makeRecord(uuid: uuid, title: "from-other")])
+
+        let syncer = makeSyncer(store: store, client: client)
+        let report = try await syncer.pullRemoteChanges()
+        #expect(report.inserted == 1)
+        #expect(report.updated == 0)
+        #expect(report.tombstoned == 0)
+
+        try await store.dbQueue.read { db in
+            let entry = try Entry.filter(Column("uuid") == uuid).fetchOne(db)
+            #expect(entry != nil)
+            #expect(entry?.title == "from-other")
+            let app = try AppRecord.filter(Column("bundle_id") == "com.example.TextEdit").fetchOne(db)
+            #expect(app != nil)
+            let dev = try Device.filter(Column("identifier") == "OTHER-MAC").fetchOne(db)
+            #expect(dev != nil)
+        }
+    }
+
+    @Test("pull updates an entry we already have locally")
+    func pullUpdatesExisting() async throws {
+        let (store, ids) = try seed(entryCount: 1)
+        let existingUUID = try await store.dbQueue.read { db in
+            try Entry.fetchOne(db, key: ids[0])!.uuid
+        }
+        let client = FakeCloudKitClient()
+        await client.seedPull(changed: [makeRecord(uuid: existingUUID, title: "updated-from-remote")])
+
+        let syncer = makeSyncer(store: store, client: client)
+        let report = try await syncer.pullRemoteChanges()
+        #expect(report.inserted == 0)
+        #expect(report.updated == 1)
+
+        try await store.dbQueue.read { db in
+            let entry = try Entry.filter(Column("uuid") == existingUUID).fetchOne(db)
+            #expect(entry?.title == "updated-from-remote")
+        }
+    }
+
+    @Test("pull tombstones a local entry when CloudKit reports the record deleted")
+    func pullAppliesTombstone() async throws {
+        let (store, ids) = try seed(entryCount: 1)
+        let existingUUID = try await store.dbQueue.read { db in
+            try Entry.fetchOne(db, key: ids[0])!.uuid
+        }
+        let recordID = EntryRecordMapper.recordID(forEntryUUID: existingUUID, in: Self.zone)
+
+        let client = FakeCloudKitClient()
+        await client.seedPull(deleted: [recordID])
+
+        let syncer = makeSyncer(store: store, client: client)
+        let report = try await syncer.pullRemoteChanges()
+        #expect(report.tombstoned == 1)
+
+        try await store.dbQueue.read { db in
+            let entry = try Entry.filter(Column("uuid") == existingUUID).fetchOne(db)
+            #expect(entry?.deletedAt != nil)
+        }
+    }
+
+    @Test("pull with a malformed record skips it and keeps going")
+    func pullSkipsMalformedRecord() async throws {
+        let (store, _) = try seed(entryCount: 0)
+        let client = FakeCloudKitClient()
+        // Good record + a record missing required fields.
+        let good = makeRecord(uuid: Data(repeating: 0xAA, count: 16))
+        let badID = CKRecord.ID(recordName: "entry-bad", zoneID: Self.zone)
+        let bad = CKRecord(recordType: CKSchema.RecordType.entry, recordID: badID)
+        await client.seedPull(changed: [good, bad])
+
+        let syncer = makeSyncer(store: store, client: client)
+        let report = try await syncer.pullRemoteChanges()
+        #expect(report.inserted == 1)
+        #expect(report.skipped == 1)
+    }
+
+    @Test("pull updates lastSyncSuccessAt in UserDefaults")
+    func pullStampsLastSync() async throws {
+        let key = CloudKitSyncer.lastSyncSuccessKey
+        UserDefaults.standard.removeObject(forKey: key)
+        let (store, _) = try seed(entryCount: 0)
+        let client = FakeCloudKitClient()
+        let syncer = makeSyncer(store: store, client: client)
+        _ = try await syncer.pullRemoteChanges()
+        let stamp = UserDefaults.standard.double(forKey: key)
+        #expect(stamp > 0)
+    }
+
+    @Test("ensureSubscription installs our zone subscription id")
+    func subscriptionIsInstalled() async throws {
+        let (store, _) = try seed(entryCount: 0)
+        let client = FakeCloudKitClient()
+        let syncer = makeSyncer(store: store, client: client)
+        try await syncer.ensureSubscription()
+        let subs = await client.subscriptions
+        #expect(subs.contains(CloudKitSyncer.zoneSubscriptionID))
+    }
+
+    // MARK: - Existing push-path tests continue below
 
     @Test("re-enqueuing the same entry coalesces — one push per drain")
     func reenqueueCoalesces() async throws {

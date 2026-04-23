@@ -33,12 +33,6 @@ final class AboutWindowController {
 
 // MARK: - View
 
-/// UserDefaults key the CloudKit syncer (steps 4/5) will write to on every
-/// successful pull. Defined here so the About dialog can read it even
-/// before the syncer lands — it just shows "Never" until a value appears.
-/// Stored as `Double` (`timeIntervalSince1970`).
-public let lastSyncSuccessKey = "cpdb.sync.lastSuccessAt"
-
 private struct AboutView: View {
     @State private var cloudStatus: String = "Checking…"
     @State private var lastSyncText: String = AboutView.formattedLastSync()
@@ -116,7 +110,7 @@ private struct AboutView: View {
     /// that code will write the key on every successful pull and this
     /// string will start updating.
     private static func formattedLastSync() -> String {
-        let raw = UserDefaults.standard.double(forKey: lastSyncSuccessKey)
+        let raw = UserDefaults.standard.double(forKey: CloudKitSyncer.lastSyncSuccessKey)
         guard raw > 0 else { return "Never" }
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .full

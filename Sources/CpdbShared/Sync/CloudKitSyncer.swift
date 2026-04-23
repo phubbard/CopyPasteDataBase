@@ -39,6 +39,22 @@ public actor CloudKitSyncer {
         public var remaining: Int
     }
 
+    /// Outcome of a single `pullRemoteChanges()` call.
+    public struct PullReport: Sendable, Equatable {
+        public var inserted: Int
+        public var updated: Int
+        public var tombstoned: Int
+        public var skipped: Int
+        public var moreComing: Bool
+    }
+
+    public static let zoneSubscriptionID = "cpdb-v2-zone-subscription"
+
+    /// UserDefaults key: Double (`timeIntervalSince1970`) of the most
+    /// recent successful pull. The About dialog reads this so the user
+    /// sees freshness without a live connection to the syncer.
+    public static let lastSyncSuccessKey = "cpdb.sync.lastSuccessAt"
+
     private let store: Store
     private let client: CloudKitClient
     private let zoneID: CKRecordZone.ID
@@ -172,11 +188,12 @@ public actor CloudKitSyncer {
         }
 
         // 4. Process per-record results.
+        let idMap = recordIDToEntryId
         let (saved, failed) = try await store.dbQueue.write { db -> (Int, Int) in
             var saved = 0
             var failed = 0
             for (recordID, outcome) in result.saveResults {
-                guard let entryId = recordIDToEntryId[recordID] else { continue }
+                guard let entryId = idMap[recordID] else { continue }
                 switch outcome {
                 case .success:
                     try PushQueue.remove(entryId: entryId, in: db)
@@ -267,5 +284,272 @@ public actor CloudKitSyncer {
     static func describe(_ error: any Error) -> String {
         let ns = error as NSError
         return "\(ns.domain):\(ns.code) \(ns.localizedDescription)"
+    }
+
+    // MARK: - Pull path
+
+    /// Pull remote changes into the local store. Loops internally while
+    /// `moreComing` is true so one call drains everything the server has
+    /// for us. Safe to call repeatedly; the change token is persisted
+    /// after each page so interrupting a pull doesn't force a re-fetch
+    /// of already-applied records.
+    ///
+    /// Updates `UserDefaults` key `cpdb.sync.lastSuccessAt` (the About
+    /// window reads this) on any successful fetch, even if zero records
+    /// changed.
+    @discardableResult
+    public func pullRemoteChanges() async throws -> PullReport {
+        try await ensureZoneIfNeeded()
+
+        var totals = PullReport(inserted: 0, updated: 0, tombstoned: 0, skipped: 0, moreComing: false)
+
+        // Page loop — CloudKit may split large change sets across
+        // multiple fetch calls. We persist the token after every page
+        // so a crash mid-pull doesn't lose progress.
+        repeat {
+            let token = try await loadChangeToken()
+            let result = try await client.fetchRecordZoneChanges(zoneID: zoneID, sinceToken: token)
+
+            let page = try await applyFetchResult(result)
+            totals.inserted   += page.inserted
+            totals.updated    += page.updated
+            totals.tombstoned += page.tombstoned
+            totals.skipped    += page.skipped
+
+            if let newToken = result.newChangeToken {
+                try await saveChangeToken(newToken)
+            }
+
+            totals.moreComing = result.moreComing
+        } while totals.moreComing
+
+        UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: Self.lastSyncSuccessKey)
+        return totals
+    }
+
+    /// Ensure a zone subscription exists. Call once per launch from
+    /// whoever owns the APNs registration — AppDelegate on Mac, the
+    /// iOS app's scene launch on iOS.
+    public func ensureSubscription() async throws {
+        try await client.ensureZoneSubscription(zoneID: zoneID, subscriptionID: Self.zoneSubscriptionID)
+    }
+
+    private func applyFetchResult(_ result: CKFetchResult) async throws -> PullReport {
+        let fallbackID = device.identifier
+        let fallbackName = device.name
+
+        // Split work: decode CKRecords on the actor, then apply all
+        // DB mutations inside a single write transaction so partial
+        // application never happens.
+        var decoded: [EntryRecordMapper.Decoded] = []
+        var skippedCount = 0
+        for record in result.changedRecords {
+            do {
+                let d = try EntryRecordMapper.decode(record)
+                decoded.append(d)
+            } catch {
+                // Malformed record on the wire — log and skip. Don't
+                // let one bad row block the whole page.
+                skippedCount += 1
+            }
+        }
+
+        // Extract UUIDs of records the server says were deleted. Our
+        // recordID scheme is `entry-<32 hex>` — anything that doesn't
+        // match is some other record type and we ignore it.
+        let deletedUUIDs: [Data] = result.deletedRecordIDs.compactMap { id in
+            Self.uuidFromRecordName(id.recordName)
+        }
+
+        let decodedSnapshot = decoded
+        let deletedSnapshot = deletedUUIDs
+        let (pageInserted, pageUpdated, pageTombstoned) = try await store.dbQueue.write { db -> (Int, Int, Int) in
+            var ins = 0, upd = 0, tomb = 0
+            for d in decodedSnapshot {
+                let outcome = try Self.upsert(decoded: d, in: db, fallbackDeviceID: fallbackID, fallbackDeviceName: fallbackName)
+                switch outcome {
+                case .inserted:  ins += 1
+                case .updated:   upd += 1
+                case .unchanged: break
+                }
+            }
+            for uuid in deletedSnapshot {
+                if try Self.tombstone(uuid: uuid, in: db) {
+                    tomb += 1
+                }
+            }
+            return (ins, upd, tomb)
+        }
+
+        return PullReport(
+            inserted: pageInserted,
+            updated: pageUpdated,
+            tombstoned: pageTombstoned,
+            skipped: skippedCount,
+            moreComing: result.moreComing
+        )
+    }
+
+    private enum UpsertOutcome { case inserted, updated, unchanged }
+
+    /// Insert or update a local Entry from a decoded CKRecord. Handles
+    /// apps + devices upsert by (bundleId, identifier) so the local
+    /// foreign keys resolve. Uses `entry.uuid` as the stable key across
+    /// devices — that's what `recordID` hashes on the way out.
+    ///
+    /// Static so it can run inside the GRDB write closure without
+    /// capturing `self`. Pulls what it needs via parameters.
+    private static func upsert(
+        decoded d: EntryRecordMapper.Decoded,
+        in db: Database,
+        fallbackDeviceID: String,
+        fallbackDeviceName: String
+    ) throws -> UpsertOutcome {
+        // App — upsert by bundle id. Null bundle id (unknown source) →
+        // no app row.
+        var appId: Int64? = nil
+        if let bundleId = d.source.appBundleId {
+            if let existing = try AppRecord.filter(Column("bundle_id") == bundleId).fetchOne(db) {
+                appId = existing.id
+            } else {
+                var row = AppRecord(bundleId: bundleId, name: d.source.appName ?? bundleId, iconPng: nil)
+                try row.insert(db)
+                appId = row.id
+            }
+        }
+
+        // Device — upsert by identifier.
+        let devId: Int64
+        let deviceIdentifier = d.source.deviceIdentifier.isEmpty ? fallbackDeviceID : d.source.deviceIdentifier
+        if let existing = try Device.filter(Column("identifier") == deviceIdentifier).fetchOne(db) {
+            devId = existing.id!
+        } else {
+            var row = Device(
+                identifier: deviceIdentifier,
+                name: d.source.deviceName.isEmpty ? fallbackDeviceName : d.source.deviceName,
+                kind: "mac"
+            )
+            try row.insert(db)
+            devId = row.id!
+        }
+
+        // Entry — upsert by uuid. Preserve local `id` when updating so
+        // foreign-key references (flavors, previews, pinboard_entries)
+        // stay intact. Mirrors Ingestor's insert shape.
+        if var existing = try Entry.filter(Column("uuid") == d.uuid).fetchOne(db) {
+            // Update scalar fields in place.
+            existing.createdAt   = d.createdAt
+            existing.capturedAt  = d.capturedAt
+            existing.kind        = d.kind
+            existing.sourceAppId = appId
+            existing.sourceDeviceId = devId
+            existing.title       = d.title
+            existing.textPreview = d.textPreview
+            existing.contentHash = d.contentHash
+            existing.totalSize   = d.totalSize
+            existing.deletedAt   = d.deletedAt
+            existing.ocrText     = d.ocrText
+            existing.imageTags   = d.imageTags
+            existing.analyzedAt  = d.analyzedAt
+            try existing.update(db)
+            try FtsIndex.indexEntry(
+                db: db,
+                entryId: existing.id!,
+                title: existing.title,
+                text: existing.textPreview,
+                appName: d.source.appName
+            )
+            try applyThumbnails(d, entryId: existing.id!, in: db)
+            return .updated
+        } else {
+            var entry = Entry(
+                uuid: d.uuid,
+                createdAt: d.createdAt,
+                capturedAt: d.capturedAt,
+                kind: d.kind,
+                sourceAppId: appId,
+                sourceDeviceId: devId,
+                title: d.title,
+                textPreview: d.textPreview,
+                contentHash: d.contentHash,
+                totalSize: d.totalSize,
+                deletedAt: d.deletedAt,
+                ocrText: d.ocrText,
+                imageTags: d.imageTags,
+                analyzedAt: d.analyzedAt
+            )
+            try entry.insert(db)
+            try FtsIndex.indexEntry(
+                db: db,
+                entryId: entry.id!,
+                title: entry.title,
+                text: entry.textPreview,
+                appName: d.source.appName
+            )
+            try applyThumbnails(d, entryId: entry.id!, in: db)
+            return .inserted
+        }
+    }
+
+    /// Copy CKAsset-backed thumbnail bytes into the local `previews`
+    /// table so the Mac UI can render them without re-downloading.
+    /// CloudKit deletes the asset files after the fetch returns, so we
+    /// read them during the write transaction.
+    private static func applyThumbnails(
+        _ d: EntryRecordMapper.Decoded,
+        entryId: Int64,
+        in db: Database
+    ) throws {
+        var small: Data? = nil
+        var large: Data? = nil
+        if let url = d.thumbSmallURL { small = try? Data(contentsOf: url) }
+        if let url = d.thumbLargeURL { large = try? Data(contentsOf: url) }
+        guard small != nil || large != nil else { return }
+        var row = PreviewRecord(entryId: entryId, thumbSmall: small, thumbLarge: large)
+        try row.insert(db, onConflict: .replace)
+    }
+
+    /// Soft-delete a local entry by UUID. Returns true if a row was
+    /// affected. CloudKit "delete" events are rare for us (we tombstone
+    /// in place) but we still handle them.
+    private static func tombstone(uuid: Data, in db: Database) throws -> Bool {
+        let now = Date().timeIntervalSince1970
+        try db.execute(
+            sql: "UPDATE entries SET deleted_at = ? WHERE uuid = ? AND deleted_at IS NULL",
+            arguments: [now, uuid]
+        )
+        return db.changesCount > 0
+    }
+
+    static func uuidFromRecordName(_ name: String) -> Data? {
+        let prefix = "entry-"
+        guard name.hasPrefix(prefix) else { return nil }
+        let hex = name.dropFirst(prefix.count)
+        guard hex.count == 32 else { return nil }
+        var bytes: [UInt8] = []
+        bytes.reserveCapacity(16)
+        var iter = hex.makeIterator()
+        while let hi = iter.next(), let lo = iter.next() {
+            guard let b = UInt8(String([hi, lo]), radix: 16) else { return nil }
+            bytes.append(b)
+        }
+        return bytes.count == 16 ? Data(bytes) : nil
+    }
+
+    // MARK: - Change token persistence
+
+    private func loadChangeToken() async throws -> CKServerChangeToken? {
+        let data = try await store.dbQueue.read { db in
+            try PushQueue.State.get(PushQueue.StateKey.zoneChangeToken, in: db)
+        }
+        guard let data = data else { return nil }
+        return try? NSKeyedUnarchiver.unarchivedObject(ofClass: CKServerChangeToken.self, from: data)
+    }
+
+    private func saveChangeToken(_ token: CKServerChangeToken) async throws {
+        let data = try NSKeyedArchiver.archivedData(withRootObject: token, requiringSecureCoding: true)
+        try await store.dbQueue.write { db in
+            try PushQueue.State.set(PushQueue.StateKey.zoneChangeToken, value: data, in: db)
+        }
     }
 }

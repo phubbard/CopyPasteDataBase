@@ -30,6 +30,43 @@ public protocol CloudKitClient: Sendable {
         saving recordsToSave: [CKRecord],
         deleting recordIDsToDelete: [CKRecord.ID]
     ) async throws -> CKModifyResult
+
+    /// Fetch records changed in `zoneID` since `token`. Pass nil token
+    /// on first-ever pull to get everything. The returned token should
+    /// be persisted so the next pull is incremental.
+    ///
+    /// `moreComing` indicates the server has more pages; the caller
+    /// should loop until it's false, saving the token after each batch
+    /// so a crash doesn't force a full re-pull.
+    func fetchRecordZoneChanges(
+        zoneID: CKRecordZone.ID,
+        sinceToken: CKServerChangeToken?
+    ) async throws -> CKFetchResult
+
+    /// Register a silent-push subscription on `zoneID`. Idempotent:
+    /// calling again with the same subscription ID replaces the prior
+    /// one rather than duplicating. Called once per launch.
+    func ensureZoneSubscription(zoneID: CKRecordZone.ID, subscriptionID: String) async throws
+}
+
+/// Result of one `fetchRecordZoneChanges` call.
+public struct CKFetchResult: Sendable {
+    public var changedRecords: [CKRecord]
+    public var deletedRecordIDs: [CKRecord.ID]
+    public var newChangeToken: CKServerChangeToken?
+    public var moreComing: Bool
+
+    public init(
+        changedRecords: [CKRecord] = [],
+        deletedRecordIDs: [CKRecord.ID] = [],
+        newChangeToken: CKServerChangeToken? = nil,
+        moreComing: Bool = false
+    ) {
+        self.changedRecords = changedRecords
+        self.deletedRecordIDs = deletedRecordIDs
+        self.newChangeToken = newChangeToken
+        self.moreComing = moreComing
+    }
 }
 
 /// Per-record outcome from a `modifyRecords` call.
@@ -109,5 +146,44 @@ public struct LiveCloudKitClient: CloudKitClient {
             saveResults: saveResults,
             deleteResults: deleteResults
         )
+    }
+
+    public func fetchRecordZoneChanges(
+        zoneID: CKRecordZone.ID,
+        sinceToken: CKServerChangeToken?
+    ) async throws -> CKFetchResult {
+        // Modern async API (iOS 15 / macOS 12+). Returns modifications,
+        // deletions, the new change token, and a moreComing flag — the
+        // syncer handles pagination by looping while moreComing is true.
+        let result = try await database.recordZoneChanges(
+            inZoneWith: zoneID,
+            since: sinceToken
+        )
+        var changed: [CKRecord] = []
+        for (_, recordResult) in result.modificationResultsByID {
+            if case .success(let mod) = recordResult {
+                changed.append(mod.record)
+            }
+        }
+        let deleted = result.deletions.map { $0.recordID }
+        return CKFetchResult(
+            changedRecords: changed,
+            deletedRecordIDs: deleted,
+            newChangeToken: result.changeToken,
+            moreComing: result.moreComing
+        )
+    }
+
+    public func ensureZoneSubscription(zoneID: CKRecordZone.ID, subscriptionID: String) async throws {
+        let subscription = CKRecordZoneSubscription(zoneID: zoneID, subscriptionID: subscriptionID)
+        let notification = CKSubscription.NotificationInfo()
+        notification.shouldSendContentAvailable = true  // silent push
+        subscription.notificationInfo = notification
+        do {
+            _ = try await database.save(subscription)
+        } catch let error as CKError where error.code == .serverRecordChanged {
+            // Already exists — fine.
+            return
+        }
     }
 }

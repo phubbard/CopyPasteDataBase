@@ -128,24 +128,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         self.syncer = syncer
 
-        // Adaptive drain loop:
-        //   - If work remains and nothing failed → push again immediately
-        //     (drain bulk quickly, e.g. the v3-seeded history on first run).
-        //   - If the queue is empty or something failed → sleep 5 minutes
-        //     as a poll-for-new-work safety net. Step 5 will replace this
-        //     idle poll with CKDatabaseSubscription silent pushes.
+        // Register for silent push + install the zone subscription so
+        // the server wakes us when another device writes. APNs is
+        // granted by our `com.apple.developer.aps-environment`
+        // entitlement; no user prompt.
+        NSApp.registerForRemoteNotifications()
+        Task.detached {
+            do {
+                try await syncer.ensureSubscription()
+                Log.cli.info("cloudkit zone subscription installed")
+            } catch {
+                Log.cli.error("cloudkit subscription failed: \(String(describing: error), privacy: .public)")
+            }
+        }
+
+        // Periodic loop: pull first (other devices' changes), then push
+        // (our local changes). Aggressive while there's push work to
+        // drain, otherwise idles for 5 minutes. APNs-delivered silent
+        // pushes (handled below) trigger a pull outside this loop, so
+        // this timer is just a safety net against missed notifications.
         periodicSyncTask = Task.detached { [weak self] in
             while !Task.isCancelled {
                 var shouldPause = true
                 do {
-                    let report = try await syncer.pushPendingChanges()
-                    if report.attempted > 0 {
+                    let pull = try await syncer.pullRemoteChanges()
+                    if pull.inserted + pull.updated + pull.tombstoned > 0 {
                         Log.cli.info(
-                            "cloudkit push: attempted=\(report.attempted) saved=\(report.saved) failed=\(report.failed) remaining=\(report.remaining)"
+                            "cloudkit pull: inserted=\(pull.inserted) updated=\(pull.updated) tombstoned=\(pull.tombstoned) skipped=\(pull.skipped)"
                         )
                     }
-                    if report.failed == 0 && report.remaining > 0 {
-                        shouldPause = false  // keep draining
+                } catch {
+                    Log.cli.error("cloudkit pull failed: \(String(describing: error), privacy: .public)")
+                }
+                do {
+                    let push = try await syncer.pushPendingChanges()
+                    if push.attempted > 0 {
+                        Log.cli.info(
+                            "cloudkit push: attempted=\(push.attempted) saved=\(push.saved) failed=\(push.failed) remaining=\(push.remaining)"
+                        )
+                    }
+                    if push.failed == 0 && push.remaining > 0 {
+                        shouldPause = false
                     }
                 } catch {
                     Log.cli.error("cloudkit push failed: \(String(describing: error), privacy: .public)")
@@ -153,9 +176,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 if shouldPause {
                     try? await Task.sleep(nanoseconds: 5 * 60 * 1_000_000_000)
                 }
-                _ = self  // keep self alive for the lifetime of the task
+                _ = self
             }
         }
+    }
+
+    // MARK: - APNs silent push handling
+
+    func application(
+        _ application: NSApplication,
+        didReceiveRemoteNotification userInfo: [String: Any]
+    ) {
+        // Any silent push that mentions our container → the zone changed.
+        // We don't bother parsing the CKNotification payload; just run a
+        // pull (and immediately follow with a push so late outbound work
+        // doesn't wait the 5-minute idle timer).
+        guard let syncer = syncer else { return }
+        Task {
+            do {
+                let pull = try await syncer.pullRemoteChanges()
+                Log.cli.info(
+                    "apns pull: inserted=\(pull.inserted) updated=\(pull.updated) tombstoned=\(pull.tombstoned) skipped=\(pull.skipped)"
+                )
+                _ = try await syncer.pushPendingChanges()
+            } catch {
+                Log.cli.error("apns pull failed: \(String(describing: error), privacy: .public)")
+            }
+        }
+    }
+
+    func application(
+        _ application: NSApplication,
+        didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data
+    ) {
+        Log.cli.info("registered for remote notifications (\(deviceToken.count, privacy: .public) byte token)")
+    }
+
+    func application(
+        _ application: NSApplication,
+        didFailToRegisterForRemoteNotificationsWithError error: any Error
+    ) {
+        Log.cli.error("remote-notification registration failed: \(String(describing: error), privacy: .public)")
     }
 
     func applicationWillTerminate(_ notification: Notification) {
