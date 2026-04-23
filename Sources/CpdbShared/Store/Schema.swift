@@ -164,6 +164,25 @@ enum Schema {
         }
 
         migrator.registerMigration("v3") { db in
+            // Defensive: GRDB's migrator runs `PRAGMA foreign_key_check`
+            // at the end of each migration, so any pre-existing orphans
+            // (e.g. from a partial import that ran with FKs disabled)
+            // would surface here and block v3 forever. Sweep them first.
+            // These DELETEs are no-ops on a clean DB.
+            try db.execute(sql: """
+                DELETE FROM entry_flavors
+                WHERE entry_id NOT IN (SELECT id FROM entries);
+            """)
+            try db.execute(sql: """
+                DELETE FROM previews
+                WHERE entry_id NOT IN (SELECT id FROM entries);
+            """)
+            try db.execute(sql: """
+                DELETE FROM pinboard_entries
+                WHERE entry_id NOT IN (SELECT id FROM entries)
+                   OR pinboard_id NOT IN (SELECT id FROM pinboards);
+            """)
+
             // CloudKit sync bookkeeping.
             //
             // `cloudkit_push_queue`: one row per Entry that has local

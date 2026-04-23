@@ -91,6 +91,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let store = store, lifecycle.mode == .capturing {
             startCloudKitSync(store: store)
         }
+
+        // "Sync Now" menu item → one-shot push. Handy for smoke-testing
+        // without waiting for the 5-minute periodic loop.
+        NotificationCenter.default.addObserver(
+            forName: .cpdbSyncNow,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                guard let syncer = self?.syncer else {
+                    Log.cli.info("sync now: syncer not running (no iCloud account or read-only mode)")
+                    return
+                }
+                do {
+                    let report = try await syncer.pushPendingChanges()
+                    Log.cli.info(
+                        "sync now: attempted=\(report.attempted) saved=\(report.saved) failed=\(report.failed) remaining=\(report.remaining)"
+                    )
+                } catch {
+                    Log.cli.error("sync now failed: \(String(describing: error), privacy: .public)")
+                }
+            }
+        }
     }
 
     private func startCloudKitSync(store: Store) {
@@ -105,12 +128,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         self.syncer = syncer
 
-        // One-shot kick on launch plus a 5-minute belt-and-braces loop.
-        // Step 5 will replace the loop with CKDatabaseSubscription silent
-        // pushes; for now the periodic drain is enough to see records
-        // land in the CloudKit Dashboard.
+        // Adaptive drain loop:
+        //   - If work remains and nothing failed → push again immediately
+        //     (drain bulk quickly, e.g. the v3-seeded history on first run).
+        //   - If the queue is empty or something failed → sleep 5 minutes
+        //     as a poll-for-new-work safety net. Step 5 will replace this
+        //     idle poll with CKDatabaseSubscription silent pushes.
         periodicSyncTask = Task.detached { [weak self] in
             while !Task.isCancelled {
+                var shouldPause = true
                 do {
                     let report = try await syncer.pushPendingChanges()
                     if report.attempted > 0 {
@@ -118,13 +144,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             "cloudkit push: attempted=\(report.attempted) saved=\(report.saved) failed=\(report.failed) remaining=\(report.remaining)"
                         )
                     }
+                    if report.failed == 0 && report.remaining > 0 {
+                        shouldPause = false  // keep draining
+                    }
                 } catch {
                     Log.cli.error("cloudkit push failed: \(String(describing: error), privacy: .public)")
                 }
-                // 5-minute sleep. Cancellable: on app quit the task is
-                // dropped and the sleep throws CancellationError which
-                // falls through the catch and exits via isCancelled.
-                try? await Task.sleep(nanoseconds: 5 * 60 * 1_000_000_000)
+                if shouldPause {
+                    try? await Task.sleep(nanoseconds: 5 * 60 * 1_000_000_000)
+                }
                 _ = self  // keep self alive for the lifetime of the task
             }
         }

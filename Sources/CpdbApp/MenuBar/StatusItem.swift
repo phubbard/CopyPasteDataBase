@@ -86,6 +86,18 @@ final class StatusItemController {
         prefsItem.target = StatusItemActions.shared
         menu.addItem(prefsItem)
 
+        // Manual sync trigger — posts `cpdbSyncNow`, AppDelegate runs
+        // one push pass. Useful while iterating on CloudKit changes
+        // without waiting for the 5-minute periodic loop. Keep it
+        // visible even in release builds — single-click, no downside.
+        let syncItem = NSMenuItem(
+            title: "Sync Now",
+            action: #selector(StatusItemActions.syncNow),
+            keyEquivalent: "r"
+        )
+        syncItem.target = StatusItemActions.shared
+        menu.addItem(syncItem)
+
         menu.addItem(.separator())
 
         let quitItem = NSMenuItem(title: "Quit cpdb", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
@@ -114,4 +126,14 @@ final class StatusItemController {
     @objc func showAbout() {
         AboutWindowController.shared.show()
     }
+
+    @objc func syncNow() {
+        NotificationCenter.default.post(name: .cpdbSyncNow, object: nil)
+    }
+}
+
+extension Notification.Name {
+    /// Posted by the "Sync Now" menu item; AppDelegate handles it by
+    /// running a one-shot CloudKit push.
+    static let cpdbSyncNow = Notification.Name("cpdbSyncNow")
 }

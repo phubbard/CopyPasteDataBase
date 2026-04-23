@@ -2,6 +2,16 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<!-- App identity. CloudKit uses `application-identifier` to match
+	     the running binary to an iCloud container; without it, CKContainer
+	     init fails with "Missing Entitlement (8)" even though the profile
+	     grants the container. Both of these are normally provided by the
+	     profile but only get baked into the signed binary if they're in
+	     the entitlements plist too. -->
+	<key>com.apple.application-identifier</key>
+	<string>NSR65JVW9F.net.phfactor.cpdb</string>
+	<key>com.apple.developer.team-identifier</key>
+	<string>NSR65JVW9F</string>
 	<!-- CloudKit + iCloud Drive container. Must match the container id
 	     registered in Apple Developer → Identifiers → iCloud Containers
 	     and linked to this app id's iCloud capability. -->

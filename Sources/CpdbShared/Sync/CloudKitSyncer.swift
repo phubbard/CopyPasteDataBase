@@ -46,8 +46,10 @@ public actor CloudKitSyncer {
     private let blobs: BlobStore
 
     /// How many entries to pull off the queue per push call. CloudKit's
-    /// `CKModifyRecordsOperation` tops out around 400 records per batch;
-    /// 50 entries is comfortably under that even once we add flavors.
+    /// `CKModifyRecordsOperation` tops out around 400 records per batch.
+    /// 200 is safe for metadata-only records (step 4); once flavor
+    /// CKAssets land (step 4.5) this drops to ~50 so one entry's flavor
+    /// fan-out stays under the limit.
     private let batchSize: Int
 
     private var zoneEnsured = false
@@ -61,7 +63,7 @@ public actor CloudKitSyncer {
             ownerName: CKCurrentUserDefaultName
         ),
         device: DeviceInfo,
-        batchSize: Int = 50,
+        batchSize: Int = 200,
         blobs: BlobStore = BlobStore()
     ) {
         self.store = store
