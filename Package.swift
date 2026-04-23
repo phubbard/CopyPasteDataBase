@@ -33,11 +33,16 @@ let package = Package(
                 "CpdbShared",
                 .product(name: "KeyboardShortcuts", package: "KeyboardShortcuts"),
             ],
-            // Info.plist lives under Resources/, but SPM can't actually write
-            // it into a bundle. The Makefile copies it into cpdb.app/Contents/
-            // at build time. Exclude here so SPM doesn't treat it as a Swift
-            // source or try to process it as a resource.
-            exclude: ["Resources/Info.plist"]
+            // Info.plist + entitlements + icon assets live under Resources/,
+            // but SPM can't actually package a menu-bar app bundle — the
+            // Makefile does that. Exclude these so SPM doesn't treat them
+            // as Swift sources or untyped resources (which emits a build
+            // warning for each file).
+            exclude: [
+                "Resources/Info.plist",
+                "Resources/cpdb.entitlements",
+                "Resources/Assets",
+            ]
         ),
         // Cross-platform library: pure data, GRDB storage, Vision analysis,
         // FTS5 search, Quick Look item building. iOS + macOS both link this.
