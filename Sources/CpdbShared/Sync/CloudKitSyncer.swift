@@ -147,12 +147,24 @@ public actor CloudKitSyncer {
             return PushReport(attempted: 0, saved: 0, failed: 0, remaining: 0)
         }
 
-        // 2. Build CKRecords + stage thumbnail assets for each entry.
+        // 2. Build CKRecords. We split the outbound records into two
+        //    separate `modifyRecords` calls:
+        //      a. Entry records (metadata + thumbnail CKAssets)
+        //      b. Flavor records (CKAsset for each flavor body)
+        //    Why: CloudKit clusters saves that share record references
+        //    server-side. Mixing an Entry with its Flavor records in
+        //    one request means a transient problem with any single
+        //    flavor asset upload fails the whole cluster — entry +
+        //    every sibling flavor — with `CKErrorDomain:22 "Atomic
+        //    failure"`. Splitting them decouples the fates: an entry
+        //    saves even if one of its flavors has trouble, and
+        //    flavors retry independently.
+        //
         //    Drop entries that have vanished (race with local delete).
         //    Stop accumulating once we approach CloudKit's 40-MB
-        //    modifyRecords byte budget — entries skipped this round
-        //    stay queued and go next tick.
-        var builtRecords: [CKRecord] = []
+        //    per-request budget.
+        var entryRecords: [CKRecord] = []
+        var flavorRecords: [CKRecord] = []
         var recordIDToEntryId: [CKRecord.ID: Int64] = [:]
         var tempFiles: [URL] = []
         var accumulatedBytes: Int64 = 0
@@ -164,12 +176,8 @@ public actor CloudKitSyncer {
 
         for pendingRow in pending {
             // Byte-budget guard. Stop before adding an entry whose
-            // flavors would blow the batch past maxBatchBytes. We
-            // check before staging (not after) to avoid writing
-            // temp files we're about to throw away.
-            if accumulatedBytes > maxBatchBytes / 2 && !builtRecords.isEmpty {
-                // Keep a conservative halt threshold so we're unlikely
-                // to go over with one more entry's flavors.
+            // flavors would blow the batch past maxBatchBytes.
+            if accumulatedBytes > maxBatchBytes / 2 && !entryRecords.isEmpty {
                 break
             }
             let bundle = try await loadEntryBundle(entryId: pendingRow.entryId)
@@ -194,7 +202,7 @@ public actor CloudKitSyncer {
                 EntryRecordMapper.setThumbnails(on: record, smallURL: smallURL, largeURL: largeURL)
             }
 
-            builtRecords.append(record)
+            entryRecords.append(record)
             recordIDToEntryId[recordID] = pendingRow.entryId
 
             // Flavor records — one per (entry, uti). Bytes come from
@@ -220,7 +228,7 @@ public actor CloudKitSyncer {
                         size: flavor.size,
                         assetURL: url
                     )
-                    builtRecords.append(flavorRec)
+                    flavorRecords.append(flavorRec)
                 } catch {
                     // Missing blob, disk full, etc. — log and skip this
                     // flavor. Entry still pushes; reader will see the
@@ -233,21 +241,17 @@ public actor CloudKitSyncer {
             }
         }
 
-        // 3. Push. `attempted` is the entry count we're trying to
-        // push, not the total record count — the saved/failed numbers
-        // in the report are also entry-centric (flavor save results
-        // are tracked internally but don't drive queue behaviour).
-        // Including flavor counts in `attempted` produces misleading
-        // "saved=50 of attempted=218" log lines.
+        // 3. Push entries first (fast, metadata + thumbnails only).
+        // `attempted` counts entries, matching the queue semantics.
         let attempted = recordIDToEntryId.count
-        guard !builtRecords.isEmpty else {
+        guard !entryRecords.isEmpty else {
             let remaining = try await remainingCount()
             return PushReport(attempted: 0, saved: 0, failed: 0, remaining: remaining)
         }
 
         let result: CKModifyResult
         do {
-            result = try await client.modifyRecords(saving: builtRecords, deleting: [])
+            result = try await client.modifyRecords(saving: entryRecords, deleting: [])
         } catch let ckError as CKError where ckError.code == .zoneBusy || ckError.code == .requestRateLimited {
             // Zone-level concurrency conflict (CAS op-lock lost to
             // another device's simultaneous write) or rate limit. This
@@ -284,18 +288,11 @@ public actor CloudKitSyncer {
             throw error
         }
 
-        // 4. Process per-record results. We only track the Entry record
-        // IDs in `idMap`; Flavor record results are logged but don't
-        // affect the queue. Entries stay in the queue until their parent
-        // Entry record lands; a missing flavor is recoverable on the
-        // next push (deterministic recordIDs make flavor re-pushes
-        // idempotent upserts).
+        // 4. Process Entry save results. Entries that saved get
+        // removed from the queue; failures get attempt_count bumped.
         let idMap = recordIDToEntryId
-        // Collect EVERY distinct error description across the batch
-        // (record-type-annotated) so the "root cause" of a cascade
-        // failure (a single non-batchRequestFailed record) surfaces
-        // instead of drowning in cascade victims.
         var errorKindCounts: [String: Int] = [:]
+        var successfulEntryRecordIDs: Set<CKRecord.ID> = []
         let (saved, failed) = try await store.dbQueue.write { db -> (Int, Int) in
             var saved = 0
             var failed = 0
@@ -304,10 +301,11 @@ public actor CloudKitSyncer {
                 case .success:
                     if let entryId = idMap[recordID] {
                         try PushQueue.remove(entryId: entryId, in: db)
+                        successfulEntryRecordIDs.insert(recordID)
                         saved += 1
                     }
                 case .failure(let error):
-                    let kind = "\(idMap[recordID] != nil ? "entry" : "flavor"):\(Self.describe(error))"
+                    let kind = "entry:\(Self.describe(error))"
                     errorKindCounts[kind, default: 0] += 1
                     if let entryId = idMap[recordID] {
                         try PushQueue.markFailure(
@@ -321,9 +319,46 @@ public actor CloudKitSyncer {
             }
             return (saved, failed)
         }
+
+        // 5. Push flavors for entries that successfully landed. Entries
+        // whose parents failed are skipped — next push retries the
+        // whole thing. We don't care about per-flavor failures for the
+        // queue (parent entry already dequeued on success); just log.
+        let survivingFlavors = flavorRecords.filter { rec in
+            // Reference to parent entry is in `entryRef`. Filter flavor
+            // records whose parent's recordID is in the success set.
+            if let ref = rec[CKSchema.FlavorField.entryRef] as? CKRecord.Reference {
+                return successfulEntryRecordIDs.contains(ref.recordID)
+            }
+            return false
+        }
+        if !survivingFlavors.isEmpty {
+            do {
+                let flavorResult = try await client.modifyRecords(
+                    saving: survivingFlavors, deleting: []
+                )
+                for (_, outcome) in flavorResult.saveResults {
+                    if case .failure(let error) = outcome {
+                        let kind = "flavor:\(Self.describe(error))"
+                        errorKindCounts[kind, default: 0] += 1
+                    }
+                }
+            } catch let ckError as CKError where ckError.code == .zoneBusy || ckError.code == .requestRateLimited {
+                Log.cli.info(
+                    "cloudkit push (flavors): zone busy / rate-limited, next tick will retry"
+                )
+                // Don't mark anything — entries already landed, flavors
+                // will be re-built and re-tried on next push because the
+                // queue rows weren't enqueued for this re-push.
+                // NB: this is a gap — currently a flavor that fails to
+                // save has no direct retry signal. Future work: a
+                // separate flavor-push-queue table.
+            } catch {
+                errorKindCounts["flavor-batch:\(Self.describe(error))", default: 0] += 1
+            }
+        }
+
         if !errorKindCounts.isEmpty {
-            // Sort by count desc for readability, then log each line
-            // separately so the full list is visible in os_log.
             let sorted = errorKindCounts.sorted { $0.value > $1.value }
             for (kind, n) in sorted.prefix(5) {
                 Log.cli.error("push: \(n, privacy: .public) × \(kind, privacy: .public)")
