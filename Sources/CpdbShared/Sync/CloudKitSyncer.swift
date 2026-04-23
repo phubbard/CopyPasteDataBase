@@ -208,9 +208,14 @@ public actor CloudKitSyncer {
             }
         }
 
-        // 3. Push.
-        let attempted = builtRecords.count
-        guard attempted > 0 else {
+        // 3. Push. `attempted` is the entry count we're trying to
+        // push, not the total record count — the saved/failed numbers
+        // in the report are also entry-centric (flavor save results
+        // are tracked internally but don't drive queue behaviour).
+        // Including flavor counts in `attempted` produces misleading
+        // "saved=50 of attempted=218" log lines.
+        let attempted = recordIDToEntryId.count
+        guard !builtRecords.isEmpty else {
             let remaining = try await remainingCount()
             return PushReport(attempted: 0, saved: 0, failed: 0, remaining: remaining)
         }

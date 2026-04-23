@@ -139,8 +139,15 @@ public struct LiveCloudKitClient: CloudKitClient {
         let (saveResults, deleteResults) = try await database.modifyRecords(
             saving: recordsToSave,
             deleting: recordIDsToDelete,
-            savePolicy: .changedKeys,    // send only fields we touched
-            atomically: false             // per-record success; failures go to retry queue
+            // `.allKeys` rather than `.changedKeys`: we build fresh
+            // CKRecords from local state every push (no cached
+            // serverChangeTag), so CloudKit can't meaningfully diff
+            // "what changed". With three Macs mid-flight during a
+            // requeue-all re-push, .changedKeys rejects most writes
+            // with serverRecordChanged. Local state is authoritative
+            // for our records; just overwrite.
+            savePolicy: .allKeys,
+            atomically: false            // per-record success; failures go to retry queue
         )
         return CKModifyResult(
             saveResults: saveResults,
