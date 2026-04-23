@@ -28,6 +28,25 @@ struct EntryDetailView: View {
         var appName: String?
         var deviceName: String?
         var flavorCount: Int
+        /// For link-kind entries: the URL string resolved from the
+        /// title / textPreview / public.url / public.utf8-plain-text
+        /// flavor chain. Nil for non-link kinds.
+        var linkURL: String?
+        /// Pre-resolved payload for the toolbar's ShareLink. Uses
+        /// a per-entry temp file for image and text data so the
+        /// share sheet receives a typed UTI, not a generic string.
+        /// Nil while we're still deciding / nothing shareable.
+        var sharePayload: SharePayload?
+    }
+
+    /// Discriminated union of what we can hand to `ShareLink`.
+    /// Swift's Transferable requires a concrete type per share
+    /// item; this enum lets the view pick the right `ShareLink`
+    /// variant at render time.
+    enum SharePayload {
+        case text(String)
+        case url(URL)
+        case file(URL)
     }
 
     var body: some View {
@@ -49,13 +68,18 @@ struct EntryDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    copyToClipboard()
-                } label: {
-                    Image(systemName: "doc.on.doc")
+                HStack(spacing: 16) {
+                    if let payload = loaded?.sharePayload {
+                        shareButton(payload)
+                    }
+                    Button {
+                        copyToClipboard()
+                    } label: {
+                        Image(systemName: "doc.on.doc")
+                    }
+                    .disabled(loaded == nil)
+                    .accessibilityLabel("Copy to clipboard")
                 }
-                .disabled(loaded == nil)
-                .accessibilityLabel("Copy to clipboard")
             }
         }
         .overlay(alignment: .top) {
@@ -110,9 +134,92 @@ struct EntryDetailView: View {
             #else
             placeholderText(l)
             #endif
+        case .link:
+            linkBody(l)
         default:
             placeholderText(l)
         }
+    }
+
+    /// Link-kind body. Renders the URL as a tappable `Link` that
+    /// opens in Safari/default handler. Falls back to text if the
+    /// URL didn't resolve (shouldn't normally happen).
+    @ViewBuilder
+    private func linkBody(_ l: Loaded) -> some View {
+        if let urlString = l.linkURL,
+           let url = Self.cleanURL(from: urlString) {
+            VStack(alignment: .leading, spacing: 10) {
+                Link(destination: url) {
+                    HStack(alignment: .top, spacing: 8) {
+                        Image(systemName: "safari")
+                            .foregroundStyle(.tint)
+                            .font(.system(size: 15))
+                            .padding(.top, 2)
+                        Text(urlString)
+                            .font(.system(size: 14))
+                            .foregroundStyle(.tint)
+                            .underline()
+                            .multilineTextAlignment(.leading)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .padding(12)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10)
+                            .fill(.thinMaterial)
+                    )
+                }
+                .buttonStyle(.plain)
+                if let preview = l.entry.textPreview,
+                   !preview.isEmpty,
+                   preview != urlString
+                {
+                    Text(preview)
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                }
+            }
+        } else {
+            placeholderText(l)
+        }
+    }
+
+    /// ShareLink variant chosen per payload kind. Using `ShareLink`
+    /// (iOS 16+) instead of `UIActivityViewController` keeps us
+    /// inside SwiftUI and gets us the native share-sheet layout
+    /// for free.
+    @ViewBuilder
+    private func shareButton(_ payload: SharePayload) -> some View {
+        switch payload {
+        case .text(let s):
+            ShareLink(item: s) {
+                Image(systemName: "square.and.arrow.up")
+            }
+            .accessibilityLabel("Share")
+        case .url(let u):
+            ShareLink(item: u) {
+                Image(systemName: "square.and.arrow.up")
+            }
+            .accessibilityLabel("Share")
+        case .file(let u):
+            ShareLink(item: u) {
+                Image(systemName: "square.and.arrow.up")
+            }
+            .accessibilityLabel("Share")
+        }
+    }
+
+    /// Best-effort URL parse. Accepts trailing whitespace, trims
+    /// zero-width chars, adds a scheme if missing (so `example.com`
+    /// becomes `https://example.com`). Returns nil for garbage.
+    private static func cleanURL(from raw: String) -> URL? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        if let url = URL(string: trimmed), url.scheme != nil { return url }
+        // Schemeless common case — prepend https and try again.
+        if let url = URL(string: "https://\(trimmed)"), url.host != nil {
+            return url
+        }
+        return nil
     }
 
     @ViewBuilder
@@ -171,7 +278,7 @@ struct EntryDetailView: View {
         guard let store = container.store else { return }
         let id = entryId
         do {
-            let result = try await store.dbQueue.read { db -> Loaded? in
+            var result = try await store.dbQueue.read { db -> Loaded? in
                 guard let entry = try Entry.fetchOne(db, key: id) else { return nil }
                 let appName = try entry.sourceAppId.flatMap { appId in
                     try AppRecord.fetchOne(db, key: appId)?.name
@@ -187,19 +294,127 @@ struct EntryDetailView: View {
                     sql: "SELECT COUNT(*) FROM entry_flavors WHERE entry_id = ?",
                     arguments: [id]
                 ) ?? 0
+
+                // Resolve a link URL for link-kind entries. Same
+                // lookup chain as SearchView's list-row path.
+                var linkURL: String? = nil
+                if entry.kind == .link {
+                    linkURL = entry.title?.isEmpty == false ? entry.title : nil
+                    if linkURL == nil || linkURL?.isEmpty == true {
+                        linkURL = entry.textPreview?.isEmpty == false ? entry.textPreview : nil
+                    }
+                    if linkURL == nil {
+                        for uti in ["public.url", "public.utf8-plain-text"] {
+                            if let data = try Data.fetchOne(
+                                db,
+                                sql: "SELECT data FROM entry_flavors WHERE entry_id = ? AND uti = ? LIMIT 1",
+                                arguments: [id, uti]
+                            ) {
+                                linkURL = String(data: data, encoding: .utf8)?
+                                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                                if linkURL != nil { break }
+                            }
+                        }
+                    }
+                }
+
                 return Loaded(
                     entry: entry,
                     thumbLarge: thumbLarge,
                     appName: appName,
                     deviceName: deviceName,
-                    flavorCount: flavorCount
+                    flavorCount: flavorCount,
+                    linkURL: linkURL,
+                    sharePayload: nil
                 )
+            }
+
+            // Resolve share payload AFTER the main load so the UI
+            // can show the detail immediately — the share button
+            // fades in when the payload is ready.
+            if let load = result {
+                result?.sharePayload = await resolveSharePayload(for: load, store: store)
             }
             self.loaded = result
         } catch {
             // Silent — the parent list view already handles the
             // "nothing to show" case with ContentUnavailableView.
         }
+    }
+
+    /// Build the most app-meaningful share item we can for this
+    /// entry. Text entries share their text; link entries share
+    /// their URL; image entries share a temp JPEG so receiving
+    /// apps recognize it as an image. Fallback: the entry's
+    /// text_preview as a string.
+    private func resolveSharePayload(
+        for l: Loaded, store: Store
+    ) async -> SharePayload? {
+        switch l.entry.kind {
+        case .link:
+            if let s = l.linkURL, let u = Self.cleanURL(from: s) {
+                return .url(u)
+            }
+            return l.entry.textPreview.map { .text($0) }
+        case .image:
+            #if canImport(UIKit)
+            // Prefer the original image flavor so we share full
+            // resolution, not the 640px thumbnail.
+            let id = l.entry.id!
+            let data: Data? = try? await store.dbQueue.read { db in
+                for uti in ["public.png", "public.jpeg", "public.heic", "public.tiff"] {
+                    let row = try Flavor
+                        .filter(Column("entry_id") == id)
+                        .filter(Column("uti") == uti)
+                        .fetchOne(db)
+                    if let row = row {
+                        if let inline = row.data { return inline }
+                        if let key = row.blobKey {
+                            return try Data(contentsOf: Paths.blobPath(forSHA256Hex: key))
+                        }
+                    }
+                }
+                return nil
+            }
+            let payload = data ?? l.thumbLarge
+            guard let bytes = payload else { return nil }
+            // Stash in /tmp with a sensible extension so the
+            // receiver recognizes the type. ShareLink(item: URL)
+            // is a file-URL for local files.
+            let ext = Self.imageExtension(for: bytes)
+            let url = FileManager.default.temporaryDirectory
+                .appendingPathComponent("cpdb-share-\(UUID().uuidString).\(ext)")
+            do {
+                try bytes.write(to: url)
+                return .file(url)
+            } catch {
+                return nil
+            }
+            #else
+            return nil
+            #endif
+        default:
+            // Text / file / color / other → share textPreview.
+            // File kinds carrying a file:// URL in text would
+            // naturally open the file-share panel on the receiver.
+            if let s = l.entry.textPreview, !s.isEmpty {
+                return .text(s)
+            }
+            return nil
+        }
+    }
+
+    /// Infer a file extension from leading magic bytes so the
+    /// share sheet's UIActivityViewController knows what it's
+    /// looking at. Default to .png for wide compatibility.
+    private static func imageExtension(for data: Data) -> String {
+        guard data.count >= 4 else { return "png" }
+        let b = [UInt8](data.prefix(12))
+        if b.starts(with: [0x89, 0x50, 0x4E, 0x47]) { return "png" }
+        if b.starts(with: [0xFF, 0xD8, 0xFF])       { return "jpg" }
+        if b.starts(with: [0x47, 0x49, 0x46])       { return "gif" }
+        if b.count >= 12 && Array(b[4..<8]) == [0x66, 0x74, 0x79, 0x70] { return "heic" }
+        return "png"
     }
 
     private func copyToClipboard() {
