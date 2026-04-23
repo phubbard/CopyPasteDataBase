@@ -25,6 +25,14 @@ final class AppContainer {
     private(set) var isSyncing: Bool = false
     private(set) var lastError: String?
 
+    /// Running cumulative totals during an in-flight pull — published
+    /// per page via the syncer's progress callback so SearchView can
+    /// render a live counter. Nil between pulls.
+    private(set) var pullProgress: CloudKitSyncer.PullReport?
+    /// Wall-clock start of the current pull. Used with `pullProgress`
+    /// to compute elapsed time and an overall rate.
+    private(set) var pullStartedAt: Date?
+
     /// Called from CpdbiOSApp.task on first launch. Idempotent — if
     /// already bootstrapped, no-op.
     func bootstrap() async {
@@ -59,9 +67,24 @@ final class AppContainer {
     func pullNow() async {
         guard let syncer = syncer else { return }
         isSyncing = true
-        defer { isSyncing = false }
+        pullStartedAt = Date()
+        pullProgress = CloudKitSyncer.PullReport(
+            inserted: 0, updated: 0, tombstoned: 0, skipped: 0, moreComing: true
+        )
+        defer {
+            isSyncing = false
+            pullProgress = nil
+            pullStartedAt = nil
+        }
         do {
-            let report = try await syncer.pullRemoteChanges()
+            let report = try await syncer.pullRemoteChanges { [weak self] page in
+                // Called after every page of the pull. Hop back to the
+                // main actor to update @Observable state — the progress
+                // callback closure runs on the syncer's actor context.
+                Task { @MainActor in
+                    self?.pullProgress = page
+                }
+            }
             lastPull = report
             lastError = nil
             print("[cpdb] pull: inserted=\(report.inserted) updated=\(report.updated) tombstoned=\(report.tombstoned) skipped=\(report.skipped)")

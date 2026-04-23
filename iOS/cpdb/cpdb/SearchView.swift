@@ -17,12 +17,18 @@ struct SearchView: View {
 
     var body: some View {
         NavigationStack {
-            List(results, id: \.id) { entry in
-                NavigationLink(value: entry.id) {
-                    EntryRow(entry: entry)
+            VStack(spacing: 0) {
+                if let progress = container.pullProgress,
+                   let started = container.pullStartedAt {
+                    PullProgressBanner(progress: progress, startedAt: started)
                 }
+                List(results, id: \.id) { entry in
+                    NavigationLink(value: entry.id) {
+                        EntryRow(entry: entry)
+                    }
+                }
+                .listStyle(.plain)
             }
-            .listStyle(.plain)
             .navigationDestination(for: Int64.self) { entryId in
                 EntryDetailView(entryId: entryId)
             }
@@ -44,7 +50,7 @@ struct SearchView: View {
                 }
             }
             .overlay {
-                if results.isEmpty {
+                if results.isEmpty && container.pullProgress == nil {
                     emptyState
                 }
             }
@@ -145,4 +151,65 @@ struct SearchView: View {
 }
 
 import GRDB
+
+/// Slim banner shown at the top of SearchView while a pull is in
+/// flight. Honest reporter: we don't know the total record count
+/// CloudKit will hand us, so no percentage / ETA — just a live
+/// count, an overall rate, and elapsed time. User sees motion and
+/// can gauge pace.
+private struct PullProgressBanner: View {
+    let progress: CloudKitSyncer.PullReport
+    let startedAt: Date
+    /// Ticks every second so the elapsed-time label refreshes even
+    /// when no new page has arrived yet (CloudKit can pause between
+    /// pages for 10+ seconds when throttling).
+    @State private var now: Date = Date()
+    private static let ticker = Timer.publish(every: 1.0, on: .main, in: .common).autoconnect()
+
+    var body: some View {
+        let applied = progress.inserted + progress.updated + progress.tombstoned
+        let elapsed = max(now.timeIntervalSince(startedAt), 0.001)
+        HStack(spacing: 10) {
+            ProgressView().controlSize(.small)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Pulling from iCloud")
+                    .font(.system(size: 12, weight: .medium))
+                HStack(spacing: 6) {
+                    Text("\(applied) entries")
+                    Text("·")
+                    Text(Self.rateString(applied: applied, elapsed: elapsed))
+                    Text("·")
+                    Text(Self.elapsedString(elapsed))
+                }
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundStyle(.secondary)
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(.thinMaterial)
+        .onReceive(Self.ticker) { self.now = $0 }
+    }
+
+    private static func rateString(applied: Int, elapsed: TimeInterval) -> String {
+        guard elapsed > 0.5, applied > 0 else { return "—" }
+        let rate = Double(applied) / elapsed
+        if rate >= 10 {
+            return String(format: "%.0f/s", rate)
+        } else {
+            return String(format: "%.1f/s", rate)
+        }
+    }
+
+    private static func elapsedString(_ t: TimeInterval) -> String {
+        let total = Int(t.rounded())
+        let h = total / 3600
+        let m = (total % 3600) / 60
+        let s = total % 60
+        if h > 0 { return String(format: "%d:%02d:%02d", h, m, s) }
+        return String(format: "%d:%02d", m, s)
+    }
+}
+
 #endif

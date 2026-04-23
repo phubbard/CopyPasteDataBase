@@ -46,6 +46,20 @@ public actor CloudKitSyncer {
         public var tombstoned: Int
         public var skipped: Int
         public var moreComing: Bool
+
+        public init(
+            inserted: Int,
+            updated: Int,
+            tombstoned: Int,
+            skipped: Int,
+            moreComing: Bool
+        ) {
+            self.inserted = inserted
+            self.updated = updated
+            self.tombstoned = tombstoned
+            self.skipped = skipped
+            self.moreComing = moreComing
+        }
     }
 
     public static let zoneSubscriptionID = "cpdb-v2-zone-subscription"
