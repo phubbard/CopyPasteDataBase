@@ -22,6 +22,19 @@ struct EntryRow: View {
     /// Small thumbnail bytes for image-kind entries. When present,
     /// replaces the kind-icon glyph in the leading slot.
     var thumbSmall: Data? = nil
+    /// Post-classification kind. Some entries arrive as `.text`
+    /// because the source app only provided a text flavor (Zen
+    /// browser is a known offender), but the content is obviously a
+    /// URL. SearchView reclassifies those to `.link` at query time
+    /// and passes the resolved kind here so the row badge + color
+    /// match what the detail view will render.
+    var effectiveKind: EntryKind? = nil
+
+    /// The kind we actually render with — caller-override wins,
+    /// falls back to the entry's stored kind.
+    private var displayKind: EntryKind {
+        effectiveKind ?? entry.kind
+    }
 
     private static let relative: RelativeDateTimeFormatter = {
         let f = RelativeDateTimeFormatter()
@@ -63,7 +76,7 @@ struct EntryRow: View {
     @ViewBuilder
     private var leadingIcon: some View {
         #if canImport(UIKit)
-        if entry.kind == .image,
+        if displayKind == .image,
            let data = thumbSmall,
            let image = UIImage(data: data)
         {
@@ -99,7 +112,7 @@ struct EntryRow: View {
     }
 
     private var kindIcon: String {
-        switch entry.kind {
+        switch displayKind {
         case .text:  return "text.alignleft"
         case .link:  return "link"
         case .image: return "photo"
@@ -110,7 +123,7 @@ struct EntryRow: View {
     }
 
     private var kindColor: Color {
-        switch entry.kind {
+        switch displayKind {
         case .text:  return .primary
         case .link:  return .blue
         case .image: return .purple

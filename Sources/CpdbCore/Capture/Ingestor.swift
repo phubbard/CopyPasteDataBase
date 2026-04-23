@@ -78,15 +78,56 @@ public struct Ingestor {
                 return .bumped(existingId)
             }
 
+            // Secondary dedup: some source apps publish a pasteboard,
+            // then immediately rewrite it with a slightly different
+            // flavor set (Xcode's debug console is a known offender —
+            // first writes a plain-text flavor, then appends an RTF
+            // flavor a few milliseconds later). The two writes hash
+            // differently, so `content_hash` dedup misses them and we
+            // get two near-identical rows seconds apart.
+            //
+            // Catch that by checking whether the most recent live row
+            // has the SAME normalized text_preview AND landed in the
+            // last few seconds. If so, treat this capture as a bump,
+            // not an insert. Window kept small (3s) so legitimate
+            // "copy the same thing twice, intentionally" still works
+            // once the user has paused between copies.
+            let plain = snapshot.plainText
+            if let text = plain?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !text.isEmpty
+            {
+                let cutoff = snapshot.capturedAt.timeIntervalSince1970 - 3.0
+                if let recentId = try Int64.fetchOne(
+                    db,
+                    sql: """
+                        SELECT id FROM entries
+                        WHERE deleted_at IS NULL
+                          AND created_at >= ?
+                          AND TRIM(COALESCE(text_preview, '')) = ?
+                        ORDER BY created_at DESC
+                        LIMIT 1
+                    """,
+                    arguments: [cutoff, text]
+                ) {
+                    let now = snapshot.capturedAt.timeIntervalSince1970
+                    try db.execute(
+                        sql: "UPDATE entries SET created_at = ? WHERE id = ?",
+                        arguments: [now, recentId]
+                    )
+                    try PushQueue.enqueue(entryId: recentId, in: db, now: now)
+                    return .bumped(recentId)
+                }
+            }
+
             // Upsert source app (if we captured one).
             var appId: Int64? = nil
             if let info = sourceApp {
                 appId = try Self.upsertApp(info, in: db)
             }
 
-            // Insert entry.
+            // Insert entry. `plain` was computed above for the
+            // within-window dedup probe — reuse it.
             let now = snapshot.capturedAt.timeIntervalSince1970
-            let plain = snapshot.plainText
             var entry = Entry(
                 uuid: Self.newUUID(),
                 createdAt: now,

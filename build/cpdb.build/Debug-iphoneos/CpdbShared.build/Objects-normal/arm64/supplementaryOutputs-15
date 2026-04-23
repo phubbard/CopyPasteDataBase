@@ -1,0 +1,23 @@
+{
+  "/Users/pfh/code/cpdb/Sources/CpdbShared/Sync/CloudKitClient.swift" : {
+    "const-values" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbShared.build/Objects-normal/arm64/CloudKitClient.swiftconstvalues",
+    "dependencies" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbShared.build/Objects-normal/arm64/CloudKitClient.d",
+    "diagnostics" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbShared.build/Objects-normal/arm64/CloudKitClient.dia",
+    "object" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbShared.build/Objects-normal/arm64/CloudKitClient.o",
+    "swift-dependencies" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbShared.build/Objects-normal/arm64/CloudKitClient.swiftdeps"
+  },
+  "/Users/pfh/code/cpdb/Sources/CpdbShared/Sync/CloudKitSyncer.swift" : {
+    "const-values" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbShared.build/Objects-normal/arm64/CloudKitSyncer.swiftconstvalues",
+    "dependencies" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbShared.build/Objects-normal/arm64/CloudKitSyncer.d",
+    "diagnostics" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbShared.build/Objects-normal/arm64/CloudKitSyncer.dia",
+    "object" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbShared.build/Objects-normal/arm64/CloudKitSyncer.o",
+    "swift-dependencies" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbShared.build/Objects-normal/arm64/CloudKitSyncer.swiftdeps"
+  },
+  "/Users/pfh/code/cpdb/Sources/CpdbShared/Sync/EntryRecordMapper.swift" : {
+    "const-values" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbShared.build/Objects-normal/arm64/EntryRecordMapper.swiftconstvalues",
+    "dependencies" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbShared.build/Objects-normal/arm64/EntryRecordMapper.d",
+    "diagnostics" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbShared.build/Objects-normal/arm64/EntryRecordMapper.dia",
+    "object" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbShared.build/Objects-normal/arm64/EntryRecordMapper.o",
+    "swift-dependencies" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbShared.build/Objects-normal/arm64/EntryRecordMapper.swiftdeps"
+  }
+}

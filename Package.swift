@@ -8,7 +8,12 @@ let package = Package(
         .iOS(.v17),
     ],
     products: [
-        .executable(name: "cpdb", targets: ["cpdb"]),
+        // The macOS CLI is named `cpdb-cli` at the package level to
+        // avoid colliding with the iOS app target (also `cpdb`) when
+        // the iOS Xcode project consumes this repo as a Local Package.
+        // The shipped binary is still `cpdb` — the Makefile renames it
+        // during install (see `install-cli`).
+        .executable(name: "cpdb-cli", targets: ["cpdb-cli"]),
         .executable(name: "CpdbApp", targets: ["CpdbApp"]),
         .library(name: "CpdbShared", targets: ["CpdbShared"]),
         .library(name: "CpdbCore", targets: ["CpdbCore"]),
@@ -20,12 +25,16 @@ let package = Package(
     ],
     targets: [
         .executableTarget(
-            name: "cpdb",
+            name: "cpdb-cli",
             dependencies: [
                 "CpdbCore",
                 "CpdbShared",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
-            ]
+            ],
+            // Sources still live at Sources/cpdb — only the target/
+            // product names changed. Keeping the path explicit lets
+            // us rename without a directory move.
+            path: "Sources/cpdb"
         ),
         .executableTarget(
             name: "CpdbApp",

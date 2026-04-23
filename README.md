@@ -94,7 +94,7 @@ the synthesised `⌘V` lands in the app you were using.
 To build just the CLI:
 
 ```sh
-swift build -c release            # produces .build/release/cpdb
+swift build -c release            # produces .build/release/cpdb-cli
 ```
 
 ### iOS companion (2.x-dev)

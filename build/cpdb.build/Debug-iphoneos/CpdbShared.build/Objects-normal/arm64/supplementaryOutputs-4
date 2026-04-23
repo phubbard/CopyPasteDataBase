@@ -1,0 +1,23 @@
+{
+  "/Users/pfh/code/cpdb/Sources/CpdbShared/Paths.swift" : {
+    "const-values" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbShared.build/Objects-normal/arm64/Paths.swiftconstvalues",
+    "dependencies" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbShared.build/Objects-normal/arm64/Paths.d",
+    "diagnostics" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbShared.build/Objects-normal/arm64/Paths.dia",
+    "object" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbShared.build/Objects-normal/arm64/Paths.o",
+    "swift-dependencies" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbShared.build/Objects-normal/arm64/Paths.swiftdeps"
+  },
+  "/Users/pfh/code/cpdb/Sources/CpdbShared/QuickLook/QuickLookItemBuilder.swift" : {
+    "const-values" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbShared.build/Objects-normal/arm64/QuickLookItemBuilder.swiftconstvalues",
+    "dependencies" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbShared.build/Objects-normal/arm64/QuickLookItemBuilder.d",
+    "diagnostics" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbShared.build/Objects-normal/arm64/QuickLookItemBuilder.dia",
+    "object" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbShared.build/Objects-normal/arm64/QuickLookItemBuilder.o",
+    "swift-dependencies" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbShared.build/Objects-normal/arm64/QuickLookItemBuilder.swiftdeps"
+  },
+  "/Users/pfh/code/cpdb/Sources/CpdbShared/Search/FtsIndex.swift" : {
+    "const-values" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbShared.build/Objects-normal/arm64/FtsIndex.swiftconstvalues",
+    "dependencies" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbShared.build/Objects-normal/arm64/FtsIndex.d",
+    "diagnostics" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbShared.build/Objects-normal/arm64/FtsIndex.dia",
+    "object" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbShared.build/Objects-normal/arm64/FtsIndex.o",
+    "swift-dependencies" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbShared.build/Objects-normal/arm64/FtsIndex.swiftdeps"
+  }
+}

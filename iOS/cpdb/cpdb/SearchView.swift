@@ -21,6 +21,13 @@ struct SearchRow: Identifiable {
     /// doesn't incur an N+1 row-level load. nil for non-image kinds
     /// or images without a generated thumbnail.
     let thumbSmall: Data?
+    /// Display kind after URL-reclassification. Zen (and any source
+    /// that only provides a text flavor for a copied URL) lands in
+    /// the DB as `.text` even though the content is obviously a
+    /// link. We detect the bare-URL case at query time and promote
+    /// the row's effective kind to `.link` so the badge, color, and
+    /// filter-membership all match what the detail view will render.
+    let effectiveKind: EntryKind
     var id: Int64? { entry.id }
 }
 
@@ -71,7 +78,8 @@ struct SearchView: View {
                             EntryRow(
                                 entry: row.entry,
                                 linkURL: row.linkURL,
-                                thumbSmall: row.thumbSmall
+                                thumbSmall: row.thumbSmall,
+                                effectiveKind: row.effectiveKind
                             )
                         }
                         .onAppear {
@@ -126,6 +134,14 @@ struct SearchView: View {
                 Task { await runQuery() }
             }
             .onChange(of: container.pullProgress?.updated) { _, _ in
+                Task { await runQuery() }
+            }
+            // Live-update hook: AppContainer bumps `dbChangeToken`
+            // every time the `entries` table changes — silent-push
+            // pulls, foreground pulls, background refreshes. Re-run
+            // the current query so new rows appear without the user
+            // having to pull-to-refresh.
+            .onChange(of: container.dbChangeToken) { _, _ in
                 Task { await runQuery() }
             }
             .onAppear {
@@ -261,13 +277,24 @@ struct SearchView: View {
                 // Kind filter. Skip the clause when all kinds are
                 // selected (the default) so the query planner doesn't
                 // walk a pointless IN (...).
-                if snapshotFilter.kinds.count < EntryKind.allCases.count
-                    && !snapshotFilter.kinds.isEmpty
+                //
+                // Reclassification wrinkle: URL-shaped text entries
+                // are promoted to `.link` at display time. If the
+                // user's filter includes `.link` but not `.text`,
+                // we still need to fetch text rows so we have the
+                // chance to promote them; we drop non-URL text in the
+                // per-row pass below. Symmetric: if `.text` is
+                // selected but `.link` is not, we still fetch text
+                // rows, then drop the URL-shaped ones.
+                var sqlKinds = snapshotFilter.kinds
+                if sqlKinds.contains(.link) { sqlKinds.insert(.text) }
+                if sqlKinds.count < EntryKind.allCases.count
+                    && !sqlKinds.isEmpty
                 {
-                    let placeholders = Array(repeating: "?", count: snapshotFilter.kinds.count)
+                    let placeholders = Array(repeating: "?", count: sqlKinds.count)
                         .joined(separator: ",")
                     where_.append("kind IN (\(placeholders))")
-                    for k in snapshotFilter.kinds {
+                    for k in sqlKinds {
                         args.append(k.rawValue)
                     }
                 }
@@ -292,14 +319,47 @@ struct SearchView: View {
                 //     URL bytes from entry_flavors.
                 //   - Image entries → pull thumb_small from previews
                 //     for inline rendering in EntryRow.
-                return try entries.map { entry -> SearchRow in
+                return try entries.compactMap { entry -> SearchRow? in
+                    // Compute effective kind: promote URL-shaped
+                    // text → link so the rest of the pipeline
+                    // (icon, color, filter honouring) matches the
+                    // detail view.
+                    var effective = entry.kind
+                    if entry.kind == .text {
+                        let candidate = entry.title?.isEmpty == false
+                            ? entry.title!
+                            : (entry.textPreview ?? "")
+                        if URLDetection.isWholeStringAURL(candidate) {
+                            effective = .link
+                        }
+                    }
+
+                    // Honour the user's kind filter against the
+                    // effective kind, not the stored kind — see SQL
+                    // expansion above for the matching fetch.
+                    if snapshotFilter.kinds.count < EntryKind.allCases.count,
+                       !snapshotFilter.kinds.contains(effective)
+                    {
+                        return nil
+                    }
+
                     var linkURL: String? = nil
                     var thumbSmall: Data? = nil
 
-                    if entry.kind == .link,
-                       (entry.title?.isEmpty ?? true) && (entry.textPreview?.isEmpty ?? true)
-                    {
-                        linkURL = try Self.resolveLinkURL(entryId: entry.id!, in: db)
+                    if effective == .link {
+                        // For real link-kind rows with empty preview,
+                        // resolve from flavors. For promoted text
+                        // rows, the preview IS the URL.
+                        if entry.kind == .link,
+                           (entry.title?.isEmpty ?? true) && (entry.textPreview?.isEmpty ?? true)
+                        {
+                            linkURL = try Self.resolveLinkURL(entryId: entry.id!, in: db)
+                        } else if entry.kind == .text {
+                            linkURL = (entry.title?.isEmpty == false
+                                ? entry.title
+                                : entry.textPreview)?
+                                .trimmingCharacters(in: .whitespacesAndNewlines)
+                        }
                     }
 
                     if entry.kind == .image {
@@ -313,7 +373,8 @@ struct SearchView: View {
                     return SearchRow(
                         entry: entry,
                         linkURL: linkURL,
-                        thumbSmall: thumbSmall
+                        thumbSmall: thumbSmall,
+                        effectiveKind: effective
                     )
                 }
             }

@@ -73,7 +73,12 @@ stamp-build:
 	@scripts/stamp-build.sh
 
 build-cli: stamp-build
-	swift build -c $(BUILD_CONFIG) --product cpdb
+	# Product name changed from `cpdb` to `cpdb-cli` so it doesn't
+	# collide with the iOS app target (also `cpdb`) when the iOS
+	# Xcode project consumes this repo as a Local Package. The
+	# shipped binary is still named `cpdb` — we rename on copy
+	# in `release` / install.
+	swift build -c $(BUILD_CONFIG) --product cpdb-cli
 
 build-app: verify-version stamp-build
 	swift build -c $(BUILD_CONFIG) --product CpdbApp
@@ -124,7 +129,7 @@ build-app: verify-version stamp-build
 	# covers the CFBundleExecutable, not other binaries in MacOS/.
 	# Packaging the CLI as its own sub-bundle would need a second Apple
 	# app ID + profile. For now, use the menu bar "Sync Now" / "Pull Now"
-	# commands, or build the CLI locally from .build/release/cpdb.
+	# commands, or build the CLI locally from .build/release/cpdb-cli.
 	cp Sources/CpdbApp/Resources/Info.plist $(APP_BUNDLE_DIR)/Contents/Info.plist
 	# Overwrite CFBundleVersion in the bundled copy with the build id so
 	# the About window and `mdls` both show exactly which commit was
@@ -173,7 +178,7 @@ release: verify-version build-cli build-app
 	rm -rf $(RELEASE_DIR)
 	mkdir -p $(RELEASE_DIR)
 	/usr/bin/ditto -c -k --keepParent $(APP_BUNDLE_DIR) $(RELEASE_DIR)/cpdb-v$(VERSION).app.zip
-	cp $(BUILD_DIR)/$(BUILD_CONFIG)/cpdb $(RELEASE_DIR)/cpdb
+	cp $(BUILD_DIR)/$(BUILD_CONFIG)/cpdb-cli $(RELEASE_DIR)/cpdb
 	cd $(RELEASE_DIR) && shasum -a 256 cpdb-v$(VERSION).app.zip cpdb > SHA256SUMS
 	@echo
 	@echo "Release artefacts in $(RELEASE_DIR):"

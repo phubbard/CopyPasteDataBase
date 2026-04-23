@@ -1,0 +1,139 @@
+{
+  "" : {
+    "diagnostics" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/CpdbCore-primary.dia",
+    "emit-module-dependencies" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/CpdbCore-primary-emit-module.d",
+    "emit-module-diagnostics" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/CpdbCore-primary-emit-module.dia",
+    "pch" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/CpdbCore-primary-Bridging-header.pch",
+    "swift-dependencies" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/CpdbCore-primary.swiftdeps"
+  },
+  "/Users/pfh/code/cpdb/Sources/CpdbCore/Capture/FrontmostApp.swift" : {
+    "const-values" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/FrontmostApp.swiftconstvalues",
+    "dependencies" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/FrontmostApp.d",
+    "diagnostics" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/FrontmostApp.dia",
+    "index-unit-output-path" : "/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/FrontmostApp.o",
+    "llvm-bc" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/FrontmostApp.bc",
+    "object" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/FrontmostApp.o",
+    "swift-dependencies" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/FrontmostApp.swiftdeps",
+    "swiftmodule" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/FrontmostApp~partial.swiftmodule"
+  },
+  "/Users/pfh/code/cpdb/Sources/CpdbCore/Capture/FrontmostAppMonitor.swift" : {
+    "const-values" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/FrontmostAppMonitor.swiftconstvalues",
+    "dependencies" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/FrontmostAppMonitor.d",
+    "diagnostics" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/FrontmostAppMonitor.dia",
+    "index-unit-output-path" : "/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/FrontmostAppMonitor.o",
+    "llvm-bc" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/FrontmostAppMonitor.bc",
+    "object" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/FrontmostAppMonitor.o",
+    "swift-dependencies" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/FrontmostAppMonitor.swiftdeps",
+    "swiftmodule" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/FrontmostAppMonitor~partial.swiftmodule"
+  },
+  "/Users/pfh/code/cpdb/Sources/CpdbCore/Capture/IgnoredApps.swift" : {
+    "const-values" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/IgnoredApps.swiftconstvalues",
+    "dependencies" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/IgnoredApps.d",
+    "diagnostics" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/IgnoredApps.dia",
+    "index-unit-output-path" : "/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/IgnoredApps.o",
+    "llvm-bc" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/IgnoredApps.bc",
+    "object" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/IgnoredApps.o",
+    "swift-dependencies" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/IgnoredApps.swiftdeps",
+    "swiftmodule" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/IgnoredApps~partial.swiftmodule"
+  },
+  "/Users/pfh/code/cpdb/Sources/CpdbCore/Capture/Ingestor.swift" : {
+    "const-values" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/Ingestor.swiftconstvalues",
+    "dependencies" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/Ingestor.d",
+    "diagnostics" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/Ingestor.dia",
+    "index-unit-output-path" : "/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/Ingestor.o",
+    "llvm-bc" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/Ingestor.bc",
+    "object" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/Ingestor.o",
+    "swift-dependencies" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/Ingestor.swiftdeps",
+    "swiftmodule" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/Ingestor~partial.swiftmodule"
+  },
+  "/Users/pfh/code/cpdb/Sources/CpdbCore/Capture/PasteboardSnapshot.swift" : {
+    "const-values" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/PasteboardSnapshot.swiftconstvalues",
+    "dependencies" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/PasteboardSnapshot.d",
+    "diagnostics" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/PasteboardSnapshot.dia",
+    "index-unit-output-path" : "/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/PasteboardSnapshot.o",
+    "llvm-bc" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/PasteboardSnapshot.bc",
+    "object" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/PasteboardSnapshot.o",
+    "swift-dependencies" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/PasteboardSnapshot.swiftdeps",
+    "swiftmodule" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/PasteboardSnapshot~partial.swiftmodule"
+  },
+  "/Users/pfh/code/cpdb/Sources/CpdbCore/Capture/PasteboardWatcher.swift" : {
+    "const-values" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/PasteboardWatcher.swiftconstvalues",
+    "dependencies" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/PasteboardWatcher.d",
+    "diagnostics" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/PasteboardWatcher.dia",
+    "index-unit-output-path" : "/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/PasteboardWatcher.o",
+    "llvm-bc" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/PasteboardWatcher.bc",
+    "object" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/PasteboardWatcher.o",
+    "swift-dependencies" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/PasteboardWatcher.swiftdeps",
+    "swiftmodule" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/PasteboardWatcher~partial.swiftmodule"
+  },
+  "/Users/pfh/code/cpdb/Sources/CpdbCore/Capture/TransientFilter.swift" : {
+    "const-values" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/TransientFilter.swiftconstvalues",
+    "dependencies" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/TransientFilter.d",
+    "diagnostics" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/TransientFilter.dia",
+    "index-unit-output-path" : "/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/TransientFilter.o",
+    "llvm-bc" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/TransientFilter.bc",
+    "object" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/TransientFilter.o",
+    "swift-dependencies" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/TransientFilter.swiftdeps",
+    "swiftmodule" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/TransientFilter~partial.swiftmodule"
+  },
+  "/Users/pfh/code/cpdb/Sources/CpdbCore/Import/PasteCoreDataReader.swift" : {
+    "const-values" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/PasteCoreDataReader.swiftconstvalues",
+    "dependencies" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/PasteCoreDataReader.d",
+    "diagnostics" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/PasteCoreDataReader.dia",
+    "index-unit-output-path" : "/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/PasteCoreDataReader.o",
+    "llvm-bc" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/PasteCoreDataReader.bc",
+    "object" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/PasteCoreDataReader.o",
+    "swift-dependencies" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/PasteCoreDataReader.swiftdeps",
+    "swiftmodule" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/PasteCoreDataReader~partial.swiftmodule"
+  },
+  "/Users/pfh/code/cpdb/Sources/CpdbCore/Import/PasteDbImporter.swift" : {
+    "const-values" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/PasteDbImporter.swiftconstvalues",
+    "dependencies" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/PasteDbImporter.d",
+    "diagnostics" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/PasteDbImporter.dia",
+    "index-unit-output-path" : "/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/PasteDbImporter.o",
+    "llvm-bc" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/PasteDbImporter.bc",
+    "object" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/PasteDbImporter.o",
+    "swift-dependencies" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/PasteDbImporter.swiftdeps",
+    "swiftmodule" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/PasteDbImporter~partial.swiftmodule"
+  },
+  "/Users/pfh/code/cpdb/Sources/CpdbCore/Import/TransformablePasteboardDecoder.swift" : {
+    "const-values" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/TransformablePasteboardDecoder.swiftconstvalues",
+    "dependencies" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/TransformablePasteboardDecoder.d",
+    "diagnostics" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/TransformablePasteboardDecoder.dia",
+    "index-unit-output-path" : "/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/TransformablePasteboardDecoder.o",
+    "llvm-bc" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/TransformablePasteboardDecoder.bc",
+    "object" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/TransformablePasteboardDecoder.o",
+    "swift-dependencies" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/TransformablePasteboardDecoder.swiftdeps",
+    "swiftmodule" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/TransformablePasteboardDecoder~partial.swiftmodule"
+  },
+  "/Users/pfh/code/cpdb/Sources/CpdbCore/LaunchAgent.swift" : {
+    "const-values" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/LaunchAgent.swiftconstvalues",
+    "dependencies" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/LaunchAgent.d",
+    "diagnostics" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/LaunchAgent.dia",
+    "index-unit-output-path" : "/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/LaunchAgent.o",
+    "llvm-bc" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/LaunchAgent.bc",
+    "object" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/LaunchAgent.o",
+    "swift-dependencies" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/LaunchAgent.swiftdeps",
+    "swiftmodule" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/LaunchAgent~partial.swiftmodule"
+  },
+  "/Users/pfh/code/cpdb/Sources/CpdbCore/PasteboardWriter.swift" : {
+    "const-values" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/PasteboardWriter.swiftconstvalues",
+    "dependencies" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/PasteboardWriter.d",
+    "diagnostics" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/PasteboardWriter.dia",
+    "index-unit-output-path" : "/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/PasteboardWriter.o",
+    "llvm-bc" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/PasteboardWriter.bc",
+    "object" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/PasteboardWriter.o",
+    "swift-dependencies" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/PasteboardWriter.swiftdeps",
+    "swiftmodule" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/PasteboardWriter~partial.swiftmodule"
+  },
+  "/Users/pfh/code/cpdb/Sources/CpdbCore/Restore/Restorer.swift" : {
+    "const-values" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/Restorer.swiftconstvalues",
+    "dependencies" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/Restorer.d",
+    "diagnostics" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/Restorer.dia",
+    "index-unit-output-path" : "/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/Restorer.o",
+    "llvm-bc" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/Restorer.bc",
+    "object" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/Restorer.o",
+    "swift-dependencies" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/Restorer.swiftdeps",
+    "swiftmodule" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbCore.build/Objects-normal/arm64/Restorer~partial.swiftmodule"
+  }
+}

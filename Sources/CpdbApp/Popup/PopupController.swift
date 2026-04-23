@@ -53,6 +53,10 @@ final class PopupController {
 
         previousApp = NSWorkspace.shared.frontmostApplication
         state.refresh()
+        // Start observing `entries` so new captures (local pasteboard
+        // watcher or CloudKit pull) update the strip in real time.
+        // Stopped in `hide()`.
+        state.startLiveUpdates()
         // Bump after refresh so EntryStripView's onChange sees the freshly
         // populated `rows.first` when it scrolls to the newest entry.
         state.scrollToken &+= 1
@@ -75,6 +79,7 @@ final class PopupController {
         let preservePosition = !closeQL && (state?.rememberScrollOnPreview ?? false)
 
         removeMonitors()
+        state?.stopLiveUpdates()
         panel?.orderOut(nil)
         if closeQL {
             PreviewCoordinator.shared.dismiss()

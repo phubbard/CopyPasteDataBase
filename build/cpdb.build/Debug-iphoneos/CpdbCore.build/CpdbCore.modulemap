@@ -1,0 +1,4 @@
+module CpdbCore {
+header "CpdbCore-Swift.h"
+export *
+}

@@ -1,7 +1,12 @@
 #if os(iOS)
 import Foundation
 import Observation
+import GRDB
+import BackgroundTasks
 import CpdbShared
+#if canImport(UIKit)
+import UIKit
+#endif
 
 /// Long-lived singleton wiring the iOS app's data layer.
 ///
@@ -16,8 +21,31 @@ import CpdbShared
 @Observable
 @MainActor
 final class AppContainer {
+    /// Process-wide handle so the UIKit AppDelegate (which exists
+    /// outside the SwiftUI environment) can reach us from silent-push
+    /// callbacks. Weak so a scene tear-down doesn't keep us pinned.
+    static weak var shared: AppContainer?
+
     private(set) var store: Store?
     private var syncer: CloudKitSyncer?
+
+    /// Monotonic token that ticks whenever the `entries` table changes
+    /// (local insert, CloudKit pull, remote tombstone). SearchView
+    /// observes this via `.onChange` and re-runs its query, giving us
+    /// live updates while the app is in the foreground — the iOS
+    /// equivalent of the Mac popup's GRDB-driven refresh loop.
+    private(set) var dbChangeToken: Int = 0
+    private var entriesObservation: (any DatabaseCancellable)?
+
+    /// Identifier for our `BGAppRefreshTask`. Must match the value
+    /// declared in the iOS app's Info.plist under
+    /// `BGTaskSchedulerPermittedIdentifiers` — the Xcode project sets
+    /// this via `INFOPLIST_KEY_BGTaskSchedulerPermittedIdentifiers`.
+    ///
+    /// Hard-coded to the iOS app's bundle ID (not `Paths.bundleId`,
+    /// which is the shared `net.phfactor.cpdb` — wrong suffix for
+    /// the iOS app). Keep in sync with the pbxproj build setting.
+    static let bgRefreshTaskID = "net.phfactor.cpdb.ios.refresh"
 
     /// Latest sync state for the progress indicator in SearchView's
     /// toolbar. Nil until the first pull completes.
@@ -36,6 +64,7 @@ final class AppContainer {
     /// Called from CpdbiOSApp.task on first launch. Idempotent — if
     /// already bootstrapped, no-op.
     func bootstrap() async {
+        Self.shared = self
         guard store == nil else { return }
         print("[cpdb] bootstrap: starting")
         do {
@@ -54,6 +83,14 @@ final class AppContainer {
             self.syncer = syncer
             print("[cpdb] bootstrap: ensuring zone subscription…")
             try await syncer.ensureSubscription()
+            // Start observing the DB so SearchView can live-update as
+            // new entries land (from silent-push pulls or future local
+            // capture paths). Stopped never — the observation is
+            // cheap and we want it running for the app's lifetime.
+            startLiveUpdates()
+            // Re-schedule BGAppRefreshTask every launch — iOS forgets
+            // on reboot and after failed runs.
+            scheduleBackgroundRefresh()
             print("[cpdb] bootstrap: subscription OK, pulling…")
             await pullNow()
             print("[cpdb] bootstrap: complete")
@@ -84,6 +121,116 @@ final class AppContainer {
             targetDeviceIdentifier: targetDeviceIdentifier
         )
     }
+
+    // MARK: - Live updates
+
+    /// Subscribe to changes on the `entries` table so SearchView can
+    /// re-query automatically whenever something lands in the DB —
+    /// silent-push pulls, pull-to-refresh, or a future local-capture
+    /// path. The subscription stays alive for the app's lifetime;
+    /// it's cheap and there's no moment when we wouldn't want the UI
+    /// to reflect the current DB.
+    ///
+    /// We don't read the observed value — SearchView re-runs its own
+    /// query off `dbChangeToken` changing. Tracking a cheap projection
+    /// just gives GRDB a handle to coalesce writes into one signal.
+    private func startLiveUpdates() {
+        guard entriesObservation == nil, let store = store else { return }
+        let obs = ValueObservation.tracking { db in
+            let count = try Int.fetchOne(
+                db, sql: "SELECT COUNT(*) FROM entries WHERE deleted_at IS NULL"
+            ) ?? 0
+            let maxCreated = try Double.fetchOne(
+                db, sql: "SELECT MAX(created_at) FROM entries WHERE deleted_at IS NULL"
+            ) ?? 0
+            return LiveSignal(count: count, maxCreated: maxCreated)
+        }
+        entriesObservation = obs.start(
+            in: store.dbQueue,
+            scheduling: .immediate,
+            onError: { error in
+                print("[cpdb] live updates errored: \(error)")
+            },
+            onChange: { [weak self] _ in
+                Task { @MainActor in
+                    self?.dbChangeToken &+= 1
+                }
+            }
+        )
+    }
+
+    /// Equatable projection so GRDB suppresses duplicate change
+    /// notifications — e.g. flavor-only writes that don't touch
+    /// `entries` stats.
+    private struct LiveSignal: Equatable {
+        let count: Int
+        let maxCreated: Double
+    }
+
+    // MARK: - Background refresh
+
+    /// Register the BGAppRefreshTask handler. Called once, from the
+    /// iOSAppDelegate's `didFinishLaunchingWithOptions` — iOS requires
+    /// all task handlers to be registered before the app finishes
+    /// launch, so we can't do this lazily from `bootstrap()`.
+    static func registerBackgroundTasks() {
+        BGTaskScheduler.shared.register(
+            forTaskWithIdentifier: bgRefreshTaskID,
+            using: nil
+        ) { task in
+            Task { @MainActor in
+                await Self.handleBackgroundRefresh(task: task as! BGAppRefreshTask)
+            }
+        }
+    }
+
+    /// Ask iOS to grant us ~30 s of background CPU time at some point
+    /// in the next ~15 min. iOS decides when based on usage patterns,
+    /// charging state, etc. — this is the "catch-up" safety net for
+    /// periods where silent pushes either weren't delivered or the
+    /// app was fully suspended when they fired.
+    func scheduleBackgroundRefresh() {
+        let request = BGAppRefreshTaskRequest(identifier: Self.bgRefreshTaskID)
+        request.earliestBeginDate = Date(timeIntervalSinceNow: 15 * 60)
+        do {
+            try BGTaskScheduler.shared.submit(request)
+            print("[cpdb] bgrefresh: scheduled")
+        } catch {
+            // Common when running in the simulator or when iOS has
+            // throttled us — not fatal, foreground pulls still work.
+            print("[cpdb] bgrefresh: schedule failed: \(error)")
+        }
+    }
+
+    @MainActor
+    private static func handleBackgroundRefresh(task: BGAppRefreshTask) async {
+        // ALWAYS re-submit the next request before we can get cancelled —
+        // iOS stops granting future slots if we ever let the chain
+        // break without scheduling a successor.
+        Self.shared?.scheduleBackgroundRefresh()
+
+        // Wire the expiration handler so we exit cleanly if iOS cuts
+        // us off mid-pull (the pull runs async and may outlast our
+        // budget on a slow network).
+        task.expirationHandler = {
+            // Don't cancel the pull — it's safe to let it finish in
+            // the background; we just tell iOS we're done so our next
+            // scheduling request doesn't get downgraded.
+            task.setTaskCompleted(success: false)
+        }
+
+        guard let container = Self.shared else {
+            task.setTaskCompleted(success: false)
+            return
+        }
+        let before = container.lastPull?.inserted ?? 0
+        await container.pullNow()
+        let after = container.lastPull?.inserted ?? 0
+        print("[cpdb] bgrefresh: fired, newData=\(after > before)")
+        task.setTaskCompleted(success: true)
+    }
+
+    // MARK: - Sync
 
     /// Force a pull. Called on pull-to-refresh and from the toolbar.
     func pullNow() async {

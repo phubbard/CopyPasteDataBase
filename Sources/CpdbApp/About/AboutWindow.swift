@@ -87,6 +87,8 @@ private struct AboutView: View {
                 .font(.system(size: 13))
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
+                .lineLimit(nil)
+                .fixedSize(horizontal: false, vertical: true)
                 .padding(.horizontal, 24)
 
             Link(destination: Self.repoURL) {

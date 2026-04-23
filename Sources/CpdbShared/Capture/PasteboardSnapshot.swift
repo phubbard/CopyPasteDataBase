@@ -34,6 +34,19 @@ public struct PasteboardSnapshot: Sendable {
     }
 
     /// Extract the best plain-text representation for search / display.
+    ///
+    /// Preference order:
+    ///   1. UTF-8 plain text flavors — the dominant modern format.
+    ///   2. UTF-16 variants — old Cocoa apps still emit these.
+    ///   3. `public.url` / `public.file-url` bytes decoded as UTF-8.
+    ///      Some sources (notably iOS share-sheet → Copy bridged to the
+    ///      Mac via Universal Clipboard) arrive with ONLY a URL flavor
+    ///      and no separate plain-text flavor. Without this fallback
+    ///      the entry lands in SQLite with `text_preview=NULL` and
+    ///      renders as an empty LinkCard.
+    ///   4. `public.url-name` — human-readable title that sometimes
+    ///      accompanies a URL. Last resort because it may be empty
+    ///      while the URL itself is present.
     public var plainText: String? {
         for item in items {
             for flavor in item.flavors {
@@ -42,6 +55,28 @@ public struct PasteboardSnapshot: Sendable {
                 }
                 if flavor.uti == "public.utf16-external-plain-text" || flavor.uti == "public.utf16-plain-text" {
                     if let s = String(data: flavor.data, encoding: .utf16) { return s }
+                }
+            }
+        }
+        // Fallback #1: a URL flavor carried without a text shadow.
+        for item in items {
+            for flavor in item.flavors where flavor.uti == "public.url" || flavor.uti == "public.file-url" {
+                if let s = String(data: flavor.data, encoding: .utf8)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines),
+                   !s.isEmpty
+                {
+                    return s
+                }
+            }
+        }
+        // Fallback #2: a URL's human-readable name.
+        for item in items {
+            for flavor in item.flavors where flavor.uti == "public.url-name" {
+                if let s = String(data: flavor.data, encoding: .utf8)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines),
+                   !s.isEmpty
+                {
+                    return s
                 }
             }
         }

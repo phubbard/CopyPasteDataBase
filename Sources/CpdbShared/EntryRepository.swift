@@ -19,9 +19,17 @@ public struct EntryRepository {
         public var appBundleId: String?
     }
 
-    /// N most recent live entries, most recent first. Optionally filtered by
-    /// kind.
-    public func recent(limit: Int, kind: EntryKind? = nil) throws -> [EntryRow] {
+    /// N most recent live entries, most recent first. Optionally filtered
+    /// by one kind (legacy single-kind path, kept for callers like the
+    /// CLI) or by a set of kinds (used by the popup's chip filter).
+    /// `kinds` takes precedence when both are supplied. An empty set is
+    /// treated the same as nil — "match any kind" — so callers don't
+    /// accidentally hide everything by clearing the UI.
+    public func recent(
+        limit: Int,
+        kind: EntryKind? = nil,
+        kinds: Set<EntryKind>? = nil
+    ) throws -> [EntryRow] {
         try store.dbQueue.read { db in
             var sql = """
                 SELECT e.*, a.name AS app_name_, a.bundle_id AS app_bundle_id_
@@ -30,7 +38,14 @@ public struct EntryRepository {
                 WHERE e.deleted_at IS NULL
             """
             var args: StatementArguments = []
-            if let kind = kind {
+            if let kinds = kinds,
+               !kinds.isEmpty,
+               kinds.count < EntryKind.allCases.count
+            {
+                let placeholders = Array(repeating: "?", count: kinds.count).joined(separator: ",")
+                sql += " AND e.kind IN (\(placeholders))"
+                for k in kinds { args += [k.rawValue] }
+            } else if let kind = kind {
                 sql += " AND e.kind = ?"
                 args += [kind.rawValue]
             }
@@ -60,10 +75,16 @@ public struct EntryRepository {
     public func search(
         query: String,
         scope: FtsIndex.SearchScope = .all,
+        kinds: Set<EntryKind>? = nil,
         limit: Int
     ) throws -> [SearchHit] {
         try store.dbQueue.read { db in
-            let hits = try FtsIndex.search(db: db, query: query, scope: scope, limit: limit)
+            // Fetch more than we need when kind-filtering, since post-
+            // filter may discard rows. Cheap — FTS5 hits are tiny.
+            let fetchLimit = (kinds?.isEmpty == false && kinds!.count < EntryKind.allCases.count)
+                ? limit * 3
+                : limit
+            let hits = try FtsIndex.search(db: db, query: query, scope: scope, limit: fetchLimit)
             guard !hits.isEmpty else { return [] }
             var results: [SearchHit] = []
             results.reserveCapacity(hits.count)
@@ -79,11 +100,22 @@ public struct EntryRepository {
                     arguments: [hit.entryId]
                 ) else { continue }
                 let entry = try Entry(row: row)
+                // Apply the kind filter post-hoc — FTS5 doesn't carry
+                // e.kind, and joining back just to filter would be
+                // wasteful for the common case (no filter).
+                if let kinds = kinds,
+                   !kinds.isEmpty,
+                   kinds.count < EntryKind.allCases.count,
+                   !kinds.contains(entry.kind)
+                {
+                    continue
+                }
                 results.append(SearchHit(
                     row: EntryRow(entry: entry, appName: row["app_name_"], appBundleId: row["app_bundle_id_"]),
                     snippet: hit.snippet,
                     source: hit.source
                 ))
+                if results.count >= limit { break }
             }
             return results
         }

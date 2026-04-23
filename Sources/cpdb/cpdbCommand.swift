@@ -29,6 +29,7 @@ struct CpdbCommand: ParsableCommand {
             ForgetSourceApp.self,
             Gc.self,
             Sync.self,
+            Dedupe.self,
         ],
         defaultSubcommand: ListCommand.self
     )

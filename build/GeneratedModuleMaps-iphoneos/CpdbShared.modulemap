@@ -1,0 +1,4 @@
+module CpdbShared {
+header "CpdbShared-Swift.h"
+export *
+}

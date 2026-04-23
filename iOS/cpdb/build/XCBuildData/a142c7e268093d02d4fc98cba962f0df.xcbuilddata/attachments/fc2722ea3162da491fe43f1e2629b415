@@ -1,0 +1,109 @@
+{
+  "" : {
+    "diagnostics" : "/Users/pfh/code/cpdb/iOS/cpdb/build/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/cpdb-primary.dia",
+    "emit-module-dependencies" : "/Users/pfh/code/cpdb/iOS/cpdb/build/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/cpdb-primary-emit-module.d",
+    "emit-module-diagnostics" : "/Users/pfh/code/cpdb/iOS/cpdb/build/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/cpdb-primary-emit-module.dia",
+    "pch" : "/Users/pfh/code/cpdb/iOS/cpdb/build/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/cpdb-primary-Bridging-header.pch",
+    "swift-dependencies" : "/Users/pfh/code/cpdb/iOS/cpdb/build/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/cpdb-primary.swiftdeps"
+  },
+  "/Users/pfh/code/cpdb/iOS/cpdb/build/cpdb.build/Debug-iphoneos/cpdb.build/DerivedSources/GeneratedAssetSymbols.swift" : {
+    "const-values" : "/Users/pfh/code/cpdb/iOS/cpdb/build/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/GeneratedAssetSymbols.swiftconstvalues",
+    "dependencies" : "/Users/pfh/code/cpdb/iOS/cpdb/build/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/GeneratedAssetSymbols.d",
+    "diagnostics" : "/Users/pfh/code/cpdb/iOS/cpdb/build/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/GeneratedAssetSymbols.dia",
+    "index-unit-output-path" : "/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/GeneratedAssetSymbols.o",
+    "llvm-bc" : "/Users/pfh/code/cpdb/iOS/cpdb/build/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/GeneratedAssetSymbols.bc",
+    "object" : "/Users/pfh/code/cpdb/iOS/cpdb/build/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/GeneratedAssetSymbols.o",
+    "swift-dependencies" : "/Users/pfh/code/cpdb/iOS/cpdb/build/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/GeneratedAssetSymbols.swiftdeps",
+    "swiftmodule" : "/Users/pfh/code/cpdb/iOS/cpdb/build/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/GeneratedAssetSymbols~partial.swiftmodule"
+  },
+  "/Users/pfh/code/cpdb/iOS/cpdb/cpdb/AboutSheet.swift" : {
+    "const-values" : "/Users/pfh/code/cpdb/iOS/cpdb/build/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/AboutSheet.swiftconstvalues",
+    "dependencies" : "/Users/pfh/code/cpdb/iOS/cpdb/build/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/AboutSheet.d",
+    "diagnostics" : "/Users/pfh/code/cpdb/iOS/cpdb/build/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/AboutSheet.dia",
+    "index-unit-output-path" : "/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/AboutSheet.o",
+    "llvm-bc" : "/Users/pfh/code/cpdb/iOS/cpdb/build/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/AboutSheet.bc",
+    "object" : "/Users/pfh/code/cpdb/iOS/cpdb/build/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/AboutSheet.o",
+    "swift-dependencies" : "/Users/pfh/code/cpdb/iOS/cpdb/build/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/AboutSheet.swiftdeps",
+    "swiftmodule" : "/Users/pfh/code/cpdb/iOS/cpdb/build/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/AboutSheet~partial.swiftmodule"
+  },
+  "/Users/pfh/code/cpdb/iOS/cpdb/cpdb/AppContainer.swift" : {
+    "const-values" : "/Users/pfh/code/cpdb/iOS/cpdb/build/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/AppContainer.swiftconstvalues",
+    "dependencies" : "/Users/pfh/code/cpdb/iOS/cpdb/build/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/AppContainer.d",
+    "diagnostics" : "/Users/pfh/code/cpdb/iOS/cpdb/build/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/AppContainer.dia",
+    "index-unit-output-path" : "/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/AppContainer.o",
+    "llvm-bc" : "/Users/pfh/code/cpdb/iOS/cpdb/build/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/AppContainer.bc",
+    "object" : "/Users/pfh/code/cpdb/iOS/cpdb/build/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/AppContainer.o",
+    "swift-dependencies" : "/Users/pfh/code/cpdb/iOS/cpdb/build/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/AppContainer.swiftdeps",
+    "swiftmodule" : "/Users/pfh/code/cpdb/iOS/cpdb/build/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/AppContainer~partial.swiftmodule"
+  },
+  "/Users/pfh/code/cpdb/iOS/cpdb/cpdb/CpdbiOSApp.swift" : {
+    "const-values" : "/Users/pfh/code/cpdb/iOS/cpdb/build/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/CpdbiOSApp.swiftconstvalues",
+    "dependencies" : "/Users/pfh/code/cpdb/iOS/cpdb/build/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/CpdbiOSApp.d",
+    "diagnostics" : "/Users/pfh/code/cpdb/iOS/cpdb/build/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/CpdbiOSApp.dia",
+    "index-unit-output-path" : "/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/CpdbiOSApp.o",
+    "llvm-bc" : "/Users/pfh/code/cpdb/iOS/cpdb/build/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/CpdbiOSApp.bc",
+    "object" : "/Users/pfh/code/cpdb/iOS/cpdb/build/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/CpdbiOSApp.o",
+    "swift-dependencies" : "/Users/pfh/code/cpdb/iOS/cpdb/build/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/CpdbiOSApp.swiftdeps",
+    "swiftmodule" : "/Users/pfh/code/cpdb/iOS/cpdb/build/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/CpdbiOSApp~partial.swiftmodule"
+  },
+  "/Users/pfh/code/cpdb/iOS/cpdb/cpdb/DevicePickerSheet.swift" : {
+    "const-values" : "/Users/pfh/code/cpdb/iOS/cpdb/build/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/DevicePickerSheet.swiftconstvalues",
+    "dependencies" : "/Users/pfh/code/cpdb/iOS/cpdb/build/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/DevicePickerSheet.d",
+    "diagnostics" : "/Users/pfh/code/cpdb/iOS/cpdb/build/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/DevicePickerSheet.dia",
+    "index-unit-output-path" : "/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/DevicePickerSheet.o",
+    "llvm-bc" : "/Users/pfh/code/cpdb/iOS/cpdb/build/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/DevicePickerSheet.bc",
+    "object" : "/Users/pfh/code/cpdb/iOS/cpdb/build/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/DevicePickerSheet.o",
+    "swift-dependencies" : "/Users/pfh/code/cpdb/iOS/cpdb/build/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/DevicePickerSheet.swiftdeps",
+    "swiftmodule" : "/Users/pfh/code/cpdb/iOS/cpdb/build/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/DevicePickerSheet~partial.swiftmodule"
+  },
+  "/Users/pfh/code/cpdb/iOS/cpdb/cpdb/EntryDetailView.swift" : {
+    "const-values" : "/Users/pfh/code/cpdb/iOS/cpdb/build/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/EntryDetailView.swiftconstvalues",
+    "dependencies" : "/Users/pfh/code/cpdb/iOS/cpdb/build/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/EntryDetailView.d",
+    "diagnostics" : "/Users/pfh/code/cpdb/iOS/cpdb/build/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/EntryDetailView.dia",
+    "index-unit-output-path" : "/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/EntryDetailView.o",
+    "llvm-bc" : "/Users/pfh/code/cpdb/iOS/cpdb/build/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/EntryDetailView.bc",
+    "object" : "/Users/pfh/code/cpdb/iOS/cpdb/build/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/EntryDetailView.o",
+    "swift-dependencies" : "/Users/pfh/code/cpdb/iOS/cpdb/build/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/EntryDetailView.swiftdeps",
+    "swiftmodule" : "/Users/pfh/code/cpdb/iOS/cpdb/build/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/EntryDetailView~partial.swiftmodule"
+  },
+  "/Users/pfh/code/cpdb/iOS/cpdb/cpdb/EntryRow.swift" : {
+    "const-values" : "/Users/pfh/code/cpdb/iOS/cpdb/build/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/EntryRow.swiftconstvalues",
+    "dependencies" : "/Users/pfh/code/cpdb/iOS/cpdb/build/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/EntryRow.d",
+    "diagnostics" : "/Users/pfh/code/cpdb/iOS/cpdb/build/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/EntryRow.dia",
+    "index-unit-output-path" : "/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/EntryRow.o",
+    "llvm-bc" : "/Users/pfh/code/cpdb/iOS/cpdb/build/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/EntryRow.bc",
+    "object" : "/Users/pfh/code/cpdb/iOS/cpdb/build/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/EntryRow.o",
+    "swift-dependencies" : "/Users/pfh/code/cpdb/iOS/cpdb/build/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/EntryRow.swiftdeps",
+    "swiftmodule" : "/Users/pfh/code/cpdb/iOS/cpdb/build/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/EntryRow~partial.swiftmodule"
+  },
+  "/Users/pfh/code/cpdb/iOS/cpdb/cpdb/FilterSheet.swift" : {
+    "const-values" : "/Users/pfh/code/cpdb/iOS/cpdb/build/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/FilterSheet.swiftconstvalues",
+    "dependencies" : "/Users/pfh/code/cpdb/iOS/cpdb/build/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/FilterSheet.d",
+    "diagnostics" : "/Users/pfh/code/cpdb/iOS/cpdb/build/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/FilterSheet.dia",
+    "index-unit-output-path" : "/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/FilterSheet.o",
+    "llvm-bc" : "/Users/pfh/code/cpdb/iOS/cpdb/build/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/FilterSheet.bc",
+    "object" : "/Users/pfh/code/cpdb/iOS/cpdb/build/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/FilterSheet.o",
+    "swift-dependencies" : "/Users/pfh/code/cpdb/iOS/cpdb/build/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/FilterSheet.swiftdeps",
+    "swiftmodule" : "/Users/pfh/code/cpdb/iOS/cpdb/build/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/FilterSheet~partial.swiftmodule"
+  },
+  "/Users/pfh/code/cpdb/iOS/cpdb/cpdb/SearchView.swift" : {
+    "const-values" : "/Users/pfh/code/cpdb/iOS/cpdb/build/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/SearchView.swiftconstvalues",
+    "dependencies" : "/Users/pfh/code/cpdb/iOS/cpdb/build/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/SearchView.d",
+    "diagnostics" : "/Users/pfh/code/cpdb/iOS/cpdb/build/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/SearchView.dia",
+    "index-unit-output-path" : "/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/SearchView.o",
+    "llvm-bc" : "/Users/pfh/code/cpdb/iOS/cpdb/build/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/SearchView.bc",
+    "object" : "/Users/pfh/code/cpdb/iOS/cpdb/build/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/SearchView.o",
+    "swift-dependencies" : "/Users/pfh/code/cpdb/iOS/cpdb/build/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/SearchView.swiftdeps",
+    "swiftmodule" : "/Users/pfh/code/cpdb/iOS/cpdb/build/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/SearchView~partial.swiftmodule"
+  },
+  "/Users/pfh/code/cpdb/iOS/cpdb/cpdb/URLDetection.swift" : {
+    "const-values" : "/Users/pfh/code/cpdb/iOS/cpdb/build/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/URLDetection.swiftconstvalues",
+    "dependencies" : "/Users/pfh/code/cpdb/iOS/cpdb/build/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/URLDetection.d",
+    "diagnostics" : "/Users/pfh/code/cpdb/iOS/cpdb/build/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/URLDetection.dia",
+    "index-unit-output-path" : "/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/URLDetection.o",
+    "llvm-bc" : "/Users/pfh/code/cpdb/iOS/cpdb/build/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/URLDetection.bc",
+    "object" : "/Users/pfh/code/cpdb/iOS/cpdb/build/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/URLDetection.o",
+    "swift-dependencies" : "/Users/pfh/code/cpdb/iOS/cpdb/build/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/URLDetection.swiftdeps",
+    "swiftmodule" : "/Users/pfh/code/cpdb/iOS/cpdb/build/cpdb.build/Debug-iphoneos/cpdb.build/Objects-normal/arm64/URLDetection~partial.swiftmodule"
+  }
+}

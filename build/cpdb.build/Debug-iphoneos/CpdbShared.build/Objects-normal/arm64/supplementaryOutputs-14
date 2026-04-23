@@ -1,0 +1,23 @@
+{
+  "/Users/pfh/code/cpdb/Sources/CpdbShared/Store/Schema.swift" : {
+    "const-values" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbShared.build/Objects-normal/arm64/Schema.swiftconstvalues",
+    "dependencies" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbShared.build/Objects-normal/arm64/Schema.d",
+    "diagnostics" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbShared.build/Objects-normal/arm64/Schema.dia",
+    "object" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbShared.build/Objects-normal/arm64/Schema.o",
+    "swift-dependencies" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbShared.build/Objects-normal/arm64/Schema.swiftdeps"
+  },
+  "/Users/pfh/code/cpdb/Sources/CpdbShared/Sync/ActionRequestMapper.swift" : {
+    "const-values" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbShared.build/Objects-normal/arm64/ActionRequestMapper.swiftconstvalues",
+    "dependencies" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbShared.build/Objects-normal/arm64/ActionRequestMapper.d",
+    "diagnostics" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbShared.build/Objects-normal/arm64/ActionRequestMapper.dia",
+    "object" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbShared.build/Objects-normal/arm64/ActionRequestMapper.o",
+    "swift-dependencies" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbShared.build/Objects-normal/arm64/ActionRequestMapper.swiftdeps"
+  },
+  "/Users/pfh/code/cpdb/Sources/CpdbShared/Sync/CKSchema.swift" : {
+    "const-values" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbShared.build/Objects-normal/arm64/CKSchema.swiftconstvalues",
+    "dependencies" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbShared.build/Objects-normal/arm64/CKSchema.d",
+    "diagnostics" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbShared.build/Objects-normal/arm64/CKSchema.dia",
+    "object" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbShared.build/Objects-normal/arm64/CKSchema.o",
+    "swift-dependencies" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbShared.build/Objects-normal/arm64/CKSchema.swiftdeps"
+  }
+}

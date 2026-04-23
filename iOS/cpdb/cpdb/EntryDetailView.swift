@@ -170,8 +170,8 @@ struct EntryDetailView: View {
             //   2. Preview CONTAINS URLs → AttributedString with
             //      NSDataDetector-marked ranges, tappable inline.
             if let preview = l.entry.textPreview,
-               let single = Self.cleanURL(from: preview.trimmingCharacters(in: .whitespacesAndNewlines)),
-               Self.isWholeStringAURL(preview)
+               let single = URLDetection.cleanURL(from: preview.trimmingCharacters(in: .whitespacesAndNewlines)),
+               URLDetection.isWholeStringAURL(preview)
             {
                 linkBody(l, overrideURL: single)
             } else {
@@ -188,7 +188,7 @@ struct EntryDetailView: View {
     /// `l.linkURL` lookup (which is nil for non-link kinds).
     @ViewBuilder
     private func linkBody(_ l: Loaded, overrideURL: URL? = nil) -> some View {
-        let url: URL? = overrideURL ?? l.linkURL.flatMap(Self.cleanURL(from:))
+        let url: URL? = overrideURL ?? l.linkURL.flatMap(URLDetection.cleanURL(from:))
         let urlString: String? = overrideURL?.absoluteString ?? l.linkURL
         if let url = url, let urlString = urlString {
             VStack(alignment: .leading, spacing: 10) {
@@ -243,19 +243,6 @@ struct EntryDetailView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
-    }
-
-    /// Returns true when the trimmed string is exactly one URL
-    /// (no trailing/leading text). Used by body(of:) to decide
-    /// whether to promote a text-kind entry to the boxed-link UI.
-    private static func isWholeStringAURL(_ s: String) -> Bool {
-        let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty,
-              !trimmed.contains(where: { $0.isWhitespace || $0.isNewline })
-        else {
-            return false
-        }
-        return cleanURL(from: trimmed) != nil
     }
 
     /// Wrap raw text in an AttributedString with URL ranges marked
@@ -316,20 +303,6 @@ struct EntryDetailView: View {
             EmptyView()
             #endif
         }
-    }
-
-    /// Best-effort URL parse. Accepts trailing whitespace, trims
-    /// zero-width chars, adds a scheme if missing (so `example.com`
-    /// becomes `https://example.com`). Returns nil for garbage.
-    private static func cleanURL(from raw: String) -> URL? {
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
-        if let url = URL(string: trimmed), url.scheme != nil { return url }
-        // Schemeless common case — prepend https and try again.
-        if let url = URL(string: "https://\(trimmed)"), url.host != nil {
-            return url
-        }
-        return nil
     }
 
     @ViewBuilder
@@ -462,7 +435,7 @@ struct EntryDetailView: View {
     ) async -> SharePayload? {
         switch l.entry.kind {
         case .link:
-            if let s = l.linkURL, let u = Self.cleanURL(from: s) {
+            if let s = l.linkURL, let u = URLDetection.cleanURL(from: s) {
                 return .url(u)
             }
             return l.entry.textPreview.map { .text($0) }

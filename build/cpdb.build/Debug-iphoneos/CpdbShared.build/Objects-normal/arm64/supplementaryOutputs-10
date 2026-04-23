@@ -1,0 +1,30 @@
+{
+  "/Users/pfh/code/cpdb/Sources/CpdbShared/Capture/CanonicalHash.swift" : {
+    "const-values" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbShared.build/Objects-normal/arm64/CanonicalHash.swiftconstvalues",
+    "dependencies" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbShared.build/Objects-normal/arm64/CanonicalHash.d",
+    "diagnostics" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbShared.build/Objects-normal/arm64/CanonicalHash.dia",
+    "object" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbShared.build/Objects-normal/arm64/CanonicalHash.o",
+    "swift-dependencies" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbShared.build/Objects-normal/arm64/CanonicalHash.swiftdeps"
+  },
+  "/Users/pfh/code/cpdb/Sources/CpdbShared/Capture/IgnoredApps.swift" : {
+    "const-values" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbShared.build/Objects-normal/arm64/IgnoredApps.swiftconstvalues",
+    "dependencies" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbShared.build/Objects-normal/arm64/IgnoredApps.d",
+    "diagnostics" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbShared.build/Objects-normal/arm64/IgnoredApps.dia",
+    "object" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbShared.build/Objects-normal/arm64/IgnoredApps.o",
+    "swift-dependencies" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbShared.build/Objects-normal/arm64/IgnoredApps.swiftdeps"
+  },
+  "/Users/pfh/code/cpdb/Sources/CpdbShared/Capture/PasteboardSnapshot.swift" : {
+    "const-values" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbShared.build/Objects-normal/arm64/PasteboardSnapshot.swiftconstvalues",
+    "dependencies" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbShared.build/Objects-normal/arm64/PasteboardSnapshot.d",
+    "diagnostics" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbShared.build/Objects-normal/arm64/PasteboardSnapshot.dia",
+    "object" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbShared.build/Objects-normal/arm64/PasteboardSnapshot.o",
+    "swift-dependencies" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbShared.build/Objects-normal/arm64/PasteboardSnapshot.swiftdeps"
+  },
+  "/Users/pfh/code/cpdb/Sources/CpdbShared/Capture/Thumbnailer.swift" : {
+    "const-values" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbShared.build/Objects-normal/arm64/Thumbnailer.swiftconstvalues",
+    "dependencies" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbShared.build/Objects-normal/arm64/Thumbnailer.d",
+    "diagnostics" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbShared.build/Objects-normal/arm64/Thumbnailer.dia",
+    "object" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbShared.build/Objects-normal/arm64/Thumbnailer.o",
+    "swift-dependencies" : "/Users/pfh/code/cpdb/build/cpdb.build/Debug-iphoneos/CpdbShared.build/Objects-normal/arm64/Thumbnailer.swiftdeps"
+  }
+}

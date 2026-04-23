@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+        Hand-authored Info.plist. Was using GENERATE_INFOPLIST_FILE=YES
+        with INFOPLIST_KEY_* build settings, but Xcode 26's synthesis
+        whitelist doesn't include UIBackgroundModes or
+        BGTaskSchedulerPermittedIdentifiers — those values silently
+        dropped from the built plist, and BGTaskScheduler.submit
+        failed at runtime with "Unrecognized Identifier". Shipping a
+        real plist here sidesteps the whitelist entirely.
+
+        CFBundleDisplayName / CFBundleExecutable / CFBundleIdentifier
+        / CFBundleIcons / CFBundleShortVersionString / CFBundleVersion
+        all come from build-setting substitutions resolved at build
+        time — no need to hard-code them here.
+    -->
+    <key>CFBundleDevelopmentRegion</key>
+    <string>$(DEVELOPMENT_LANGUAGE)</string>
+    <key>CFBundleDisplayName</key>
+    <string>CopyPaste</string>
+    <key>CFBundleExecutable</key>
+    <string>$(EXECUTABLE_NAME)</string>
+    <key>CFBundleIdentifier</key>
+    <string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>$(PRODUCT_NAME)</string>
+    <key>CFBundlePackageType</key>
+    <string>$(PRODUCT_BUNDLE_PACKAGE_TYPE)</string>
+    <key>CFBundleShortVersionString</key>
+    <string>$(MARKETING_VERSION)</string>
+    <key>CFBundleVersion</key>
+    <string>$(CURRENT_PROJECT_VERSION)</string>
+    <key>LSRequiresIPhoneOS</key>
+    <true/>
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.utilities</string>
+
+    <!-- Silent push: CKDatabaseSubscription wakes us when another
+         device writes to the shared zone. -->
+    <!-- fetch: lets BGAppRefreshTask fire as a safety net when
+         silent push is missed or throttled. -->
+    <key>UIBackgroundModes</key>
+    <array>
+        <string>remote-notification</string>
+        <string>fetch</string>
+    </array>
+
+    <!-- Must include every identifier we pass to BGTaskScheduler.submit
+         or BGTaskScheduler.register — iOS rejects anything not listed
+         here with "Unrecognized Identifier". Keep in sync with
+         AppContainer.bgRefreshTaskID. -->
+    <key>BGTaskSchedulerPermittedIdentifiers</key>
+    <array>
+        <string>net.phfactor.cpdb.ios.refresh</string>
+    </array>
+
+    <key>UIApplicationSupportsIndirectInputEvents</key>
+    <true/>
+    <key>UILaunchScreen</key>
+    <dict/>
+    <key>UIApplicationSceneManifest</key>
+    <dict>
+        <key>UIApplicationSupportsMultipleScenes</key>
+        <true/>
+    </dict>
+    <key>UISupportedInterfaceOrientations</key>
+    <array>
+        <string>UIInterfaceOrientationPortrait</string>
+        <string>UIInterfaceOrientationLandscapeLeft</string>
+        <string>UIInterfaceOrientationLandscapeRight</string>
+    </array>
+    <key>UISupportedInterfaceOrientations~ipad</key>
+    <array>
+        <string>UIInterfaceOrientationPortrait</string>
+        <string>UIInterfaceOrientationPortraitUpsideDown</string>
+        <string>UIInterfaceOrientationLandscapeLeft</string>
+        <string>UIInterfaceOrientationLandscapeRight</string>
+    </array>
+</dict>
+</plist>

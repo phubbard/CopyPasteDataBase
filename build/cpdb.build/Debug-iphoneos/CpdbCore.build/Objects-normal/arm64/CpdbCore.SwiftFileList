@@ -1,0 +1,13 @@
+/Users/pfh/code/cpdb/Sources/CpdbCore/Capture/FrontmostApp.swift
+/Users/pfh/code/cpdb/Sources/CpdbCore/Capture/FrontmostAppMonitor.swift
+/Users/pfh/code/cpdb/Sources/CpdbCore/Capture/IgnoredApps.swift
+/Users/pfh/code/cpdb/Sources/CpdbCore/Capture/Ingestor.swift
+/Users/pfh/code/cpdb/Sources/CpdbCore/Capture/PasteboardSnapshot.swift
+/Users/pfh/code/cpdb/Sources/CpdbCore/Capture/PasteboardWatcher.swift
+/Users/pfh/code/cpdb/Sources/CpdbCore/Capture/TransientFilter.swift
+/Users/pfh/code/cpdb/Sources/CpdbCore/Import/PasteCoreDataReader.swift
+/Users/pfh/code/cpdb/Sources/CpdbCore/Import/PasteDbImporter.swift
+/Users/pfh/code/cpdb/Sources/CpdbCore/Import/TransformablePasteboardDecoder.swift
+/Users/pfh/code/cpdb/Sources/CpdbCore/LaunchAgent.swift
+/Users/pfh/code/cpdb/Sources/CpdbCore/PasteboardWriter.swift
+/Users/pfh/code/cpdb/Sources/CpdbCore/Restore/Restorer.swift

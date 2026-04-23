@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import GRDB
 import CpdbCore
 import CpdbShared
 
@@ -32,6 +33,20 @@ final class PopupState {
         didSet {
             if searchScope != oldValue {
                 PopupState.saveScope(searchScope)
+                refresh()
+            }
+        }
+    }
+
+    /// Entry-kind filter chips in the popup header. Default is "all
+    /// kinds". Persisted across launches so the user's preference
+    /// survives relaunch — same contract as `searchScope`. An empty
+    /// set OR a set containing every kind both mean "no filter"; the
+    /// repository normalises both to a no-op clause.
+    var kindFilter: Set<EntryKind> = PopupState.loadKindFilter() {
+        didSet {
+            if kindFilter != oldValue {
+                PopupState.saveKindFilter(kindFilter)
                 refresh()
             }
         }
@@ -79,6 +94,16 @@ final class PopupState {
     /// Monotonic token so stale async results don't overwrite newer ones.
     private var generation: Int = 0
 
+    /// GRDB live-update subscription. Installed by `startLiveUpdates()`
+    /// while the popup is on-screen; torn down in `stopLiveUpdates()`
+    /// on hide. We don't keep it running 24/7 — it would pin the DB
+    /// file and emit work we'd throw away.
+    private var liveObservation: (any DatabaseCancellable)?
+    /// Debounce token: a burst of writes (an insert touches `entries`,
+    /// `entry_flavors`, and FTS rows in one transaction) should only
+    /// run refresh() once. Bumping this cancels any prior pending task.
+    private var liveRefreshGeneration: Int = 0
+
     init(store: Store, recentLimit: Int = 200) {
         self.store = store
         self.repository = EntryRepository(store: store)
@@ -101,7 +126,10 @@ final class PopupState {
         isSearching = !q.isEmpty
         do {
             if q.isEmpty {
-                let fetched = try repository.recent(limit: searchLimit)
+                let fetched = try repository.recent(
+                    limit: searchLimit,
+                    kinds: kindFilter
+                )
                 guard gen == generation else { return }
                 rows = fetched
                 snippetsById = [:]
@@ -110,6 +138,7 @@ final class PopupState {
                 let results = try repository.search(
                     query: q,
                     scope: searchScope,
+                    kinds: kindFilter,
                     limit: searchLimit
                 )
                 guard gen == generation else { return }
@@ -131,6 +160,73 @@ final class PopupState {
         }
     }
 
+    // MARK: - Live updates while the popup is visible
+
+    /// Subscribe to writes on `entries` so new captures (local or
+    /// CloudKit-pulled) show up in the popup without the user having
+    /// to dismiss + re-summon. Idempotent: calling twice is a no-op.
+    ///
+    /// We track `entries` only — flavors changing without a parent row
+    /// change aren't user-visible in the strip, and observing more
+    /// tables means more wake-ups with nothing to show. CloudKit pulls
+    /// touch `entries` inside the same transaction that writes flavors,
+    /// so we don't miss remote updates either.
+    func startLiveUpdates() {
+        guard liveObservation == nil else { return }
+        // Cheap projection: any edit to `entries` causes GRDB to re-
+        // evaluate this, yielding a new (count, maxCreatedAt) tuple.
+        // That's enough signal — we don't actually need the values,
+        // just the change notification.
+        let observation = ValueObservation.tracking { db in
+            let count = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM entries WHERE deleted_at IS NULL") ?? 0
+            let maxCreated = try Double.fetchOne(db, sql: "SELECT MAX(created_at) FROM entries WHERE deleted_at IS NULL") ?? 0
+            return LiveSignal(count: count, maxCreated: maxCreated)
+        }
+        liveObservation = observation.start(
+            in: store.dbQueue,
+            scheduling: .immediate,
+            onError: { error in
+                Log.cli.error("popup live updates errored: \(String(describing: error), privacy: .public)")
+            },
+            onChange: { [weak self] _ in
+                Task { @MainActor in self?.scheduleLiveRefresh() }
+            }
+        )
+    }
+
+    /// Tear down the live-update subscription. Called by `PopupController`
+    /// on hide so we don't pin the DB file or burn CPU refreshing an
+    /// invisible view.
+    func stopLiveUpdates() {
+        liveObservation?.cancel()
+        liveObservation = nil
+        liveRefreshGeneration &+= 1  // drop any pending debounced task
+    }
+
+    /// Debounced wrapper around `refresh()`. A single pasteboard
+    /// capture triggers multiple writes on `entries` + `entry_flavors`
+    /// + FTS; GRDB fires ValueObservation once per transaction, but
+    /// back-to-back captures (e.g. CloudKit applying a pull page of
+    /// 100 rows) would otherwise thrash the popup. 120 ms feels live
+    /// without flicker.
+    private func scheduleLiveRefresh() {
+        liveRefreshGeneration &+= 1
+        let gen = liveRefreshGeneration
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 120_000_000)
+            guard gen == self.liveRefreshGeneration else { return }
+            self.refresh()
+        }
+    }
+
+    /// Opaque projection used to drive `ValueObservation`. Equatable
+    /// so GRDB can suppress no-op change notifications (e.g. a flavor
+    /// insert that doesn't touch `entries`).
+    private struct LiveSignal: Equatable {
+        let count: Int
+        let maxCreated: Double
+    }
+
     // MARK: - Scope persistence
 
     private static let scopeDefaultsKey = "cpdb.popup.scope"
@@ -149,6 +245,28 @@ final class PopupState {
         if let data = try? JSONEncoder().encode(scope) {
             UserDefaults.standard.set(data, forKey: scopeDefaultsKey)
         }
+    }
+
+    // MARK: - Kind filter persistence
+
+    private static let kindFilterDefaultsKey = "cpdb.popup.kindFilter"
+
+    private static func loadKindFilter() -> Set<EntryKind> {
+        // Persisted as an array of raw strings (stable across versions
+        // even if we rearrange the EntryKind cases). Missing key or
+        // empty list → "all kinds".
+        guard let raw = UserDefaults.standard.array(forKey: kindFilterDefaultsKey) as? [String],
+              !raw.isEmpty
+        else {
+            return Set(EntryKind.allCases)
+        }
+        let parsed = raw.compactMap(EntryKind.init(rawValue:))
+        return parsed.isEmpty ? Set(EntryKind.allCases) : Set(parsed)
+    }
+
+    private static func saveKindFilter(_ kinds: Set<EntryKind>) {
+        let raw = kinds.map(\.rawValue).sorted()
+        UserDefaults.standard.set(raw, forKey: kindFilterDefaultsKey)
     }
 
     // MARK: - Remember-scroll-on-preview persistence

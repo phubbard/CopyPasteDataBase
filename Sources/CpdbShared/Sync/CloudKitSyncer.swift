@@ -964,15 +964,22 @@ public actor CloudKitSyncer {
         // the decoded `SourceInfo.deviceIdentifier` on the devices
         // table, not on the entry itself).
         //
-        // Tombstoned local entries are ignored by this lookup; a
-        // re-seen tombstoned hash will insert a fresh row (which we
-        // generally don't want). The caller's tombstone() path covers
-        // server-side deletion cascades.
+        // We DON'T filter on `deleted_at IS NULL` here. If the local
+        // row is tombstoned (e.g. cleaned up by `cpdb dedupe` while
+        // the CloudKit record is still live pending push) we want to
+        // treat this as "tombstone wins, the pushed-but-not-yet-
+        // applied tombstone will catch up the server" and NOT insert
+        // a new row. Inserting would collide on the unique UUID
+        // (same content → same record → same UUID arrived back).
         if var existing = try Entry
             .filter(Column("content_hash") == d.contentHash)
-            .filter(Column("deleted_at") == nil)
             .fetchOne(db)
         {
+            // Skip live-ifying a locally-tombstoned row. Our
+            // pending tombstone push is the source of truth.
+            if existing.deletedAt != nil, d.deletedAt == nil {
+                return .unchanged
+            }
             existing.createdAt   = d.createdAt
             existing.capturedAt  = d.capturedAt
             existing.kind        = d.kind
