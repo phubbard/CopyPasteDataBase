@@ -89,21 +89,24 @@ build-app: verify-version stamp-build
 	else \
 	    echo "warning: AppIcon.icns not found; run scripts/make-icon.swift first"; \
 	fi
-	# SPM-generated resource bundles — each Swift Package that declares
-	# resources produces a `<Package>_<Target>.bundle` at build time.
-	# `Bundle.module` inside the package looks for these next to the
-	# main binary.
-	#
-	# Three caveats before macOS will load them:
-	#   1. Must live at Contents/Resources/ (copy step below).
-	#   2. Info.plist must include CFBundleIdentifier + CFBundlePackageType.
-	#      SPM writes a stub with only CFBundleDevelopmentRegion, which
-	#      Bundle(url:) rejects. Patch via PlistBuddy after copy.
-	#   3. Must be codesigned (see codesign loop further down).
+	# SPM-generated resource bundles. Two-step:
+	#   1. Real bundle lives in Contents/Resources/<name>.bundle — that
+	#      location keeps codesign happy (the outer .app signature
+	#      enumerates files in Contents/ only; top-level siblings of
+	#      Contents/ break "code has no resources but signature indicates
+	#      they must be present").
+	#   2. A relative symlink at the .app top level points at the real
+	#      bundle. SPM's generated `Bundle.module` accessor looks for
+	#      `Bundle.main.bundleURL.appendingPathComponent(name + ".bundle")`
+	#      which for an .app is `/Applications/cpdb.app/<name>.bundle` —
+	#      a symlink there is enough to resolve the lookup.
+	# Also patch the SPM-stub Info.plist with CFBundleIdentifier +
+	# CFBundlePackageType so macOS Bundle(url:) accepts it.
 	@for b in $(BUILD_DIR)/$(BUILD_CONFIG)/*.bundle; do \
 	    if [ -d "$$b" ]; then \
 	        name=$$(basename "$$b" .bundle); \
-	        dest=$(APP_BUNDLE_DIR)/Contents/Resources/$$(basename "$$b"); \
+	        bundleName=$$(basename "$$b"); \
+	        dest=$(APP_BUNDLE_DIR)/Contents/Resources/$$bundleName; \
 	        cp -R "$$b" $(APP_BUNDLE_DIR)/Contents/Resources/; \
 	        /usr/libexec/PlistBuddy -c "Add :CFBundleIdentifier string net.phfactor.cpdb.$$name" "$$dest/Info.plist" 2>/dev/null || \
 	            /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier net.phfactor.cpdb.$$name" "$$dest/Info.plist"; \
@@ -112,7 +115,7 @@ build-app: verify-version stamp-build
 	        /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string 1" "$$dest/Info.plist" 2>/dev/null || true; \
 	        /usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string 1.0" "$$dest/Info.plist" 2>/dev/null || true; \
 	        /usr/libexec/PlistBuddy -c "Add :CFBundleInfoDictionaryVersion string 6.0" "$$dest/Info.plist" 2>/dev/null || true; \
-	        echo "  bundled $$(basename $$b)"; \
+	        echo "  bundled $$bundleName"; \
 	    fi; \
 	done
 	# The `cpdb` CLI is NOT shipped inside the app bundle. AMFI rejects
@@ -140,7 +143,7 @@ build-app: verify-version stamp-build
 	# assertion when KeyboardShortcuts (or any other resource-bearing
 	# package) tries to read its bundle. No --entitlements on these;
 	# resource bundles don't claim capabilities.
-	@for b in $(APP_BUNDLE_DIR)/Contents/Resources/*.bundle; do \
+	@for b in $(APP_BUNDLE_DIR)/*.bundle; do \
 	    if [ -d "$$b" ]; then \
 	        codesign --force --sign "$(SIGNING_IDENTITY)" --timestamp=none "$$b"; \
 	    fi; \
