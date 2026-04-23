@@ -58,6 +58,20 @@ struct SearchView: View {
             .onChange(of: query) { _, _ in
                 scheduleQuery()
             }
+            // Re-query every time a pull completes (new `lastPull`)
+            // AND every time a pull page lands (new `pullProgress`).
+            // The pages one makes the list fill in progressively
+            // during a long backfill; the completed one catches the
+            // final state.
+            .onChange(of: container.lastPull) { _, _ in
+                Task { await runQuery() }
+            }
+            .onChange(of: container.pullProgress?.inserted) { _, _ in
+                Task { await runQuery() }
+            }
+            .onChange(of: container.pullProgress?.updated) { _, _ in
+                Task { await runQuery() }
+            }
             .onAppear {
                 Task { await runQuery() }
             }
