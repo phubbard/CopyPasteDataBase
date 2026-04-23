@@ -15,8 +15,11 @@
 	</array>
 	<!-- APNs environment for CKDatabaseSubscription silent pushes. Flip
 	     to "production" when we sign with a Developer ID Application
-	     identity for release distribution. -->
-	<key>aps-environment</key>
+	     identity for release distribution.
+	     Note: on macOS we use the fully-qualified `com.apple.developer.*`
+	     key name. The short-form `aps-environment` is iOS-only and
+	     AMFI rejects it as not-matching the profile's grant. -->
+	<key>com.apple.developer.aps-environment</key>
 	<string>development</string>
 </dict>
 </plist>

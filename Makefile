@@ -32,6 +32,12 @@ SIGNING_IDENTITY ?= Apple Development: Paul HUBBARD (6442857NX6)
 # CloudKit requests fail with "Missing application-identifier entitlement".
 ENTITLEMENTS     = Sources/CpdbApp/Resources/cpdb.entitlements
 
+# Provisioning profile — must authorise every entitlement in $(ENTITLEMENTS).
+# Download from Apple Developer → Profiles after enabling iCloud container
+# + Push Notifications on the app id, then drop at the project root.
+# Gitignored (*.provisionprofile) so credentials never land in the repo.
+PROFILE          = cpdb.provisionprofile
+
 .PHONY: all build build-cli build-app run-app install-app clean test verify-version release version
 
 all: build
@@ -64,15 +70,16 @@ build-app: verify-version
 	mkdir -p $(APP_BUNDLE_DIR)/Contents/Resources
 	cp $(BUILD_DIR)/$(BUILD_CONFIG)/CpdbApp $(APP_BUNDLE_DIR)/Contents/MacOS/$(APP_NAME)
 	cp Sources/CpdbApp/Resources/Info.plist $(APP_BUNDLE_DIR)/Contents/Info.plist
-	# Entitlements are temporarily NOT attached until we embed a matching
-	# provisioning profile. macOS rejects launching a binary whose
-	# `com.apple.developer.icloud-services` / `aps-environment`
-	# entitlements aren't authorised by an embedded profile. To re-enable:
-	#   1. Download the provisioning profile for net.phfactor.cpdb from
-	#      Apple Developer → Profiles
-	#   2. Copy to $(APP_BUNDLE_DIR)/Contents/embedded.provisionprofile
-	#   3. Re-add --entitlements $(ENTITLEMENTS) to the codesign call below
-	codesign --force --sign "$(SIGNING_IDENTITY)" --timestamp=none --options runtime $(APP_BUNDLE_DIR)
+	# Embed the provisioning profile so macOS Launch Services will accept
+	# our developer-namespace entitlements (icloud-container-identifiers,
+	# aps-environment). The file must be named exactly
+	# `embedded.provisionprofile` inside Contents/; codesign + launchd both
+	# look it up by that name.
+	@test -f $(PROFILE) || (echo "error: $(PROFILE) not found — download from Apple Developer and drop at project root" && exit 1)
+	cp $(PROFILE) $(APP_BUNDLE_DIR)/Contents/embedded.provisionprofile
+	codesign --force --sign "$(SIGNING_IDENTITY)" \
+	         --entitlements $(ENTITLEMENTS) \
+	         --timestamp=none --options runtime $(APP_BUNDLE_DIR)
 	@echo
 	@echo "Built $(APP_BUNDLE_DIR) (v$(VERSION))"
 	@codesign -dv $(APP_BUNDLE_DIR) 2>&1 | sed 's/^/  /'
