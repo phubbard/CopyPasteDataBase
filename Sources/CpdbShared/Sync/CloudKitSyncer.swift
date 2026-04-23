@@ -436,6 +436,24 @@ public actor CloudKitSyncer {
         // Entry — upsert by uuid. Preserve local `id` when updating so
         // foreign-key references (flavors, previews, pinboard_entries)
         // stay intact. Mirrors Ingestor's insert shape.
+        //
+        // Cross-device dedup guard: if a non-tombstoned local entry
+        // already has this content_hash under a DIFFERENT uuid, the
+        // two devices independently captured the same content before
+        // sync connected them. Our `idx_entries_live_content_hash`
+        // unique index would fail the insert. Skip with a no-op — we
+        // have the content locally; we just use our own uuid for it.
+        // Long-term convergence is imperfect (both devices keep their
+        // own record), but we lose no data.
+        if let _ = try Entry
+            .filter(Column("content_hash") == d.contentHash)
+            .filter(Column("uuid") != d.uuid)
+            .filter(Column("deleted_at") == nil)
+            .fetchOne(db)
+        {
+            return .unchanged
+        }
+
         if var existing = try Entry.filter(Column("uuid") == d.uuid).fetchOne(db) {
             // Update scalar fields in place.
             existing.createdAt   = d.createdAt
