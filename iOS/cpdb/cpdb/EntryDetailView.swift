@@ -160,17 +160,37 @@ struct EntryDetailView: View {
         case .link:
             linkBody(l)
         default:
-            placeholderText(l)
+            // Text-like entries. Some apps (Zen, some browsers,
+            // shell output with URLs pasted) ship URLs as plain
+            // text with no `public.url` flavor — the Mac classifies
+            // these as kind=text. Detect the case and upgrade the
+            // display:
+            //   1. Entire preview IS a single URL → use the
+            //      boxed-link UI (same as kind=.link).
+            //   2. Preview CONTAINS URLs → AttributedString with
+            //      NSDataDetector-marked ranges, tappable inline.
+            if let preview = l.entry.textPreview,
+               let single = Self.cleanURL(from: preview.trimmingCharacters(in: .whitespacesAndNewlines)),
+               Self.isWholeStringAURL(preview)
+            {
+                linkBody(l, overrideURL: single)
+            } else {
+                richTextBody(l)
+            }
         }
     }
 
     /// Link-kind body. Renders the URL as a tappable `Link` that
     /// opens in Safari/default handler. Falls back to text if the
-    /// URL didn't resolve (shouldn't normally happen).
+    /// URL didn't resolve. `overrideURL` is used when a text-kind
+    /// entry turned out to be a bare URL (Zen et al.), so the
+    /// caller can pass the already-parsed URL and skip the
+    /// `l.linkURL` lookup (which is nil for non-link kinds).
     @ViewBuilder
-    private func linkBody(_ l: Loaded) -> some View {
-        if let urlString = l.linkURL,
-           let url = Self.cleanURL(from: urlString) {
+    private func linkBody(_ l: Loaded, overrideURL: URL? = nil) -> some View {
+        let url: URL? = overrideURL ?? l.linkURL.flatMap(Self.cleanURL(from:))
+        let urlString: String? = overrideURL?.absoluteString ?? l.linkURL
+        if let url = url, let urlString = urlString {
             VStack(alignment: .leading, spacing: 10) {
                 Link(destination: url) {
                     HStack(alignment: .top, spacing: 8) {
@@ -194,7 +214,8 @@ struct EntryDetailView: View {
                 .buttonStyle(.plain)
                 if let preview = l.entry.textPreview,
                    !preview.isEmpty,
-                   preview != urlString
+                   preview != urlString,
+                   preview.trimmingCharacters(in: .whitespacesAndNewlines) != urlString
                 {
                     Text(preview)
                         .font(.system(size: 13))
@@ -204,6 +225,60 @@ struct EntryDetailView: View {
         } else {
             placeholderText(l)
         }
+    }
+
+    /// Text body with inline URL autolinking. Runs NSDataDetector
+    /// over the preview and marks any matched URL ranges as
+    /// Attributed `.link` — `Text(AttributedString)` renders those
+    /// as tappable. Falls back to plain text when no preview.
+    @ViewBuilder
+    private func richTextBody(_ l: Loaded) -> some View {
+        if let preview = l.entry.textPreview, !preview.isEmpty {
+            Text(Self.linkify(preview))
+                .font(.system(size: 14, design: .monospaced))
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+            Text("(no preview)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    /// Returns true when the trimmed string is exactly one URL
+    /// (no trailing/leading text). Used by body(of:) to decide
+    /// whether to promote a text-kind entry to the boxed-link UI.
+    private static func isWholeStringAURL(_ s: String) -> Bool {
+        let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              !trimmed.contains(where: { $0.isWhitespace || $0.isNewline })
+        else {
+            return false
+        }
+        return cleanURL(from: trimmed) != nil
+    }
+
+    /// Wrap raw text in an AttributedString with URL ranges marked
+    /// so SwiftUI's `Text` renders them as tappable links. Non-URL
+    /// content passes through as plain attributed text.
+    private static func linkify(_ s: String) -> AttributedString {
+        var attr = AttributedString(s)
+        guard let detector = try? NSDataDetector(
+            types: NSTextCheckingResult.CheckingType.link.rawValue
+        ) else { return attr }
+        let ns = s as NSString
+        let full = NSRange(location: 0, length: ns.length)
+        detector.enumerateMatches(in: s, options: [], range: full) { match, _, _ in
+            guard let match = match,
+                  let url = match.url,
+                  let stringRange = Range(match.range, in: s),
+                  let attrRange = Range(stringRange, in: attr)
+            else { return }
+            attr[attrRange].link = url
+            attr[attrRange].foregroundColor = .accentColor
+            attr[attrRange].underlineStyle = .single
+        }
+        return attr
     }
 
     /// ShareLink variant chosen per payload kind. Using `ShareLink`
