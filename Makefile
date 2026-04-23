@@ -65,10 +65,18 @@ build-cli:
 
 build-app: verify-version
 	swift build -c $(BUILD_CONFIG) --product CpdbApp
+	swift build -c $(BUILD_CONFIG) --product cpdb
 	rm -rf $(APP_BUNDLE_DIR)
 	mkdir -p $(APP_BUNDLE_DIR)/Contents/MacOS
 	mkdir -p $(APP_BUNDLE_DIR)/Contents/Resources
+	mkdir -p $(APP_BUNDLE_DIR)/Contents/Helpers
 	cp $(BUILD_DIR)/$(BUILD_CONFIG)/CpdbApp $(APP_BUNDLE_DIR)/Contents/MacOS/$(APP_NAME)
+	# Ship the `cpdb` CLI inside the app bundle so second-Mac installs
+	# (which don't have the build tree) can run `cpdb sync pull-once`,
+	# `cpdb stats`, etc. Apple convention: auxiliary binaries go in
+	# Contents/Helpers/. Users invoke it as:
+	#   /Applications/cpdb.app/Contents/Helpers/cpdb <subcommand>
+	cp $(BUILD_DIR)/$(BUILD_CONFIG)/cpdb $(APP_BUNDLE_DIR)/Contents/Helpers/cpdb
 	cp Sources/CpdbApp/Resources/Info.plist $(APP_BUNDLE_DIR)/Contents/Info.plist
 	# Embed the provisioning profile so macOS Launch Services will accept
 	# our developer-namespace entitlements (icloud-container-identifiers,
@@ -77,6 +85,14 @@ build-app: verify-version
 	# look it up by that name.
 	@test -f $(PROFILE) || (echo "error: $(PROFILE) not found — download from Apple Developer and drop at project root" && exit 1)
 	cp $(PROFILE) $(APP_BUNDLE_DIR)/Contents/embedded.provisionprofile
+	# Sign the helper CLI first (nested binaries must be signed before
+	# the enclosing bundle so their seals end up in the outer signature).
+	# Shares the same entitlements because it talks to the same iCloud
+	# container.
+	codesign --force --sign "$(SIGNING_IDENTITY)" \
+	         --entitlements $(ENTITLEMENTS) \
+	         --timestamp=none --options runtime \
+	         $(APP_BUNDLE_DIR)/Contents/Helpers/cpdb
 	codesign --force --sign "$(SIGNING_IDENTITY)" \
 	         --entitlements $(ENTITLEMENTS) \
 	         --timestamp=none --options runtime $(APP_BUNDLE_DIR)
