@@ -27,6 +27,18 @@ struct SearchView: View {
     /// typing only triggers one query after the user pauses.
     @State private var searchTask: Task<Void, Never>? = nil
 
+    /// How many rows the current query is allowed to return. Starts
+    /// at `pageSize` and grows by `pageSize` each time the user
+    /// scrolls to the bottom. Resets on a new search.
+    @State private var resultsLimit: Int = 200
+    /// Re-entrancy guard so scroll-triggered loadMore() doesn't fire
+    /// while a previous bump is still in flight.
+    @State private var isLoadingMore: Bool = false
+    private static let pageSize: Int = 200
+
+    /// About-sheet presentation. Tapping the brand header opens it.
+    @State private var showAbout: Bool = false
+
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
@@ -34,9 +46,37 @@ struct SearchView: View {
                    let started = container.pullStartedAt {
                     PullProgressBanner(progress: progress, startedAt: started)
                 }
-                List(results) { row in
-                    NavigationLink(value: row.entry.id) {
-                        EntryRow(entry: row.entry, linkURL: row.linkURL)
+                List {
+                    // Brand title as a list header so it scrolls
+                    // away with the content. Tapping it opens the
+                    // About sheet.
+                    BrandTitle()
+                        .contentShape(Rectangle())
+                        .onTapGesture { showAbout = true }
+                        .listRowBackground(Color.clear)
+                        .listRowInsets(.init(top: 14, leading: 16, bottom: 14, trailing: 16))
+                        .listRowSeparator(.hidden)
+
+                    ForEach(results) { row in
+                        NavigationLink(value: row.entry.id) {
+                            EntryRow(entry: row.entry, linkURL: row.linkURL)
+                        }
+                        .onAppear {
+                            // Load-more trigger: when the last row
+                            // is about to appear, bump the query
+                            // limit and re-fetch.
+                            if row.id == results.last?.id {
+                                Task { await loadMore() }
+                            }
+                        }
+                    }
+                    if isLoadingMore {
+                        HStack {
+                            Spacer()
+                            ProgressView().controlSize(.small)
+                            Spacer()
+                        }
+                        .listRowSeparator(.hidden)
                     }
                 }
                 .listStyle(.plain)
@@ -44,10 +84,9 @@ struct SearchView: View {
             .navigationDestination(for: Int64.self) { entryId in
                 EntryDetailView(entryId: entryId)
             }
-            // Title is rendered via the principal toolbar slot (see
-            // below) so we can combine icon + title + subtitle. An
-            // empty navigationTitle keeps VoiceOver happy and
-            // ensures the nav bar still takes its expected height.
+            // No nav-bar title — the brand lives as a list header
+            // so it scrolls away with the content. An empty title
+            // keeps the nav bar's height consistent.
             .navigationTitle("")
             .navigationBarTitleDisplayMode(.inline)
             .searchable(text: $query, prompt: "Search clipboard history")
@@ -56,6 +95,10 @@ struct SearchView: View {
                 await runQuery()
             }
             .onChange(of: query) { _, _ in
+                // New search term: reset the page window so we show
+                // the top N matches instead of scrolling through a
+                // stale expanded list.
+                resultsLimit = Self.pageSize
                 scheduleQuery()
             }
             // Re-query every time a pull completes (new `lastPull`)
@@ -76,12 +119,12 @@ struct SearchView: View {
                 Task { await runQuery() }
             }
             .toolbar {
-                ToolbarItem(placement: .principal) {
-                    BrandTitle()
-                }
                 ToolbarItem(placement: .topBarTrailing) {
                     syncIndicator
                 }
+            }
+            .sheet(isPresented: $showAbout) {
+                AboutSheet()
             }
             .overlay {
                 if results.isEmpty && container.pullProgress == nil {
@@ -144,6 +187,20 @@ struct SearchView: View {
         }
     }
 
+    /// Called when the last row becomes visible — grows the result
+    /// window by a page and re-queries. No-op once we've seen fewer
+    /// rows than the current limit (means we've hit the end).
+    private func loadMore() async {
+        guard !isLoadingMore else { return }
+        // If the previous query returned fewer than the current
+        // limit, there's nothing more to fetch.
+        guard results.count >= resultsLimit else { return }
+        isLoadingMore = true
+        resultsLimit += Self.pageSize
+        await runQuery()
+        isLoadingMore = false
+    }
+
     /// Query entries + (for link-kind entries) resolve a URL string
     /// from `entry_flavors`. One SQL call, one per-row post-process,
     /// no N+1 lookups during rendering.
@@ -153,6 +210,7 @@ struct SearchView: View {
             return
         }
         let snapshotQuery = query
+        let limit = resultsLimit
         do {
             let rows: [SearchRow] = try await store.dbQueue.read { db in
                 let entries: [Entry]
@@ -160,7 +218,7 @@ struct SearchView: View {
                     entries = try Entry
                         .filter(sql: "deleted_at IS NULL")
                         .order(sql: "created_at DESC")
-                        .limit(200)
+                        .limit(limit)
                         .fetchAll(db)
                 } else {
                     let like = "%\(snapshotQuery)%"
@@ -168,7 +226,7 @@ struct SearchView: View {
                         .filter(sql: "deleted_at IS NULL AND (title LIKE ? OR text_preview LIKE ? OR ocr_text LIKE ? OR image_tags LIKE ?)",
                                 arguments: [like, like, like, like])
                         .order(sql: "created_at DESC")
-                        .limit(200)
+                        .limit(limit)
                         .fetchAll(db)
                 }
 
