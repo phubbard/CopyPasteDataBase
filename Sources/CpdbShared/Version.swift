@@ -6,5 +6,5 @@ import Foundation
 /// `CFBundleShortVersionString` and `CFBundleVersion`. The `Makefile`'s
 /// `verify-version` target checks this at build time so drift fails loudly.
 public enum CpdbVersion {
-    public static let current = "2.0.0-dev"
+    public static let current = "2.0.0-dev2"
 }
