@@ -1,5 +1,6 @@
 import Foundation
 import CloudKit
+import CryptoKit
 
 /// Translates between a local `Flavor` row and a `CKRecord` of type
 /// `CKSchema.RecordType.flavor`.
@@ -16,34 +17,31 @@ import CloudKit
 /// in normal operation, so cascade is mostly future-proofing for GC.
 public enum FlavorRecordMapper {
 
-    /// Deterministic record ID. Shape: `flavor-<64 hex of content hash>-<uti slug>`.
+    /// Deterministic record ID. Shape:
+    ///   `flavor-<64-hex content hash>-<16-hex SHA256(uti)>`
     ///
-    /// v2.1: content-addressed instead of UUID-addressed. All devices
-    /// producing the same content-hash flavor converge on a single
-    /// server record. Slug is strictly ASCII alphanumerics + `_`;
-    /// every other byte (including non-ASCII letters, emoji, etc.) is
-    /// replaced with `_`. CloudKit only accepts ASCII alphanumerics,
-    /// underscores, and dashes in recordNames.
+    /// v2.1: content-addressed (shared across devices).
     ///
-    /// Slug is capped at 180 chars to keep the total recordName
-    /// under CloudKit's 255-char limit (7 for "flavor-" + 64 hex +
-    /// 1 dash + 180 slug = 252).
+    /// UTI component is hashed rather than slugified because (a) long
+    /// dynamic UTIs (`dyn.ah62d4rv4gu8…`) produced slugs that hit
+    /// CloudKit's undocumented real recordName limit, and (b) a
+    /// truncated slug can collide for UTIs that share a prefix. 8
+    /// bytes / 16 hex chars is 64 bits of address space — astronomical
+    /// collision resistance for the handful of UTIs a typical entry
+    /// carries. The actual UTI string lives in the record's `uti`
+    /// field, so debugging doesn't need the slug.
+    ///
+    /// Total recordName length: 7 + 64 + 1 + 16 = 88 chars.
     public static func recordID(
         forContentHash hash: Data,
         uti: String,
         in zoneID: CKRecordZone.ID
     ) -> CKRecord.ID {
         let hashHex = hash.map { String(format: "%02x", $0) }.joined()
-        let rawSlug = uti.unicodeScalars.map { scalar -> Character in
-            let cp = scalar.value
-            let isDigit     = cp >= 0x30 && cp <= 0x39
-            let isUpper     = cp >= 0x41 && cp <= 0x5A
-            let isLower     = cp >= 0x61 && cp <= 0x7A
-            if isDigit || isUpper || isLower { return Character(scalar) }
-            return "_"
-        }
-        let slug = String(rawSlug.prefix(180))
-        return CKRecord.ID(recordName: "flavor-\(hashHex)-\(slug)", zoneID: zoneID)
+        let utiBytes = Data(uti.utf8)
+        let utiDigest = SHA256.hash(data: utiBytes)
+        let utiHex = utiDigest.prefix(8).map { String(format: "%02x", $0) }.joined()
+        return CKRecord.ID(recordName: "flavor-\(hashHex)-\(utiHex)", zoneID: zoneID)
     }
 
     /// Build a fresh `CKRecord` for one flavor. Caller supplies the

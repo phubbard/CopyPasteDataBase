@@ -289,10 +289,41 @@ public actor CloudKitSyncer {
         }
 
         // 4. Process Entry save results. Entries that saved get
-        // removed from the queue; failures get attempt_count bumped.
+        // removed from the queue; failures normally bump attempt_count.
+        //
+        // Exception: if EVERY record in the batch failed with
+        // batchRequestFailed (code 22 = cascade from server-side
+        // "Atomic failure"), the real cause is a zone-level CAS
+        // collision — another device pushed to the same records
+        // concurrently. This surfaces with code 22 instead of the
+        // dedicated .zoneBusy code when the server rolls back the
+        // whole batch at once. Treat it as a retryable transient:
+        // leave queue rows untouched, sleep, and retry next tick.
         let idMap = recordIDToEntryId
         var errorKindCounts: [String: Int] = [:]
         var successfulEntryRecordIDs: Set<CKRecord.ID> = []
+
+        let wholeBatchCascade = !result.saveResults.isEmpty
+            && result.saveResults.values.allSatisfy { outcome in
+                if case .failure(let err) = outcome,
+                   let ck = err as? CKError, ck.code == .batchRequestFailed {
+                    return true
+                }
+                return false
+            }
+        if wholeBatchCascade {
+            Log.cli.info(
+                "cloudkit push: whole-batch cascade (concurrent write, retrying next tick)"
+            )
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            return PushReport(
+                attempted: 0,
+                saved: 0,
+                failed: 0,
+                remaining: try await remainingCount()
+            )
+        }
+
         let (saved, failed) = try await store.dbQueue.write { db -> (Int, Int) in
             var saved = 0
             var failed = 0
