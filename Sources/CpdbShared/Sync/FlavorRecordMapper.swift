@@ -16,24 +16,33 @@ import CloudKit
 /// in normal operation, so cascade is mostly future-proofing for GC.
 public enum FlavorRecordMapper {
 
-    /// Deterministic record ID. Mirrors `EntryRecordMapper.recordID`'s
-    /// shape: `flavor-<32 hex of entry uuid>-<uti slug>`. The UTI slug
-    /// replaces any non-URL-safe character with `_`. Two devices pushing
-    /// the same entry's same flavor produce the same recordID and
-    /// converge on server-wins. Max recordName length is 255 chars — a
-    /// 16-byte entry UUID hex (32) + the `flavor-` prefix (7) + a dash
-    /// leaves ~215 chars for the slug, plenty for any real UTI.
+    /// Deterministic record ID. Shape: `flavor-<32 hex of entry uuid>-<uti slug>`.
+    ///
+    /// The slug is strictly ASCII alphanumerics + `_`; every other byte
+    /// (including non-ASCII "letters" like `é`, CJK, emoji, etc.) is
+    /// replaced with `_`. CloudKit's `CKRecord.ID` recordName only
+    /// accepts ASCII alphanumerics, underscores, and dashes — letting
+    /// a Unicode letter through raises `NSInvalidArgumentException`
+    /// and tears down the process.
+    ///
+    /// Slug is also capped at 200 chars to keep the total recordName
+    /// under CloudKit's 255-char limit (7 for "flavor-" + 32 hex + 1
+    /// dash + 200 slug = 240).
     public static func recordID(
         forEntryUUID entryUUID: Data,
         uti: String,
         in zoneID: CKRecordZone.ID
     ) -> CKRecord.ID {
         let entryHex = entryUUID.map { String(format: "%02x", $0) }.joined()
-        let slug = uti.map { c -> String in
-            let ch = Character(c.unicodeScalars.first!)
-            if ch.isLetter || ch.isNumber { return String(ch) }
+        let rawSlug = uti.unicodeScalars.map { scalar -> Character in
+            let cp = scalar.value
+            let isDigit     = cp >= 0x30 && cp <= 0x39
+            let isUpper     = cp >= 0x41 && cp <= 0x5A
+            let isLower     = cp >= 0x61 && cp <= 0x7A
+            if isDigit || isUpper || isLower { return Character(scalar) }
             return "_"
-        }.joined()
+        }
+        let slug = String(rawSlug.prefix(200))
         return CKRecord.ID(recordName: "flavor-\(entryHex)-\(slug)", zoneID: zoneID)
     }
 

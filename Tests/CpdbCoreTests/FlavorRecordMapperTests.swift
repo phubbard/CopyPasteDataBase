@@ -33,6 +33,37 @@ struct FlavorRecordMapperTests {
         #expect(!a.recordName.contains("."))
     }
 
+    @Test("recordID slug is ASCII-only — Unicode letters in UTI become underscores")
+    func recordIDASCIIOnly() {
+        let uuid = Data(repeating: 0xBB, count: 16)
+        // A hypothetical UTI with Unicode letter (Character.isLetter says
+        // yes, but CKRecord.ID recordName rejects it) + emoji + CJK.
+        let wildUTI = "com.exámple.café.tést.🙂.漢字"
+        let id = FlavorRecordMapper.recordID(forEntryUUID: uuid, uti: wildUTI, in: Self.zone)
+        // Strip the "flavor-<32hex>-" prefix; whatever remains must
+        // only contain ASCII [A-Za-z0-9_].
+        let prefix = "flavor-"
+        #expect(id.recordName.hasPrefix(prefix))
+        let rest = id.recordName.dropFirst(prefix.count + 32 + 1)
+        for ch in rest {
+            let s = ch.unicodeScalars.first!.value
+            let ok =
+                (s >= 0x30 && s <= 0x39) ||
+                (s >= 0x41 && s <= 0x5A) ||
+                (s >= 0x61 && s <= 0x7A) ||
+                s == 0x5F  // _
+            #expect(ok, "slug contains non-safe char: \(ch)")
+        }
+    }
+
+    @Test("recordID slug caps at 200 chars so total recordName stays under 255")
+    func recordIDSlugCap() {
+        let uuid = Data(repeating: 0xCC, count: 16)
+        let ludicrous = String(repeating: "a", count: 500)
+        let id = FlavorRecordMapper.recordID(forEntryUUID: uuid, uti: ludicrous, in: Self.zone)
+        #expect(id.recordName.count <= 255)
+    }
+
     @Test("different flavors of same entry get different record IDs")
     func recordIDPerFlavor() {
         let uuid = Data(repeating: 0xAA, count: 16)
