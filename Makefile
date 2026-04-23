@@ -121,6 +121,17 @@ build-app: verify-version stamp-build
 	# look it up by that name.
 	@test -f $(PROFILE) || (echo "error: $(PROFILE) not found — download from Apple Developer and drop at project root" && exit 1)
 	cp $(PROFILE) $(APP_BUNDLE_DIR)/Contents/embedded.provisionprofile
+	# Sign nested SPM resource bundles BEFORE the outer app. Hardened
+	# runtime won't load unsigned nested bundles inside a signed app —
+	# the main binary fails `Bundle.module` lookup with a fatal
+	# assertion when KeyboardShortcuts (or any other resource-bearing
+	# package) tries to read its bundle. No --entitlements on these;
+	# resource bundles don't claim capabilities.
+	@for b in $(APP_BUNDLE_DIR)/Contents/Resources/*.bundle; do \
+	    if [ -d "$$b" ]; then \
+	        codesign --force --sign "$(SIGNING_IDENTITY)" --timestamp=none "$$b"; \
+	    fi; \
+	done
 	codesign --force --sign "$(SIGNING_IDENTITY)" \
 	         --entitlements $(ENTITLEMENTS) \
 	         --timestamp=none --options runtime $(APP_BUNDLE_DIR)
