@@ -139,6 +139,19 @@ final class StatusItemController {
 
         menu.addItem(.separator())
 
+        // Debug: opens Terminal with the `log stream` command for our
+        // subsystem already running. Much faster than typing it out
+        // when debugging a stuck Mac remotely or on-device.
+        let logsItem = NSMenuItem(
+            title: "Stream Logs in Terminal",
+            action: #selector(StatusItemActions.streamLogs),
+            keyEquivalent: ""
+        )
+        logsItem.target = StatusItemActions.shared
+        menu.addItem(logsItem)
+
+        menu.addItem(.separator())
+
         let quitItem = NSMenuItem(title: "Quit cpdb", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         menu.addItem(quitItem)
 
@@ -172,6 +185,29 @@ final class StatusItemController {
 
     @objc func pullNow() {
         NotificationCenter.default.post(name: .cpdbPullNow, object: nil)
+    }
+
+    @objc func streamLogs() {
+        // Drive Terminal via AppleScript: open a new window and run
+        // `log stream` filtered to our subsystem. Terminal is on every
+        // Mac, so this works without shipping our own terminal UI.
+        // The escaping is messy because we need the AppleScript `do
+        // script` literal to contain a double-quoted log predicate —
+        // each `\"` here becomes a literal `"` in the AppleScript
+        // string, which in turn gets passed to the shell.
+        let source = """
+        tell application "Terminal"
+            activate
+            do script "log stream --predicate 'subsystem == \\"net.phfactor.cpdb\\"' --level info"
+        end tell
+        """
+        var errorDict: NSDictionary? = nil
+        if let script = NSAppleScript(source: source) {
+            script.executeAndReturnError(&errorDict)
+            if let err = errorDict {
+                Log.cli.error("stream logs: AppleScript error \(String(describing: err), privacy: .public)")
+            }
+        }
     }
 }
 
