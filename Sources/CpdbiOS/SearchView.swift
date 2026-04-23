@@ -17,12 +17,18 @@ struct SearchView: View {
 
     var body: some View {
         NavigationStack {
-            List(results, id: \.id) { entry in
-                NavigationLink(value: entry.id) {
-                    EntryRow(entry: entry)
+            VStack(spacing: 0) {
+                if let progress = container.pullProgress,
+                   let started = container.pullStartedAt {
+                    PullProgressBanner(progress: progress, startedAt: started)
                 }
+                List(results, id: \.id) { entry in
+                    NavigationLink(value: entry.id) {
+                        EntryRow(entry: entry)
+                    }
+                }
+                .listStyle(.plain)
             }
-            .listStyle(.plain)
             .navigationDestination(for: Int64.self) { entryId in
                 EntryDetailView(entryId: entryId)
             }
@@ -44,7 +50,7 @@ struct SearchView: View {
                 }
             }
             .overlay {
-                if results.isEmpty {
+                if results.isEmpty && container.pullProgress == nil {
                     emptyState
                 }
             }
