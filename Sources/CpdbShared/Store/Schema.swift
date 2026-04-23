@@ -246,5 +246,35 @@ enum Schema {
                 arguments: [now]
             )
         }
+
+        migrator.registerMigration("v5_content_addressed_records") { db in
+            // v2.1 wire format: Entry + Flavor CKRecord IDs are now
+            // derived from content_hash instead of the per-device UUID.
+            // One CKRecord per unique content across all devices, so
+            // the three-Mac fleet stops fighting over server-wins for
+            // the same content.
+            //
+            // Drop the persisted zone change token so the next pull
+            // treats the zone as if seen for the first time (we'll
+            // re-pull all live records — v2.1 clients upsert by
+            // content_hash, so this is idempotent against local state).
+            // Re-seed the push queue too: every entry needs to re-push
+            // under the new recordID scheme.
+            //
+            // The 8500+ v2.0 UUID-keyed records still on the server
+            // become orphans; v2.1 pull silently skips them via the
+            // 32-vs-64 hex prefix check in the recordName parser. A
+            // future migration can GC them.
+            try db.execute(sql: "DELETE FROM cloudkit_state;")
+            try db.execute(sql: "DELETE FROM cloudkit_push_queue;")
+            let now = Date().timeIntervalSince1970
+            try db.execute(
+                sql: """
+                    INSERT INTO cloudkit_push_queue (entry_id, enqueued_at)
+                    SELECT id, ? FROM entries WHERE deleted_at IS NULL
+                """,
+                arguments: [now]
+            )
+        }
     }
 }

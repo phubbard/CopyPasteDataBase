@@ -48,7 +48,7 @@ struct EntryRecordMapperTests {
     }
 
     private func roundTrip(_ entry: Entry, source: EntryRecordMapper.SourceInfo) throws -> EntryRecordMapper.Decoded {
-        let id = EntryRecordMapper.recordID(forEntryUUID: entry.uuid, in: Self.zone)
+        let id = EntryRecordMapper.recordID(forContentHash: entry.contentHash, in: Self.zone)
         let record = CKRecord(recordType: CKSchema.RecordType.entry, recordID: id)
         EntryRecordMapper.populate(record: record, entry: entry, source: source)
         return try EntryRecordMapper.decode(record)
@@ -121,16 +121,16 @@ struct EntryRecordMapperTests {
 
     // MARK: - Record ID determinism
 
-    @Test("recordID derivation is stable for the same entry UUID")
+    @Test("recordID derivation is stable for the same content hash")
     func recordIDStable() {
-        let uuid = Data(repeating: 0xAB, count: 16)
-        let a = EntryRecordMapper.recordID(forEntryUUID: uuid, in: Self.zone)
-        let b = EntryRecordMapper.recordID(forEntryUUID: uuid, in: Self.zone)
+        let hash = Data(repeating: 0xAB, count: 32)
+        let a = EntryRecordMapper.recordID(forContentHash: hash, in: Self.zone)
+        let b = EntryRecordMapper.recordID(forContentHash: hash, in: Self.zone)
         #expect(a.recordName == b.recordName)
         #expect(a.recordName.hasPrefix("entry-"))
-        // All 16 bytes of the UUID land in the name as hex — 32 hex chars
-        // after the "entry-" prefix.
-        #expect(a.recordName.count == "entry-".count + 32)
+        // All 32 bytes of the SHA-256 hash land in the name as hex —
+        // 64 hex chars after the "entry-" prefix.
+        #expect(a.recordName.count == "entry-".count + 64)
     }
 
     // MARK: - Thumbnail attachment
@@ -148,7 +148,7 @@ struct EntryRecordMapperTests {
         try Data("fake-large".utf8).write(to: largeURL)
 
         let entry = fullEntry(kind: .image, withOCR: true)
-        let id = EntryRecordMapper.recordID(forEntryUUID: entry.uuid, in: Self.zone)
+        let id = EntryRecordMapper.recordID(forContentHash: entry.contentHash, in: Self.zone)
         let record = CKRecord(recordType: CKSchema.RecordType.entry, recordID: id)
         EntryRecordMapper.populate(record: record, entry: entry, source: defaultSource())
         EntryRecordMapper.setThumbnails(on: record, smallURL: smallURL, largeURL: largeURL)
@@ -161,7 +161,7 @@ struct EntryRecordMapperTests {
     @Test("setThumbnails(nil, nil) clears both asset fields")
     func clearThumbnails() throws {
         let entry = fullEntry(kind: .image)
-        let id = EntryRecordMapper.recordID(forEntryUUID: entry.uuid, in: Self.zone)
+        let id = EntryRecordMapper.recordID(forContentHash: entry.contentHash, in: Self.zone)
         let record = CKRecord(recordType: CKSchema.RecordType.entry, recordID: id)
         EntryRecordMapper.populate(record: record, entry: entry, source: defaultSource())
         // Attach, then clear.

@@ -21,30 +21,28 @@ struct FlavorRecordMapperTests {
         return url
     }
 
-    @Test("recordID is deterministic and namespaced under the entry UUID")
+    @Test("recordID is deterministic and namespaced under the content hash")
     func recordIDShape() {
-        let uuid = Data((0..<16).map { UInt8($0) })
-        let a = FlavorRecordMapper.recordID(forEntryUUID: uuid, uti: "public.utf8-plain-text", in: Self.zone)
-        let b = FlavorRecordMapper.recordID(forEntryUUID: uuid, uti: "public.utf8-plain-text", in: Self.zone)
+        let hash = Data((0..<32).map { UInt8($0) })
+        let a = FlavorRecordMapper.recordID(forContentHash: hash, uti: "public.utf8-plain-text", in: Self.zone)
+        let b = FlavorRecordMapper.recordID(forContentHash: hash, uti: "public.utf8-plain-text", in: Self.zone)
         #expect(a.recordName == b.recordName)
         #expect(a.recordName.hasPrefix("flavor-"))
-        #expect(a.recordName.contains("000102030405060708090a0b0c0d0e0f"))
+        #expect(a.recordName.contains("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"))
         // Dots in UTIs get sluggified.
         #expect(!a.recordName.contains("."))
     }
 
     @Test("recordID slug is ASCII-only — Unicode letters in UTI become underscores")
     func recordIDASCIIOnly() {
-        let uuid = Data(repeating: 0xBB, count: 16)
-        // A hypothetical UTI with Unicode letter (Character.isLetter says
-        // yes, but CKRecord.ID recordName rejects it) + emoji + CJK.
+        let hash = Data(repeating: 0xBB, count: 32)
         let wildUTI = "com.exámple.café.tést.🙂.漢字"
-        let id = FlavorRecordMapper.recordID(forEntryUUID: uuid, uti: wildUTI, in: Self.zone)
-        // Strip the "flavor-<32hex>-" prefix; whatever remains must
+        let id = FlavorRecordMapper.recordID(forContentHash: hash, uti: wildUTI, in: Self.zone)
+        // Strip the "flavor-<64hex>-" prefix; whatever remains must
         // only contain ASCII [A-Za-z0-9_].
         let prefix = "flavor-"
         #expect(id.recordName.hasPrefix(prefix))
-        let rest = id.recordName.dropFirst(prefix.count + 32 + 1)
+        let rest = id.recordName.dropFirst(prefix.count + 64 + 1)
         for ch in rest {
             let s = ch.unicodeScalars.first!.value
             let ok =
@@ -56,32 +54,32 @@ struct FlavorRecordMapperTests {
         }
     }
 
-    @Test("recordID slug caps at 200 chars so total recordName stays under 255")
+    @Test("recordID slug caps so total recordName stays under 255")
     func recordIDSlugCap() {
-        let uuid = Data(repeating: 0xCC, count: 16)
+        let hash = Data(repeating: 0xCC, count: 32)
         let ludicrous = String(repeating: "a", count: 500)
-        let id = FlavorRecordMapper.recordID(forEntryUUID: uuid, uti: ludicrous, in: Self.zone)
+        let id = FlavorRecordMapper.recordID(forContentHash: hash, uti: ludicrous, in: Self.zone)
         #expect(id.recordName.count <= 255)
     }
 
     @Test("different flavors of same entry get different record IDs")
     func recordIDPerFlavor() {
-        let uuid = Data(repeating: 0xAA, count: 16)
-        let text = FlavorRecordMapper.recordID(forEntryUUID: uuid, uti: "public.utf8-plain-text", in: Self.zone)
-        let png  = FlavorRecordMapper.recordID(forEntryUUID: uuid, uti: "public.png", in: Self.zone)
+        let hash = Data(repeating: 0xAA, count: 32)
+        let text = FlavorRecordMapper.recordID(forContentHash: hash, uti: "public.utf8-plain-text", in: Self.zone)
+        let png  = FlavorRecordMapper.recordID(forContentHash: hash, uti: "public.png", in: Self.zone)
         #expect(text.recordName != png.recordName)
     }
 
-    @Test("populate + decode round-trips entryUUID, UTI, size, and asset URL")
+    @Test("populate + decode round-trips contentHash, UTI, size, and asset URL")
     func roundTrip() throws {
-        let entryUUID = Data((0..<16).map { UInt8($0 + 1) })
+        let contentHash = Data((0..<32).map { UInt8($0 + 1) })
         let payload = Data("hello flavor".utf8)
         let asset = try stageAsset(payload, suffix: "txt")
         defer { try? FileManager.default.removeItem(at: asset) }
 
-        let entryRecordID = EntryRecordMapper.recordID(forEntryUUID: entryUUID, in: Self.zone)
+        let entryRecordID = EntryRecordMapper.recordID(forContentHash: contentHash, in: Self.zone)
         let flavorRecordID = FlavorRecordMapper.recordID(
-            forEntryUUID: entryUUID, uti: "public.utf8-plain-text", in: Self.zone
+            forContentHash: contentHash, uti: "public.utf8-plain-text", in: Self.zone
         )
         let record = CKRecord(recordType: CKSchema.RecordType.flavor, recordID: flavorRecordID)
         FlavorRecordMapper.populate(
@@ -93,7 +91,7 @@ struct FlavorRecordMapperTests {
         )
 
         let decoded = try FlavorRecordMapper.decode(record)
-        #expect(decoded.entryUUID == entryUUID)
+        #expect(decoded.contentHash == contentHash)
         #expect(decoded.uti == "public.utf8-plain-text")
         #expect(decoded.size == Int64(payload.count))
         #expect(decoded.assetURL == asset)

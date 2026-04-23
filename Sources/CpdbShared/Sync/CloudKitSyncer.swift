@@ -181,7 +181,10 @@ public actor CloudKitSyncer {
                 continue
             }
 
-            let recordID = EntryRecordMapper.recordID(forEntryUUID: bundle.entry.uuid, in: zoneID)
+            let recordID = EntryRecordMapper.recordID(
+                forContentHash: bundle.entry.contentHash,
+                in: zoneID
+            )
             let record = CKRecord(recordType: CKSchema.RecordType.entry, recordID: recordID)
             EntryRecordMapper.populate(record: record, entry: bundle.entry, source: bundle.source)
 
@@ -205,7 +208,7 @@ public actor CloudKitSyncer {
                     tempFiles.append(url)
                     accumulatedBytes += flavor.size
                     let flavorID = FlavorRecordMapper.recordID(
-                        forEntryUUID: bundle.entry.uuid,
+                        forContentHash: bundle.entry.contentHash,
                         uti: flavor.uti,
                         in: zoneID
                     )
@@ -543,7 +546,7 @@ public actor CloudKitSyncer {
                     // defer this until the write transaction.
                     let bytes = try Data(contentsOf: d.assetURL)
                     decodedFlavors.append(DecodedFlavorBytes(
-                        entryUUID: d.entryUUID, uti: d.uti, bytes: bytes
+                        contentHash: d.contentHash, uti: d.uti, bytes: bytes
                     ))
                 } catch {
                     skippedCount += 1
@@ -555,17 +558,17 @@ public actor CloudKitSyncer {
             }
         }
 
-        // Extract UUIDs of records the server says were deleted. Our
-        // Entry recordID scheme is `entry-<32 hex>`; we also see
-        // flavor deletions but those are handled server-side via the
-        // CKReference deleteSelf cascade from the parent Entry.
-        let deletedUUIDs: [Data] = result.deletedRecordIDs.compactMap { id in
-            Self.uuidFromRecordName(id.recordName)
+        // Extract content hashes of records the server says were
+        // deleted. v2.1 Entry recordID scheme is `entry-<64 hex hash>`.
+        // Flavor deletions are server-side cascades from the parent's
+        // deleteSelf reference and don't need separate handling.
+        let deletedHashes: [Data] = result.deletedRecordIDs.compactMap { id in
+            Self.contentHashFromRecordName(id.recordName)
         }
 
         let entriesSnapshot = decodedEntries
         let flavorsSnapshot = decodedFlavors
-        let deletedSnapshot = deletedUUIDs
+        let deletedSnapshot = deletedHashes
         let blobStore = blobs
         let (pageInserted, pageUpdated, pageTombstoned) = try await store.dbQueue.write { db -> (Int, Int, Int) in
             var ins = 0, upd = 0, tomb = 0
@@ -577,16 +580,14 @@ public actor CloudKitSyncer {
                 case .unchanged: break
                 }
             }
-            for uuid in deletedSnapshot {
-                if try Self.tombstone(uuid: uuid, in: db) {
-                    tomb += 1
-                }
+            for hash in deletedSnapshot {
+                tomb += try Self.tombstone(contentHash: hash, in: db)
             }
             // Apply flavor upserts AFTER entries so the parent row
             // foreign-key constraint is satisfied.
             for f in flavorsSnapshot {
                 try Self.upsertFlavor(
-                    entryUUID: f.entryUUID,
+                    contentHash: f.contentHash,
                     uti: f.uti,
                     bytes: f.bytes,
                     blobs: blobStore,
@@ -612,18 +613,18 @@ public actor CloudKitSyncer {
     /// CloudKit removes that file on the next fetch call; we carry the
     /// bytes through the write transaction instead of an asset URL.
     private struct DecodedFlavorBytes: Sendable {
-        var entryUUID: Data
+        var contentHash: Data
         var uti: String
         var bytes: Data
     }
 
     /// Insert or update a flavor row from a pulled Flavor CKRecord.
-    /// Looks up the parent entry by UUID; if the parent doesn't exist
-    /// locally (rare — means we pulled a Flavor before its Entry in
-    /// the same page, or the Entry was pruned), the flavor is dropped
-    /// silently. The next pull will usually resolve the ordering.
+    /// Looks up the parent entry by content_hash; if no local entry
+    /// with this hash exists (e.g. entry was skipped earlier in the
+    /// pull because of a schema-drift decode error), the flavor is
+    /// dropped silently.
     private static func upsertFlavor(
-        entryUUID: Data,
+        contentHash: Data,
         uti: String,
         bytes: Data,
         blobs: BlobStore,
@@ -631,8 +632,8 @@ public actor CloudKitSyncer {
     ) throws {
         guard let entryId = try Int64.fetchOne(
             db,
-            sql: "SELECT id FROM entries WHERE uuid = ?",
-            arguments: [entryUUID]
+            sql: "SELECT id FROM entries WHERE content_hash = ? AND deleted_at IS NULL",
+            arguments: [contentHash]
         ) else {
             return
         }
@@ -690,29 +691,26 @@ public actor CloudKitSyncer {
             devId = row.id!
         }
 
-        // Entry — upsert by uuid. Preserve local `id` when updating so
-        // foreign-key references (flavors, previews, pinboard_entries)
-        // stay intact. Mirrors Ingestor's insert shape.
+        // Entry — upsert by content_hash. v2.1 shift: records are
+        // content-addressed on the wire, so the same CloudKit record
+        // represents the same content across all devices. Locally we
+        // key by content_hash when applying pulls so a device's own
+        // UUID for this content (possibly different from the one the
+        // originating device assigned) is preserved — we only overwrite
+        // scalar fields, never the local `uuid`, `id`, or
+        // `source_device_id` (originating device identity is kept via
+        // the decoded `SourceInfo.deviceIdentifier` on the devices
+        // table, not on the entry itself).
         //
-        // Cross-device dedup guard: if a non-tombstoned local entry
-        // already has this content_hash under a DIFFERENT uuid, the
-        // two devices independently captured the same content before
-        // sync connected them. Our `idx_entries_live_content_hash`
-        // unique index would fail the insert. Skip with a no-op — we
-        // have the content locally; we just use our own uuid for it.
-        // Long-term convergence is imperfect (both devices keep their
-        // own record), but we lose no data.
-        if let _ = try Entry
+        // Tombstoned local entries are ignored by this lookup; a
+        // re-seen tombstoned hash will insert a fresh row (which we
+        // generally don't want). The caller's tombstone() path covers
+        // server-side deletion cascades.
+        if var existing = try Entry
             .filter(Column("content_hash") == d.contentHash)
-            .filter(Column("uuid") != d.uuid)
             .filter(Column("deleted_at") == nil)
             .fetchOne(db)
         {
-            return .unchanged
-        }
-
-        if var existing = try Entry.filter(Column("uuid") == d.uuid).fetchOne(db) {
-            // Update scalar fields in place.
             existing.createdAt   = d.createdAt
             existing.capturedAt  = d.capturedAt
             existing.kind        = d.kind
@@ -720,7 +718,6 @@ public actor CloudKitSyncer {
             existing.sourceDeviceId = devId
             existing.title       = d.title
             existing.textPreview = d.textPreview
-            existing.contentHash = d.contentHash
             existing.totalSize   = d.totalSize
             existing.deletedAt   = d.deletedAt
             existing.ocrText     = d.ocrText
@@ -784,31 +781,36 @@ public actor CloudKitSyncer {
         try row.insert(db, onConflict: .replace)
     }
 
-    /// Soft-delete a local entry by UUID. Returns true if a row was
-    /// affected. CloudKit "delete" events are rare for us (we tombstone
-    /// in place) but we still handle them.
-    private static func tombstone(uuid: Data, in db: Database) throws -> Bool {
+    /// Soft-delete every live local entry matching `contentHash`.
+    /// Returns the number of rows affected — usually 0 or 1, but if a
+    /// user somehow has two live entries with the same hash we
+    /// tombstone both.
+    private static func tombstone(contentHash: Data, in db: Database) throws -> Int {
         let now = Date().timeIntervalSince1970
         try db.execute(
-            sql: "UPDATE entries SET deleted_at = ? WHERE uuid = ? AND deleted_at IS NULL",
-            arguments: [now, uuid]
+            sql: "UPDATE entries SET deleted_at = ? WHERE content_hash = ? AND deleted_at IS NULL",
+            arguments: [now, contentHash]
         )
-        return db.changesCount > 0
+        return db.changesCount
     }
 
-    static func uuidFromRecordName(_ name: String) -> Data? {
+    /// Parse the 32-byte content hash out of a v2.1 Entry recordName.
+    /// v2.0 UUID-based recordNames (32 hex chars) return nil, and the
+    /// caller silently skips them — the legacy records on the server
+    /// get ignored by v2.1 clients until a future GC removes them.
+    static func contentHashFromRecordName(_ name: String) -> Data? {
         let prefix = "entry-"
         guard name.hasPrefix(prefix) else { return nil }
         let hex = name.dropFirst(prefix.count)
-        guard hex.count == 32 else { return nil }
+        guard hex.count == 64 else { return nil }
         var bytes: [UInt8] = []
-        bytes.reserveCapacity(16)
+        bytes.reserveCapacity(32)
         var iter = hex.makeIterator()
         while let hi = iter.next(), let lo = iter.next() {
             guard let b = UInt8(String([hi, lo]), radix: 16) else { return nil }
             bytes.append(b)
         }
-        return bytes.count == 16 ? Data(bytes) : nil
+        return bytes.count == 32 ? Data(bytes) : nil
     }
 
     // MARK: - Change token persistence

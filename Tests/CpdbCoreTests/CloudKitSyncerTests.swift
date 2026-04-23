@@ -213,10 +213,10 @@ struct CloudKitSyncerTests {
 
         // Pre-build the record ID for the middle entry so the fake can
         // target it for failure.
-        let middleUUID = try await store.dbQueue.read { db in
-            try Entry.fetchOne(db, key: ids[1])!.uuid
+        let middleHash = try await store.dbQueue.read { db in
+            try Entry.fetchOne(db, key: ids[1])!.contentHash
         }
-        let middleID = EntryRecordMapper.recordID(forEntryUUID: middleUUID, in: Self.zone)
+        let middleID = EntryRecordMapper.recordID(forContentHash: middleHash, in: Self.zone)
         await client.setInjected(.init(failingRecordIDs: [middleID]))
 
         let report = try await syncer.pushPendingChanges()
@@ -260,10 +260,13 @@ struct CloudKitSyncerTests {
 
     // MARK: - Pull path
 
-    /// Build a minimal Entry CKRecord from raw values. Mirrors what
-    /// `EntryRecordMapper.populate` writes, so decode() round-trips.
+    /// Build a minimal Entry CKRecord. v2.1: recordID derives from
+    /// `contentHash` (32 bytes). The `entryUUID` is a separate field
+    /// and represents whichever device originated this content — we
+    /// don't key on it anywhere in the pull path.
     private func makeRecord(
-        uuid: Data = Data(repeating: 0xAB, count: 16),
+        contentHash: Data = Data(repeating: 0xAB, count: 32),
+        uuid: Data = Data(repeating: 0xCC, count: 16),
         kind: String = "text",
         title: String = "hello",
         devID: String = "OTHER-MAC",
@@ -272,13 +275,13 @@ struct CloudKitSyncerTests {
         appName: String? = "TextEdit",
         deletedAt: Double? = nil
     ) -> CKRecord {
-        let id = EntryRecordMapper.recordID(forEntryUUID: uuid, in: Self.zone)
+        let id = EntryRecordMapper.recordID(forContentHash: contentHash, in: Self.zone)
         let record = CKRecord(recordType: CKSchema.RecordType.entry, recordID: id)
         record[CKSchema.EntryField.uuid]        = uuid as NSData
         record[CKSchema.EntryField.createdAt]   = 1_700_000_000.0 as NSNumber
         record[CKSchema.EntryField.capturedAt]  = 1_700_000_000.0 as NSNumber
         record[CKSchema.EntryField.kind]        = kind as NSString
-        record[CKSchema.EntryField.contentHash] = Data(repeating: 0x02, count: 32) as NSData
+        record[CKSchema.EntryField.contentHash] = contentHash as NSData
         record[CKSchema.EntryField.totalSize]   = 100 as NSNumber
         record[CKSchema.EntryField.title]       = title as NSString
         record[CKSchema.EntryField.textPreview] = title as NSString
@@ -294,8 +297,8 @@ struct CloudKitSyncerTests {
     func pullInsertsRemoteEntry() async throws {
         let (store, _) = try seed(entryCount: 0)
         let client = FakeCloudKitClient()
-        let uuid = Data((0..<16).map { UInt8($0 + 1) })
-        await client.seedPull(changed: [makeRecord(uuid: uuid, title: "from-other")])
+        let hash = Data((0..<32).map { UInt8($0 + 1) })
+        await client.seedPull(changed: [makeRecord(contentHash: hash, title: "from-other")])
 
         let syncer = makeSyncer(store: store, client: client)
         let report = try await syncer.pullRemoteChanges()
@@ -304,7 +307,7 @@ struct CloudKitSyncerTests {
         #expect(report.tombstoned == 0)
 
         try await store.dbQueue.read { db in
-            let entry = try Entry.filter(Column("uuid") == uuid).fetchOne(db)
+            let entry = try Entry.filter(Column("content_hash") == hash).fetchOne(db)
             #expect(entry != nil)
             #expect(entry?.title == "from-other")
             let app = try AppRecord.filter(Column("bundle_id") == "com.example.TextEdit").fetchOne(db)
@@ -314,14 +317,20 @@ struct CloudKitSyncerTests {
         }
     }
 
-    @Test("pull updates an entry we already have locally")
+    @Test("pull updates an entry we already have locally (keyed by content_hash, local UUID preserved)")
     func pullUpdatesExisting() async throws {
         let (store, ids) = try seed(entryCount: 1)
-        let existingUUID = try await store.dbQueue.read { db in
-            try Entry.fetchOne(db, key: ids[0])!.uuid
+        let (existingUUID, existingHash) = try await store.dbQueue.read { db -> (Data, Data) in
+            let e = try Entry.fetchOne(db, key: ids[0])!
+            return (e.uuid, e.contentHash)
         }
         let client = FakeCloudKitClient()
-        await client.seedPull(changed: [makeRecord(uuid: existingUUID, title: "updated-from-remote")])
+        // Use a DIFFERENT uuid in the pulled record — v2.1 should keep
+        // our local UUID untouched and only write scalar fields.
+        let otherUUID = Data(repeating: 0x99, count: 16)
+        await client.seedPull(changed: [makeRecord(
+            contentHash: existingHash, uuid: otherUUID, title: "updated-from-remote"
+        )])
 
         let syncer = makeSyncer(store: store, client: client)
         let report = try await syncer.pullRemoteChanges()
@@ -329,18 +338,20 @@ struct CloudKitSyncerTests {
         #expect(report.updated == 1)
 
         try await store.dbQueue.read { db in
-            let entry = try Entry.filter(Column("uuid") == existingUUID).fetchOne(db)
+            let entry = try Entry.filter(Column("content_hash") == existingHash).fetchOne(db)
             #expect(entry?.title == "updated-from-remote")
+            // Local UUID preserved — we don't overwrite from the wire.
+            #expect(entry?.uuid == existingUUID)
         }
     }
 
     @Test("pull tombstones a local entry when CloudKit reports the record deleted")
     func pullAppliesTombstone() async throws {
         let (store, ids) = try seed(entryCount: 1)
-        let existingUUID = try await store.dbQueue.read { db in
-            try Entry.fetchOne(db, key: ids[0])!.uuid
+        let existingHash = try await store.dbQueue.read { db in
+            try Entry.fetchOne(db, key: ids[0])!.contentHash
         }
-        let recordID = EntryRecordMapper.recordID(forEntryUUID: existingUUID, in: Self.zone)
+        let recordID = EntryRecordMapper.recordID(forContentHash: existingHash, in: Self.zone)
 
         let client = FakeCloudKitClient()
         await client.seedPull(deleted: [recordID])
@@ -350,7 +361,7 @@ struct CloudKitSyncerTests {
         #expect(report.tombstoned == 1)
 
         try await store.dbQueue.read { db in
-            let entry = try Entry.filter(Column("uuid") == existingUUID).fetchOne(db)
+            let entry = try Entry.filter(Column("content_hash") == existingHash).fetchOne(db)
             #expect(entry?.deletedAt != nil)
         }
     }
@@ -359,8 +370,7 @@ struct CloudKitSyncerTests {
     func pullSkipsMalformedRecord() async throws {
         let (store, _) = try seed(entryCount: 0)
         let client = FakeCloudKitClient()
-        // Good record + a record missing required fields.
-        let good = makeRecord(uuid: Data(repeating: 0xAA, count: 16))
+        let good = makeRecord(contentHash: Data(repeating: 0xAA, count: 32))
         let badID = CKRecord.ID(recordName: "entry-bad", zoneID: Self.zone)
         let bad = CKRecord(recordType: CKSchema.RecordType.entry, recordID: badID)
         await client.seedPull(changed: [good, bad])
@@ -387,17 +397,18 @@ struct CloudKitSyncerTests {
 
     /// Build a Flavor CKRecord with a populated CKAsset pointing at a
     /// tmp file containing `bytes`. Mirrors what CloudKit would hand us
-    /// during a pull.
+    /// during a pull. In v2.1 the entry parent reference is derived
+    /// from the content_hash.
     private func makeFlavorRecord(
-        entryUUID: Data,
+        contentHash: Data,
         uti: String,
         bytes: Data
     ) throws -> (CKRecord, URL) {
         let tmp = FileManager.default.temporaryDirectory
             .appendingPathComponent("cpdb-test-flavor-\(UUID().uuidString).bin")
         try bytes.write(to: tmp)
-        let entryID = EntryRecordMapper.recordID(forEntryUUID: entryUUID, in: Self.zone)
-        let flavorID = FlavorRecordMapper.recordID(forEntryUUID: entryUUID, uti: uti, in: Self.zone)
+        let entryID = EntryRecordMapper.recordID(forContentHash: contentHash, in: Self.zone)
+        let flavorID = FlavorRecordMapper.recordID(forContentHash: contentHash, uti: uti, in: Self.zone)
         let record = CKRecord(recordType: CKSchema.RecordType.flavor, recordID: flavorID)
         FlavorRecordMapper.populate(
             record: record,
@@ -414,11 +425,11 @@ struct CloudKitSyncerTests {
         let (store, _) = try seed(entryCount: 0)
         let client = FakeCloudKitClient()
 
-        let entryUUID = Data((0..<16).map { UInt8($0 + 7) })
-        let entryRecord = makeRecord(uuid: entryUUID, title: "with-flavor")
+        let hash = Data((0..<32).map { UInt8($0 + 7) })
+        let entryRecord = makeRecord(contentHash: hash, title: "with-flavor")
         let textBytes = Data("hello flavor".utf8)
         let (flavorRecord, tmpURL) = try makeFlavorRecord(
-            entryUUID: entryUUID,
+            contentHash: hash,
             uti: "public.utf8-plain-text",
             bytes: textBytes
         )
@@ -432,7 +443,7 @@ struct CloudKitSyncerTests {
         #expect(report.skipped == 0)
 
         try await store.dbQueue.read { db in
-            let entry = try Entry.filter(Column("uuid") == entryUUID).fetchOne(db)
+            let entry = try Entry.filter(Column("content_hash") == hash).fetchOne(db)
             #expect(entry != nil)
             let flavor = try Flavor
                 .filter(Column("entry_id") == entry!.id!)
@@ -449,9 +460,9 @@ struct CloudKitSyncerTests {
         let (store, _) = try seed(entryCount: 0)
         let client = FakeCloudKitClient()
 
-        let orphanUUID = Data(repeating: 0x99, count: 16)
+        let orphanHash = Data(repeating: 0x99, count: 32)
         let (flavorRecord, tmpURL) = try makeFlavorRecord(
-            entryUUID: orphanUUID,
+            contentHash: orphanHash,
             uti: "public.plain-text",
             bytes: Data("orphan".utf8)
         )

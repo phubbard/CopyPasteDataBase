@@ -35,13 +35,17 @@ public enum EntryRecordMapper {
         }
     }
 
-    /// The canonical CKRecord.ID for an Entry: its UUID hex string,
-    /// keyed into the cpdb-v2 zone. Deterministic so two devices that
-    /// captured the same content (same `contentHash` + dedup would merge
-    /// locally, but in edge cases could both push) don't collide —
-    /// CloudKit will see the same record ID and do server-wins.
-    public static func recordID(forEntryUUID uuid: Data, in zoneID: CKRecordZone.ID) -> CKRecord.ID {
-        let name = uuid.map { String(format: "%02x", $0) }.joined()
+    /// The canonical CKRecord.ID for an Entry: derived from its
+    /// `contentHash` (SHA-256, 32 bytes → 64 hex chars). Two devices
+    /// that independently captured the same content produce the
+    /// identical recordID and converge on a single server record with
+    /// last-write-wins semantics. This is v2.1 of the wire format —
+    /// v2.0 used `entry-<uuid-hex>` which produced one record per
+    /// device per content, tripling storage and triggering batch
+    /// conflicts during concurrent pushes. Orphan v2.0 records stay
+    /// on the server until a future GC removes them.
+    public static func recordID(forContentHash hash: Data, in zoneID: CKRecordZone.ID) -> CKRecord.ID {
+        let name = hash.map { String(format: "%02x", $0) }.joined()
         return CKRecord.ID(recordName: "entry-\(name)", zoneID: zoneID)
     }
 

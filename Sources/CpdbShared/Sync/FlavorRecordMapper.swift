@@ -16,24 +16,24 @@ import CloudKit
 /// in normal operation, so cascade is mostly future-proofing for GC.
 public enum FlavorRecordMapper {
 
-    /// Deterministic record ID. Shape: `flavor-<32 hex of entry uuid>-<uti slug>`.
+    /// Deterministic record ID. Shape: `flavor-<64 hex of content hash>-<uti slug>`.
     ///
-    /// The slug is strictly ASCII alphanumerics + `_`; every other byte
-    /// (including non-ASCII "letters" like `é`, CJK, emoji, etc.) is
-    /// replaced with `_`. CloudKit's `CKRecord.ID` recordName only
-    /// accepts ASCII alphanumerics, underscores, and dashes — letting
-    /// a Unicode letter through raises `NSInvalidArgumentException`
-    /// and tears down the process.
+    /// v2.1: content-addressed instead of UUID-addressed. All devices
+    /// producing the same content-hash flavor converge on a single
+    /// server record. Slug is strictly ASCII alphanumerics + `_`;
+    /// every other byte (including non-ASCII letters, emoji, etc.) is
+    /// replaced with `_`. CloudKit only accepts ASCII alphanumerics,
+    /// underscores, and dashes in recordNames.
     ///
-    /// Slug is also capped at 200 chars to keep the total recordName
-    /// under CloudKit's 255-char limit (7 for "flavor-" + 32 hex + 1
-    /// dash + 200 slug = 240).
+    /// Slug is capped at 180 chars to keep the total recordName
+    /// under CloudKit's 255-char limit (7 for "flavor-" + 64 hex +
+    /// 1 dash + 180 slug = 252).
     public static func recordID(
-        forEntryUUID entryUUID: Data,
+        forContentHash hash: Data,
         uti: String,
         in zoneID: CKRecordZone.ID
     ) -> CKRecord.ID {
-        let entryHex = entryUUID.map { String(format: "%02x", $0) }.joined()
+        let hashHex = hash.map { String(format: "%02x", $0) }.joined()
         let rawSlug = uti.unicodeScalars.map { scalar -> Character in
             let cp = scalar.value
             let isDigit     = cp >= 0x30 && cp <= 0x39
@@ -42,8 +42,8 @@ public enum FlavorRecordMapper {
             if isDigit || isUpper || isLower { return Character(scalar) }
             return "_"
         }
-        let slug = String(rawSlug.prefix(200))
-        return CKRecord.ID(recordName: "flavor-\(entryHex)-\(slug)", zoneID: zoneID)
+        let slug = String(rawSlug.prefix(180))
+        return CKRecord.ID(recordName: "flavor-\(hashHex)-\(slug)", zoneID: zoneID)
     }
 
     /// Build a fresh `CKRecord` for one flavor. Caller supplies the
@@ -64,12 +64,12 @@ public enum FlavorRecordMapper {
         record[CKSchema.FlavorField.data]     = CKAsset(fileURL: assetURL)
     }
 
-    /// Decoded form of a pulled Flavor CKRecord. `entryRef` is exposed
-    /// as the parent entry's UUID (parsed back out of the referenced
-    /// recordID) so the syncer can look up the local entry row without
-    /// needing a separate fetch.
+    /// Decoded form of a pulled Flavor CKRecord. `contentHash` comes
+    /// from the parent entry's recordID (v2.1 format:
+    /// `entry-<64-hex-hash>`). Local lookup joins on this to find the
+    /// right `entries.id` for the flavor insert.
     public struct Decoded: Sendable {
-        public var entryUUID: Data
+        public var contentHash: Data
         public var uti: String
         public var size: Int64
         public var assetURL: URL
@@ -85,10 +85,10 @@ public enum FlavorRecordMapper {
         guard let ref = record[CKSchema.FlavorField.entryRef] as? CKRecord.Reference else {
             throw EntryRecordMapper.DecodeError.missingField(CKSchema.FlavorField.entryRef)
         }
-        guard let entryUUID = uuidFromEntryRecordName(ref.recordID.recordName) else {
+        guard let hash = contentHashFromEntryRecordName(ref.recordID.recordName) else {
             throw EntryRecordMapper.DecodeError.invalidField(
                 CKSchema.FlavorField.entryRef,
-                reason: "recordName '\(ref.recordID.recordName)' is not an entry- UUID"
+                reason: "recordName '\(ref.recordID.recordName)' is not a v2.1 entry- content hash"
             )
         }
         let uti = (record[CKSchema.FlavorField.uti] as? String) ?? {
@@ -105,29 +105,29 @@ public enum FlavorRecordMapper {
             throw EntryRecordMapper.DecodeError.missingField(CKSchema.FlavorField.data)
         }
         return Decoded(
-            entryUUID: entryUUID,
+            contentHash: hash,
             uti: uti,
             size: sizeNum.int64Value,
             assetURL: url
         )
     }
 
-    /// Parse the 16-byte UUID out of an Entry recordName like
-    /// `entry-32ed3cd4b2044b4ea646a30a7acedf1f`. Returns nil for any
-    /// other record-name shape. Duplicated from CloudKitSyncer so this
-    /// type stays standalone for unit-testing.
-    static func uuidFromEntryRecordName(_ name: String) -> Data? {
+    /// Parse the 32-byte content hash out of a v2.1 Entry recordName
+    /// like `entry-77ef96ef...`. Returns nil for the legacy v2.0
+    /// UUID-based shape (32 hex chars instead of 64) — in mixed-era
+    /// zones we simply can't resolve those flavors and skip them.
+    static func contentHashFromEntryRecordName(_ name: String) -> Data? {
         let prefix = "entry-"
         guard name.hasPrefix(prefix) else { return nil }
         let hex = name.dropFirst(prefix.count)
-        guard hex.count == 32 else { return nil }
+        guard hex.count == 64 else { return nil }  // 32 bytes
         var bytes: [UInt8] = []
-        bytes.reserveCapacity(16)
+        bytes.reserveCapacity(32)
         var iter = hex.makeIterator()
         while let hi = iter.next(), let lo = iter.next() {
             guard let b = UInt8(String([hi, lo]), radix: 16) else { return nil }
             bytes.append(b)
         }
-        return bytes.count == 16 ? Data(bytes) : nil
+        return bytes.count == 32 ? Data(bytes) : nil
     }
 }
