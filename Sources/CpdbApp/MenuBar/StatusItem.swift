@@ -29,8 +29,9 @@ final class StatusItemController {
         }
         item.menu = Self.buildMenu()
         self.statusItem = item
+        let hasImage = item.button?.image != nil ? "yes" : "no"
         Log.cli.info(
-            "status item installed (image=\(item.button?.image != nil ? "yes" : "no"), length=\(item.length))"
+            "status item installed (image=\(hasImage, privacy: .public), length=\(item.length, privacy: .public))"
         )
     }
 
