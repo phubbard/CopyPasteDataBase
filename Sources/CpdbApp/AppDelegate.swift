@@ -92,8 +92,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             startCloudKitSync(store: store)
         }
 
-        // "Sync Now" menu item → one-shot push. Handy for smoke-testing
-        // without waiting for the 5-minute periodic loop.
+        // "Sync Now" menu item → pull-then-push.
         NotificationCenter.default.addObserver(
             forName: .cpdbSyncNow,
             object: nil,
@@ -105,12 +104,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     return
                 }
                 do {
-                    let report = try await syncer.pushPendingChanges()
+                    let pull = try await syncer.pullRemoteChanges()
                     Log.cli.info(
-                        "sync now: attempted=\(report.attempted) saved=\(report.saved) failed=\(report.failed) remaining=\(report.remaining)"
+                        "sync now pull: inserted=\(pull.inserted) updated=\(pull.updated) tombstoned=\(pull.tombstoned) skipped=\(pull.skipped)"
+                    )
+                    let push = try await syncer.pushPendingChanges()
+                    Log.cli.info(
+                        "sync now push: attempted=\(push.attempted) saved=\(push.saved) failed=\(push.failed) remaining=\(push.remaining)"
                     )
                 } catch {
                     Log.cli.error("sync now failed: \(String(describing: error), privacy: .public)")
+                }
+            }
+        }
+
+        // "Pull from iCloud" → pull path only.
+        NotificationCenter.default.addObserver(
+            forName: .cpdbPullNow,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                guard let syncer = self?.syncer else { return }
+                do {
+                    let pull = try await syncer.pullRemoteChanges()
+                    Log.cli.info(
+                        "pull now: inserted=\(pull.inserted) updated=\(pull.updated) tombstoned=\(pull.tombstoned) skipped=\(pull.skipped)"
+                    )
+                } catch {
+                    Log.cli.error("pull now failed: \(String(describing: error), privacy: .public)")
                 }
             }
         }

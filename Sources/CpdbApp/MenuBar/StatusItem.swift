@@ -86,10 +86,13 @@ final class StatusItemController {
         prefsItem.target = StatusItemActions.shared
         menu.addItem(prefsItem)
 
-        // Manual sync trigger — posts `cpdbSyncNow`, AppDelegate runs
-        // one push pass. Useful while iterating on CloudKit changes
-        // without waiting for the 5-minute periodic loop. Keep it
-        // visible even in release builds — single-click, no downside.
+        // Manual sync triggers — post notifications that AppDelegate
+        // handles by running the corresponding syncer path. Handy for
+        // iteration on a single Mac (Sync Now pushes outbound changes)
+        // and for verifying cross-device sync without waiting on the
+        // 5-minute periodic timer (Pull Now fetches from CloudKit).
+        // "Sync Now" does both pull then push, matching what the
+        // periodic loop does each tick.
         let syncItem = NSMenuItem(
             title: "Sync Now",
             action: #selector(StatusItemActions.syncNow),
@@ -97,6 +100,14 @@ final class StatusItemController {
         )
         syncItem.target = StatusItemActions.shared
         menu.addItem(syncItem)
+
+        let pullItem = NSMenuItem(
+            title: "Pull from iCloud",
+            action: #selector(StatusItemActions.pullNow),
+            keyEquivalent: ""
+        )
+        pullItem.target = StatusItemActions.shared
+        menu.addItem(pullItem)
 
         menu.addItem(.separator())
 
@@ -130,10 +141,16 @@ final class StatusItemController {
     @objc func syncNow() {
         NotificationCenter.default.post(name: .cpdbSyncNow, object: nil)
     }
+
+    @objc func pullNow() {
+        NotificationCenter.default.post(name: .cpdbPullNow, object: nil)
+    }
 }
 
 extension Notification.Name {
     /// Posted by the "Sync Now" menu item; AppDelegate handles it by
-    /// running a one-shot CloudKit push.
+    /// running a pull-then-push pass.
     static let cpdbSyncNow = Notification.Name("cpdbSyncNow")
+    /// Posted by "Pull from iCloud"; runs the pull path only.
+    static let cpdbPullNow = Notification.Name("cpdbPullNow")
 }

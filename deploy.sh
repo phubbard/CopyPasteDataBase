@@ -20,7 +20,7 @@
 #   5. Print brief confirmation + tail the cpdb log for a few seconds.
 #
 # Notes:
-#   - The CLI lives at /Applications/cpdb.app/Contents/Helpers/cpdb on
+#   - The CLI lives at (menu bar → Pull from iCloud) on
 #     the target — use that path if you want to run `cpdb sync status`
 #     etc. after the app is quit.
 #   - Second and subsequent deploys replace the bundle in place; the
@@ -87,7 +87,7 @@ rm -f "$TARBALL"
 xattr -dr com.apple.quarantine /Applications/cpdb.app 2>/dev/null || true
 
 echo "  installed: $(defaults read /Applications/cpdb.app/Contents/Info.plist CFBundleShortVersionString 2>/dev/null || echo '?')"
-echo "  cli path : /Applications/cpdb.app/Contents/Helpers/cpdb"
+echo "  cli path : (menu bar → Pull from iCloud)"
 
 # Launch. `open -a` ensures Launch Services picks up the refreshed
 # bundle rather than any cached .app we just replaced.
@@ -106,6 +106,6 @@ done
 
 rm -f "$TARBALL"
 echo
-echo "all hosts updated. first-time installs will pull ~8500 entries in the background;"
-echo "check progress with: ssh <host> /Applications/cpdb.app/Contents/Helpers/cpdb sync status"
-echo "(quit the app first if the CLI hangs — known DB-lock issue.)"
+echo "all hosts updated. first-time installs will pull ~8500 entries in the background."
+echo "drive sync from the menu bar (Sync Now / Pull from iCloud) or watch:"
+echo "    ssh <host> log stream --predicate 'subsystem == \"net.phfactor.cpdb\"' --level info"
