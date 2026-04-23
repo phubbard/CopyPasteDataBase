@@ -229,5 +229,22 @@ enum Schema {
                 arguments: [now]
             )
         }
+
+        migrator.registerMigration("v4_reseed_push_queue_for_flavors") { db in
+            // Step 4.5 introduced Flavor CKRecords + CKAssets. Entries
+            // pushed during step 4 only carried metadata + thumbnails,
+            // so re-push every live entry so its flavors ride this
+            // time. Wipe + reinsert (simpler than upsert; attempt_count
+            // resets to 0, last_error clears).
+            let now = Date().timeIntervalSince1970
+            try db.execute(sql: "DELETE FROM cloudkit_push_queue;")
+            try db.execute(
+                sql: """
+                    INSERT INTO cloudkit_push_queue (entry_id, enqueued_at)
+                    SELECT id, ? FROM entries
+                """,
+                arguments: [now]
+            )
+        }
     }
 }
