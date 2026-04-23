@@ -70,6 +70,14 @@ final class StatusItemController {
 
         menu.addItem(.separator())
 
+        let aboutItem = NSMenuItem(
+            title: "About cpdb",
+            action: #selector(StatusItemActions.showAbout),
+            keyEquivalent: ""
+        )
+        aboutItem.target = StatusItemActions.shared
+        menu.addItem(aboutItem)
+
         let prefsItem = NSMenuItem(
             title: "Preferences…",
             action: #selector(StatusItemActions.showPreferences),
@@ -101,5 +109,9 @@ final class StatusItemController {
 
     @objc func showPreferences() {
         PreferencesWindowController.shared.show()
+    }
+
+    @objc func showAbout() {
+        AboutWindowController.shared.show()
     }
 }
