@@ -19,7 +19,8 @@ database.
 | **1.1.x** | Full-width popup · per-kind rendering (text, link, image, file, colour) · thumbnail generation on capture · `regenerate-thumbnails` backfill | ✅ |
 | **1.2.x** | On-device OCR (`.accurate`) + image classifier folded into FTS5 · scope toggles (text · OCR · tags) in popup · match-source badges · configurable OCR languages · password-manager blocklist with 5-second frontmost-app history | ✅ |
 | **1.3.x** | Quick Look previews (⌘Y or Space-when-empty) for text/image/file entries · single-window Finder-like model · optional "remember scroll position" across QL round-trips | ✅ |
-| 1.4+ | CloudKit sync, pinboards UI, retention policies, reference counting, notarised build | ⏳ |
+| **2.0-dev** | CloudKit sync across Macs (Private DB, custom zone, silent-push subscriptions) · iCloud-mirrored history with OCR/tags/thumbnails · app icon · multi-Mac deploy script · git-sha build IDs · bundle id rename `local.cpdb` → `net.phfactor.cpdb` with one-time data migration | 🚧 |
+| 2.0+ | iOS companion (search + push-to-Mac), flavor CKAsset sync (full multi-flavor paste on pulled entries), iCloud preferences UI, notarised build | ⏳ |
 
 ## Features
 
@@ -57,8 +58,19 @@ database.
   `~/Library/Application Support/com.wiheads.paste/Paste.db` — Core Data
   transformable blobs, external-storage references under `.Paste_SUPPORT/`,
   all five Paste entity kinds, pinboards, source apps. Idempotent.
-- **Local-first, no cloud, no telemetry.** Everything lives under
-  `~/Library/Application Support/local.cpdb/` on your machine.
+- **CloudKit sync across your Macs (2.0-dev).** Every entry — metadata,
+  thumbnails, OCR text, image tags — mirrors to your iCloud Private
+  Database. Install on a second Mac signed into the same iCloud account
+  and your whole history appears. Uses a custom zone + server change
+  tokens + APNs silent-push subscriptions for near-real-time pull. Your
+  data, your iCloud, no servers we operate. Flavor bytes (for
+  off-Mac paste) are not yet on the wire; pulled entries render and
+  search correctly but only text-kind copy-to-clipboard works.
+- **Local-first, no third-party cloud, no telemetry.** Everything lives
+  under `~/Library/Application Support/net.phfactor.cpdb/` on your
+  machine. CloudKit usage is opt-in via the app's entitlements (only
+  kicks in if you're signed into iCloud) and stays inside your own
+  Private Database.
 
 ## Building
 
@@ -82,6 +94,32 @@ To build just the CLI:
 ```sh
 swift build -c release            # produces .build/release/cpdb
 ```
+
+### Multi-Mac install (CloudKit sync, 2.0-dev)
+
+CloudKit needs a real signing identity + provisioning profile. One-time
+setup in Apple Developer:
+
+1. Register an iCloud container named `iCloud.net.phfactor.cpdb`.
+2. Register each Mac by its Provisioning UDID
+   (`system_profiler SPHardwareDataType | grep "Provisioning UDID"` —
+   **not** the Hardware UUID, they differ on Apple Silicon).
+3. Generate a provisioning profile authorising the container + Push
+   Notifications + all device UDIDs. Download as
+   `cpdb.provisionprofile` at the repo root (gitignored).
+
+Then from your build machine:
+
+```sh
+./deploy.sh hostname-a hostname-b …     # SSH-based; rebuild, scp .app, relaunch
+```
+
+Each remote Mac needs: same iCloud account signed in, SSH public-key
+access from the build machine, matching UDID in the profile. On first
+launch of the remote, the app captures locally, subscribes to the
+shared CloudKit zone, and pulls your full history. Use the menu bar's
+**Pull from iCloud** item to force a drain if the periodic timer hasn't
+fired yet.
 
 ## Usage
 
@@ -113,8 +151,12 @@ primary text column.
 
 The `cpdb` binary is a full peer to the menu-bar app and shares the same
 database. The app and CLI are coordinated by a `flock(2)` lock at
-`~/Library/Application Support/local.cpdb/daemon.lock` — whichever starts
-first owns clipboard capture, the other reports the conflict and exits.
+`~/Library/Application Support/net.phfactor.cpdb/daemon.lock` — whichever
+starts first owns clipboard capture, the other reports the conflict and
+exits. The CLI is NOT shipped inside the signed .app bundle (nested
+binaries with restricted entitlements need their own provisioning
+profile which isn't worth it for a debug tool); run the local
+`swift build -c release` output instead.
 
 ```sh
 cpdb list                                 # 20 most recent
@@ -138,6 +180,10 @@ cpdb forget-source-app com.apple.Passwords [--dry-run]
 
 cpdb gc                                   # VACUUM the database
 cpdb --version
+
+cpdb sync status                          # push-queue depth + last pull time
+cpdb sync push-once                       # drain one batch to CloudKit
+cpdb sync pull-once [--reset]             # pull all remote changes
 ```
 
 ## Preferences
@@ -156,7 +202,7 @@ Accessed from the menu-bar item. Sections:
 ## Storage layout
 
 ```
-~/Library/Application Support/local.cpdb/
+~/Library/Application Support/net.phfactor.cpdb/
 ├── cpdb.db                 # SQLite (WAL mode)
 ├── cpdb.db-wal
 ├── cpdb.db-shm
@@ -164,13 +210,19 @@ Accessed from the menu-bar item. Sections:
 └── blobs/
     └── ab/cd/<sha256>      # content-addressed spill for flavors ≥ 256 KB
 
-~/Library/Caches/local.cpdb.app/
+~/Library/Caches/net.phfactor.cpdb.app/
 └── quicklook/              # ephemeral Quick Look temp files
 
 ~/Library/Logs/cpdb/        # launchd stdout/stderr when running via LaunchAgent
 ```
 
-System log subsystem: `log show --predicate 'subsystem == "local.cpdb"'`
+Upgrading from 1.x: on first launch, the app moves your
+`~/Library/Application Support/local.cpdb/` directory to
+`~/Library/Application Support/net.phfactor.cpdb/` automatically. If
+both paths exist (never should), it refuses and logs a warning —
+resolve manually.
+
+System log subsystem: `log show --predicate 'subsystem == "net.phfactor.cpdb"'`
 
 ## How capture works
 
@@ -221,28 +273,45 @@ are not backfilled at import — run `cpdb analyze-images` afterwards.
 ```
 Sources/
 ├── cpdb/                    # CLI target (ArgumentParser)
+│   └── Commands/Sync.swift      cpdb sync {status,push-once,pull-once}
 ├── CpdbApp/                 # menu-bar app target (SwiftUI)
 │   ├── Popup/                   NSPanel + SwiftUI root
 │   │   └── Cards/                   per-kind renderers
 │   ├── QuickLook/               QLPreviewPanel coordinator
 │   ├── Actions/                 PasteAction (CGEvent ⌘V), Accessibility
-│   ├── MenuBar/                 NSStatusItem
+│   ├── MenuBar/                 NSStatusItem (Sync Now, Pull from iCloud)
 │   ├── Hotkey/                  KeyboardShortcuts glue
 │   ├── Preferences/             Settings window
-│   └── Resources/Info.plist     LSUIElement=true
-└── CpdbCore/                # library shared between CLI and app
-    ├── Store/                   GRDB schema (v1 + v2), records, BlobStore
-    ├── Capture/                 PasteboardWatcher, CanonicalHash, Ingestor,
-    │                            IgnoredApps, FrontmostAppMonitor, Thumbnailer
-    ├── Analysis/                Vision OCR + classifier pipeline, AnalysisPrefs
-    ├── QuickLook/               QuickLookItemBuilder (kind → URL)
+│   ├── About/                   SwiftUI About with iCloud status + last sync
+│   └── Resources/
+│       ├── Info.plist               LSUIElement=true + CloudKit icon
+│       ├── cpdb.entitlements        iCloud + CloudKit + APNs + app-id
+│       └── Assets/AppIcon.icns      generated by scripts/make-icon.swift
+├── CpdbShared/              # cross-platform core (iOS + macOS)
+│   ├── Store/                   GRDB schema (v1/v2/v3), records, BlobStore
+│   ├── Capture/                 CanonicalHash, Thumbnailer, PasteboardSnapshot
+│   ├── Analysis/                Vision OCR + classifier pipeline, AnalysisPrefs
+│   ├── QuickLook/               QuickLookItemBuilder (kind → URL)
+│   ├── Search/                  FtsIndex, EntryRepository
+│   ├── Sync/                    CloudKitSyncer actor, CloudKitClient protocol,
+│   │                            PushQueue, CKSchema, EntryRecordMapper
+│   ├── BuildStamp.swift         git-sha build identifier (generated)
+│   └── Version.swift            marketing version (hand-edited)
+└── CpdbCore/                # macOS-only library, depends on CpdbShared
+    ├── Capture/                 PasteboardWatcher, Ingestor, IgnoredApps,
+    │                            FrontmostAppMonitor
     ├── Restore/                 Restorer (legacy shim over PasteboardWriter)
-    ├── Search/                  FtsIndex (5 columns, SearchScope, MatchSource)
     └── Import/                  PasteDbImporter + decoder + reader
 
-Tests/CpdbCoreTests/         # swift-testing — currently 40 tests
+Tests/CpdbCoreTests/         # swift-testing — 69 tests covering CloudKit
+                             # mapper, syncer push + pull paths, and all
+                             # pre-existing store/search/analysis suites
 
-Makefile                      # build-app / run-app / install-app / release
+Makefile                      # build-app / install-app / release / stamp-build
+scripts/make-icon.swift       # regenerate Contents/Resources/AppIcon.icns
+scripts/stamp-build.sh        # write git short-sha into BuildStamp.swift
+deploy.sh                     # SSH multi-Mac deploy
+cpdb.provisionprofile         # (gitignored) Apple dev profile for signing
 .github/workflows/tests.yml   # CI on macos-15
 .github/workflows/release.yml # auto GitHub release on tag push
 ```
@@ -268,18 +337,30 @@ it isn't present (CI skips them).
 - [swift-argument-parser](https://github.com/apple/swift-argument-parser) — CLI
 - [KeyboardShortcuts](https://github.com/sindresorhus/KeyboardShortcuts) — global hotkey + SwiftUI recorder
 
-Everything else is stdlib / AppKit / SwiftUI / Vision / Quartz.
+Everything else is stdlib / AppKit / SwiftUI / Vision / Quartz / CloudKit.
 
 ## Versioning
 
-The single source of truth is `Sources/CpdbCore/Version.swift`; `Info.plist`
-mirrors it and the Makefile's `verify-version` target fails the build on
-drift.
+Two layers:
+
+- **Marketing version** — hand-edited in
+  `Sources/CpdbShared/Version.swift` (`CpdbVersion.marketing`) and mirrored
+  in `Info.plist`'s `CFBundleShortVersionString`. Bump when cutting a
+  release (1.3.2 → 2.0.0 → …). `make verify-version` fails the build on
+  drift.
+- **Build identifier** — automatically appended to the marketing version
+  with a git short-sha (e.g. `2.0.0-dev+8ea2418`). `scripts/stamp-build.sh`
+  regenerates `BuildStamp.swift` before every Makefile build and
+  `Info.plist`'s `CFBundleVersion` gets patched to match. Use it to
+  identify exactly which commit produced the binary on each installed
+  Mac — the About window shows the full build id. When the tree is
+  dirty, the sha gets a `-dirty` suffix.
 
 ```sh
-# bump
-# 1. edit Sources/CpdbCore/Version.swift
-# 2. edit Sources/CpdbApp/Resources/Info.plist (CFBundleShortVersionString + CFBundleVersion)
+# cutting a release
+# 1. edit Sources/CpdbShared/Version.swift  (CpdbVersion.marketing)
+# 2. edit Sources/CpdbApp/Resources/Info.plist (CFBundleShortVersionString only —
+#    CFBundleVersion is regenerated on every build)
 make verify-version
 git commit -am "bump version to X.Y.Z"
 git tag -a vX.Y.Z -m "..."
