@@ -268,8 +268,11 @@ public actor CloudKitSyncer {
         // next push (deterministic recordIDs make flavor re-pushes
         // idempotent upserts).
         let idMap = recordIDToEntryId
-        var sampleEntryFailure: String? = nil
-        var sampleFlavorFailure: String? = nil
+        // Collect EVERY distinct error description across the batch
+        // (record-type-annotated) so the "root cause" of a cascade
+        // failure (a single non-batchRequestFailed record) surfaces
+        // instead of drowning in cascade victims.
+        var errorKindCounts: [String: Int] = [:]
         let (saved, failed) = try await store.dbQueue.write { db -> (Int, Int) in
             var saved = 0
             var failed = 0
@@ -281,6 +284,8 @@ public actor CloudKitSyncer {
                         saved += 1
                     }
                 case .failure(let error):
+                    let kind = "\(idMap[recordID] != nil ? "entry" : "flavor"):\(Self.describe(error))"
+                    errorKindCounts[kind, default: 0] += 1
                     if let entryId = idMap[recordID] {
                         try PushQueue.markFailure(
                             entryId: entryId,
@@ -288,25 +293,18 @@ public actor CloudKitSyncer {
                             in: db
                         )
                         failed += 1
-                        if sampleEntryFailure == nil {
-                            sampleEntryFailure = Self.describe(error)
-                        }
-                    } else {
-                        // Flavor record — don't touch the queue but
-                        // capture one error for surfacing in the log.
-                        if sampleFlavorFailure == nil {
-                            sampleFlavorFailure = Self.describe(error)
-                        }
                     }
                 }
             }
             return (saved, failed)
         }
-        if let msg = sampleEntryFailure {
-            Log.cli.error("push: entry failure sample: \(msg, privacy: .public)")
-        }
-        if let msg = sampleFlavorFailure {
-            Log.cli.error("push: flavor failure sample: \(msg, privacy: .public)")
+        if !errorKindCounts.isEmpty {
+            // Sort by count desc for readability, then log each line
+            // separately so the full list is visible in os_log.
+            let sorted = errorKindCounts.sorted { $0.value > $1.value }
+            for (kind, n) in sorted.prefix(5) {
+                Log.cli.error("push: \(n, privacy: .public) × \(kind, privacy: .public)")
+            }
         }
 
         let remaining = try await remainingCount()
