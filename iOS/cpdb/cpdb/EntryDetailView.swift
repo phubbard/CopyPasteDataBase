@@ -43,10 +43,18 @@ struct EntryDetailView: View {
     /// Swift's Transferable requires a concrete type per share
     /// item; this enum lets the view pick the right `ShareLink`
     /// variant at render time.
+    ///
+    /// Image payloads used to be a file URL in /tmp, but iOS's
+    /// Launch Services can't resolve file URLs without a
+    /// file-provider domain — AirDrop and most share extensions
+    /// bailed with OSStatus -10814. Carrying the raw Data and
+    /// rendering a SwiftUI Image into ShareLink's Transferable
+    /// path routes through the image-data pipeline instead and
+    /// works everywhere.
     enum SharePayload {
         case text(String)
         case url(URL)
-        case file(URL)
+        case image(Data)
     }
 
     var body: some View {
@@ -200,11 +208,23 @@ struct EntryDetailView: View {
                 Image(systemName: "square.and.arrow.up")
             }
             .accessibilityLabel("Share")
-        case .file(let u):
-            ShareLink(item: u) {
-                Image(systemName: "square.and.arrow.up")
+        case .image(let data):
+            #if canImport(UIKit)
+            if let uiImage = UIImage(data: data) {
+                let swiftUIImage = Image(uiImage: uiImage)
+                ShareLink(
+                    item: swiftUIImage,
+                    preview: SharePreview("Image", image: swiftUIImage)
+                ) {
+                    Image(systemName: "square.and.arrow.up")
+                }
+                .accessibilityLabel("Share")
+            } else {
+                EmptyView()
             }
-            .accessibilityLabel("Share")
+            #else
+            EmptyView()
+            #endif
         }
     }
 
@@ -359,7 +379,10 @@ struct EntryDetailView: View {
         case .image:
             #if canImport(UIKit)
             // Prefer the original image flavor so we share full
-            // resolution, not the 640px thumbnail.
+            // resolution, not the 640px thumbnail. Return the raw
+            // bytes — the ShareLink branch renders a SwiftUI
+            // Image from them so Launch Services doesn't need to
+            // resolve a file URL.
             let id = l.entry.id!
             let data: Data? = try? await store.dbQueue.read { db in
                 for uti in ["public.png", "public.jpeg", "public.heic", "public.tiff"] {
@@ -376,20 +399,10 @@ struct EntryDetailView: View {
                 }
                 return nil
             }
-            let payload = data ?? l.thumbLarge
-            guard let bytes = payload else { return nil }
-            // Stash in /tmp with a sensible extension so the
-            // receiver recognizes the type. ShareLink(item: URL)
-            // is a file-URL for local files.
-            let ext = Self.imageExtension(for: bytes)
-            let url = FileManager.default.temporaryDirectory
-                .appendingPathComponent("cpdb-share-\(UUID().uuidString).\(ext)")
-            do {
-                try bytes.write(to: url)
-                return .file(url)
-            } catch {
-                return nil
+            if let bytes = data ?? l.thumbLarge {
+                return .image(bytes)
             }
+            return nil
             #else
             return nil
             #endif
@@ -404,18 +417,6 @@ struct EntryDetailView: View {
         }
     }
 
-    /// Infer a file extension from leading magic bytes so the
-    /// share sheet's UIActivityViewController knows what it's
-    /// looking at. Default to .png for wide compatibility.
-    private static func imageExtension(for data: Data) -> String {
-        guard data.count >= 4 else { return "png" }
-        let b = [UInt8](data.prefix(12))
-        if b.starts(with: [0x89, 0x50, 0x4E, 0x47]) { return "png" }
-        if b.starts(with: [0xFF, 0xD8, 0xFF])       { return "jpg" }
-        if b.starts(with: [0x47, 0x49, 0x46])       { return "gif" }
-        if b.count >= 12 && Array(b[4..<8]) == [0x66, 0x74, 0x79, 0x70] { return "heic" }
-        return "png"
-    }
 
     private func copyToClipboard() {
         #if canImport(UIKit)
