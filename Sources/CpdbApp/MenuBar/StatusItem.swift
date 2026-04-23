@@ -11,19 +11,27 @@ final class StatusItemController {
     private let statusItem: NSStatusItem
 
     init() {
-        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        // Give the status item a stable `autosaveName` so macOS tracks
-        // its visibility and position across launches. Without this,
-        // macOS Sonoma+ is free to park newly-created status items in
-        // Control Center overflow on first run and never surface them.
+        // Fixed length so we never collapse to 0px if the SF Symbol
+        // lookup silently fails — a variable-length item with a nil
+        // image renders as zero width, which looks exactly like "the
+        // icon disappeared" without any log signal.
+        let item = NSStatusBar.system.statusItem(withLength: 24)
         item.autosaveName = "net.phfactor.cpdb.statusItem"
-        item.behavior = .removalAllowed
         if let button = item.button {
             button.image = Self.normalImage
+            // Textual fallback if the image is missing for any reason —
+            // user sees "cpdb" in the menu bar, which is still clickable
+            // and beats an invisible zero-width slot.
+            if button.image == nil {
+                button.title = "cpdb"
+                Log.cli.warning("status item: falling back to text — SF Symbol unavailable?")
+            }
         }
         item.menu = Self.buildMenu()
         self.statusItem = item
-        Log.cli.info("status item installed")
+        Log.cli.info(
+            "status item installed (image=\(item.button?.image != nil ? "yes" : "no"), length=\(item.length))"
+        )
     }
 
     /// Toggle a "needs attention" (first-run, no hotkey bound) appearance.
@@ -31,13 +39,18 @@ final class StatusItemController {
     /// the user has a hint something's waiting.
     func setNeedsAttention(_ needs: Bool) {
         guard let button = statusItem.button else { return }
-        if needs {
-            button.image = Self.attentionImage
-            button.toolTip = "cpdb — pick a hotkey in Preferences"
+        // Preserve the text fallback if the symbol couldn't load.
+        // Never clear both image and title together — that's what
+        // silently makes the item disappear from the menu bar.
+        let desired = needs ? Self.attentionImage : Self.normalImage
+        if let img = desired {
+            button.image = img
+            button.title = ""
         } else {
-            button.image = Self.normalImage
-            button.toolTip = "cpdb"
+            button.image = nil
+            button.title = "cpdb"
         }
+        button.toolTip = needs ? "cpdb — pick a hotkey in Preferences" : "cpdb"
     }
 
     // SF Symbols: `list.clipboard` is the closest native clipboard glyph.
