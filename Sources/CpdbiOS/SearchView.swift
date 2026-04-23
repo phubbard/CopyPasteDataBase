@@ -39,6 +39,10 @@ struct SearchView: View {
     /// About-sheet presentation. Tapping the brand header opens it.
     @State private var showAbout: Bool = false
 
+    /// Persisted filter state (kind multiselect + search scopes).
+    @State private var filter: SearchFilter = .load()
+    @State private var showFilter: Bool = false
+
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
@@ -119,6 +123,9 @@ struct SearchView: View {
                 Task { await runQuery() }
             }
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    filterButton
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     syncIndicator
                 }
@@ -126,12 +133,33 @@ struct SearchView: View {
             .sheet(isPresented: $showAbout) {
                 AboutSheet()
             }
+            .sheet(isPresented: $showFilter) {
+                FilterSheet(filter: $filter)
+                    .presentationDetents([.medium, .large])
+            }
+            // Persist + re-query on any filter change.
+            .onChange(of: filter) { _, new in
+                new.save()
+                resultsLimit = Self.pageSize
+                Task { await runQuery() }
+            }
             .overlay {
                 if results.isEmpty && container.pullProgress == nil {
                     emptyState
                 }
             }
         }
+    }
+
+    @ViewBuilder
+    private var filterButton: some View {
+        Button {
+            showFilter = true
+        } label: {
+            // Small dot badge when the filter diverges from default.
+            Image(systemName: filter.isDefault ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill")
+        }
+        .accessibilityLabel("Filter and search scope")
     }
 
     @ViewBuilder
@@ -203,32 +231,52 @@ struct SearchView: View {
 
     /// Query entries + (for link-kind entries) resolve a URL string
     /// from `entry_flavors`. One SQL call, one per-row post-process,
-    /// no N+1 lookups during rendering.
+    /// no N+1 lookups during rendering. Respects `filter` (kind
+    /// multiselect + search-column scopes).
     private func runQuery() async {
         guard let store = container.store else {
             results = []
             return
         }
-        let snapshotQuery = query
+        let snapshotQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
         let limit = resultsLimit
+        let snapshotFilter = filter
         do {
             let rows: [SearchRow] = try await store.dbQueue.read { db in
-                let entries: [Entry]
-                if snapshotQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    entries = try Entry
-                        .filter(sql: "deleted_at IS NULL")
-                        .order(sql: "created_at DESC")
-                        .limit(limit)
-                        .fetchAll(db)
-                } else {
-                    let like = "%\(snapshotQuery)%"
-                    entries = try Entry
-                        .filter(sql: "deleted_at IS NULL AND (title LIKE ? OR text_preview LIKE ? OR ocr_text LIKE ? OR image_tags LIKE ?)",
-                                arguments: [like, like, like, like])
-                        .order(sql: "created_at DESC")
-                        .limit(limit)
-                        .fetchAll(db)
+                // Assemble WHERE fragments incrementally so we don't
+                // emit `AND ()` or similar when the user toggles
+                // scopes off.
+                var where_: [String] = ["deleted_at IS NULL"]
+                var args: [DatabaseValueConvertible] = []
+
+                // Kind filter. Skip the clause when all kinds are
+                // selected (the default) so the query planner doesn't
+                // walk a pointless IN (...).
+                if snapshotFilter.kinds.count < EntryKind.allCases.count
+                    && !snapshotFilter.kinds.isEmpty
+                {
+                    let placeholders = Array(repeating: "?", count: snapshotFilter.kinds.count)
+                        .joined(separator: ",")
+                    where_.append("kind IN (\(placeholders))")
+                    for k in snapshotFilter.kinds {
+                        args.append(k.rawValue)
+                    }
                 }
+
+                // Search-string filter, per user-selected scopes.
+                if !snapshotQuery.isEmpty,
+                   let clause = snapshotFilter.scopeLikeClause(for: snapshotQuery)
+                {
+                    where_.append(clause.sql)
+                    args.append(contentsOf: clause.args)
+                }
+
+                let whereSQL = where_.joined(separator: " AND ")
+                let entries = try Entry
+                    .filter(sql: whereSQL, arguments: StatementArguments(args))
+                    .order(sql: "created_at DESC")
+                    .limit(limit)
+                    .fetchAll(db)
 
                 // For link-kind entries with no usable preview, pull
                 // the URL bytes from the joined flavor. We look for
