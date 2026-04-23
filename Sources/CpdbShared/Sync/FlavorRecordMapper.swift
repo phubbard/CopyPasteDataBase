@@ -50,6 +50,15 @@ public enum FlavorRecordMapper {
     /// staged asset file URL (written to a tmp location by the syncer)
     /// — we don't touch the filesystem here so this function stays
     /// pure-data and unit-testable.
+    ///
+    /// Reference action is `.none` rather than `.deleteSelf`: we don't
+    /// rely on server-side cascade cleanup (local tombstones via
+    /// `entries.deleted_at` do the logical delete; hard-delete is a
+    /// separate GC concern), and `.deleteSelf` binds a parent's
+    /// flavors into an atomic cluster on the CloudKit server — a
+    /// single bad flavor blocks ~N sibling flavors + the parent with
+    /// `CKErrorDomain:22 "Atomic failure"`. `.none` makes each record
+    /// an independent save target.
     public static func populate(
         record: CKRecord,
         entryRecordID: CKRecord.ID,
@@ -57,7 +66,7 @@ public enum FlavorRecordMapper {
         size: Int64,
         assetURL: URL
     ) {
-        let ref = CKRecord.Reference(recordID: entryRecordID, action: .deleteSelf)
+        let ref = CKRecord.Reference(recordID: entryRecordID, action: .none)
         record[CKSchema.FlavorField.entryRef] = ref
         record[CKSchema.FlavorField.uti]      = uti as NSString
         record[CKSchema.FlavorField.size]     = size as NSNumber
