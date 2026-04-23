@@ -44,6 +44,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         if let store = store {
             PopupController.shared.configure(store: store, captureMode: captureMode)
+            AboutWindowController.shared.configure(store: store)
         }
 
         statusItem = StatusItemController()
