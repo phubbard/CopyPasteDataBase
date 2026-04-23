@@ -1,3 +1,4 @@
+#if os(macOS)
 import Foundation
 import AppKit
 import GRDB
@@ -64,3 +65,4 @@ public struct PasteboardWriter {
         pasteboard.writeObjects(items)
     }
 }
+#endif

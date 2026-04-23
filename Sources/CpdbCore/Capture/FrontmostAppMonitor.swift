@@ -1,3 +1,4 @@
+#if os(macOS)
 import Foundation
 import AppKit
 import CpdbShared
@@ -76,3 +77,4 @@ public final class FrontmostAppMonitor {
         _ = shared
     }
 }
+#endif

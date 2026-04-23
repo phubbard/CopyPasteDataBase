@@ -1,3 +1,4 @@
+#if os(macOS)
 import Foundation
 import AppKit
 import CpdbShared
@@ -23,3 +24,4 @@ public extension PasteboardSnapshot {
         return PasteboardSnapshot(items: snapshotItems)
     }
 }
+#endif

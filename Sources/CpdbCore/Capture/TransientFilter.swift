@@ -1,3 +1,4 @@
+#if os(macOS)
 import Foundation
 import AppKit
 import CpdbShared
@@ -28,3 +29,4 @@ public enum TransientFilter {
         return false
     }
 }
+#endif

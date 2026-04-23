@@ -1,3 +1,4 @@
+#if os(macOS)
 import Foundation
 import CryptoKit
 import GRDB
@@ -306,3 +307,4 @@ public struct PasteDbImporter {
         return nil
     }
 }
+#endif

@@ -1,3 +1,4 @@
+#if os(macOS)
 import Foundation
 import CpdbShared
 
@@ -195,3 +196,4 @@ final class PasteCoreItemShim: NSObject, NSCoding {
         coder.encode(data,  forKey: "data")
     }
 }
+#endif

@@ -1,3 +1,4 @@
+#if os(macOS)
 import Foundation
 import AppKit
 import CpdbShared
@@ -54,3 +55,4 @@ public enum FrontmostApp {
         return rep.representation(using: .png, properties: [:])
     }
 }
+#endif

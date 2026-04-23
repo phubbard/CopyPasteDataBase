@@ -1,3 +1,4 @@
+#if os(macOS)
 import Foundation
 import GRDB
 import IOKit
@@ -231,3 +232,4 @@ public enum DeviceIdentity {
         return cfValue
     }
 }
+#endif

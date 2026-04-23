@@ -1,3 +1,4 @@
+#if os(macOS)
 import Foundation
 import GRDB
 import CpdbShared
@@ -219,3 +220,4 @@ public final class PasteCoreDataReader {
         }
     }
 }
+#endif

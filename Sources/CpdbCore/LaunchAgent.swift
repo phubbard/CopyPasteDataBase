@@ -1,3 +1,4 @@
+#if os(macOS)
 import Foundation
 import CpdbShared
 
@@ -87,3 +88,4 @@ public enum LaunchAgent {
         return URL(fileURLWithPath: arg0).standardizedFileURL
     }
 }
+#endif

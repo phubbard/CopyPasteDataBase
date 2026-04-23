@@ -1,3 +1,4 @@
+#if os(macOS)
 import Foundation
 import CpdbShared
 
@@ -25,3 +26,4 @@ public extension IgnoredApps {
         return nil
     }
 }
+#endif
