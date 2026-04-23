@@ -72,11 +72,19 @@ public actor CloudKitSyncer {
     private let device: DeviceInfo
     private let blobs: BlobStore
 
-    /// How many entries to pull off the queue per push call. Each
-    /// entry produces 1 Entry CKRecord + N Flavor CKRecords. CloudKit's
-    /// `CKModifyRecordsOperation` limit is ~400 records per batch; 50
-    /// entries with an average ~5 flavors each fits comfortably.
+    /// Upper bound on how many entries to pull off the queue per push
+    /// call. Actual batch size is also gated by byte budget (see
+    /// `maxBatchBytes`). Default is small (20) because each entry
+    /// produces 1 Entry + N Flavor records, each Flavor is a CKAsset,
+    /// and CloudKit caps request bodies at ~40 MB — one large-image
+    /// entry can carry multi-MB flavors.
     private let batchSize: Int
+
+    /// Byte budget per modifyRecords call. CloudKit's documented limit
+    /// is 40 MB per operation (aggregated across all records +
+    /// assets); 30 MB leaves headroom for encoding overhead and
+    /// whatever metadata we're not accounting for.
+    private let maxBatchBytes: Int64 = 30 * 1024 * 1024
 
     private var zoneEnsured = false
     private var pushing = false
@@ -89,7 +97,7 @@ public actor CloudKitSyncer {
             ownerName: CKCurrentUserDefaultName
         ),
         device: DeviceInfo,
-        batchSize: Int = 50,
+        batchSize: Int = 20,
         blobs: BlobStore = BlobStore()
     ) {
         self.store = store
@@ -141,9 +149,13 @@ public actor CloudKitSyncer {
 
         // 2. Build CKRecords + stage thumbnail assets for each entry.
         //    Drop entries that have vanished (race with local delete).
+        //    Stop accumulating once we approach CloudKit's 40-MB
+        //    modifyRecords byte budget — entries skipped this round
+        //    stay queued and go next tick.
         var builtRecords: [CKRecord] = []
         var recordIDToEntryId: [CKRecord.ID: Int64] = [:]
         var tempFiles: [URL] = []
+        var accumulatedBytes: Int64 = 0
         defer {
             for url in tempFiles {
                 try? FileManager.default.removeItem(at: url)
@@ -151,6 +163,15 @@ public actor CloudKitSyncer {
         }
 
         for pendingRow in pending {
+            // Byte-budget guard. Stop before adding an entry whose
+            // flavors would blow the batch past maxBatchBytes. We
+            // check before staging (not after) to avoid writing
+            // temp files we're about to throw away.
+            if accumulatedBytes > maxBatchBytes / 2 && !builtRecords.isEmpty {
+                // Keep a conservative halt threshold so we're unlikely
+                // to go over with one more entry's flavors.
+                break
+            }
             let bundle = try await loadEntryBundle(entryId: pendingRow.entryId)
             guard let bundle = bundle else {
                 // Entry row is gone — drop the orphan queue row.
@@ -182,6 +203,7 @@ public actor CloudKitSyncer {
                 do {
                     let url = try stageFlavorAsset(flavor, entryUUID: bundle.entry.uuid)
                     tempFiles.append(url)
+                    accumulatedBytes += flavor.size
                     let flavorID = FlavorRecordMapper.recordID(
                         forEntryUUID: bundle.entry.uuid,
                         uti: flavor.uti,
@@ -246,25 +268,45 @@ public actor CloudKitSyncer {
         // next push (deterministic recordIDs make flavor re-pushes
         // idempotent upserts).
         let idMap = recordIDToEntryId
+        var sampleEntryFailure: String? = nil
+        var sampleFlavorFailure: String? = nil
         let (saved, failed) = try await store.dbQueue.write { db -> (Int, Int) in
             var saved = 0
             var failed = 0
             for (recordID, outcome) in result.saveResults {
-                guard let entryId = idMap[recordID] else { continue }
                 switch outcome {
                 case .success:
-                    try PushQueue.remove(entryId: entryId, in: db)
-                    saved += 1
+                    if let entryId = idMap[recordID] {
+                        try PushQueue.remove(entryId: entryId, in: db)
+                        saved += 1
+                    }
                 case .failure(let error):
-                    try PushQueue.markFailure(
-                        entryId: entryId,
-                        error: Self.describe(error),
-                        in: db
-                    )
-                    failed += 1
+                    if let entryId = idMap[recordID] {
+                        try PushQueue.markFailure(
+                            entryId: entryId,
+                            error: Self.describe(error),
+                            in: db
+                        )
+                        failed += 1
+                        if sampleEntryFailure == nil {
+                            sampleEntryFailure = Self.describe(error)
+                        }
+                    } else {
+                        // Flavor record — don't touch the queue but
+                        // capture one error for surfacing in the log.
+                        if sampleFlavorFailure == nil {
+                            sampleFlavorFailure = Self.describe(error)
+                        }
+                    }
                 }
             }
             return (saved, failed)
+        }
+        if let msg = sampleEntryFailure {
+            Log.cli.error("push: entry failure sample: \(msg, privacy: .public)")
+        }
+        if let msg = sampleFlavorFailure {
+            Log.cli.error("push: flavor failure sample: \(msg, privacy: .public)")
         }
 
         let remaining = try await remainingCount()
