@@ -312,8 +312,24 @@ public actor CloudKitSyncer {
                 return false
             }
         if wholeBatchCascade {
+            // Rotate these entries to the back of the queue so the
+            // next tick peeks a different set. Otherwise we keep
+            // retrying the exact same 20 rows every tick, which is a
+            // problem when axiom/thor happen to be mid-push on the
+            // same content-hashed recordIDs — the contested batch
+            // blocks forward progress on every other entry below it.
+            let entryIds = Array(idMap.values)
+            try await store.dbQueue.write { db in
+                let now = Date().timeIntervalSince1970
+                for entryId in entryIds {
+                    try db.execute(
+                        sql: "UPDATE cloudkit_push_queue SET enqueued_at = ? WHERE entry_id = ?",
+                        arguments: [now, entryId]
+                    )
+                }
+            }
             Log.cli.info(
-                "cloudkit push: whole-batch cascade (concurrent write, retrying next tick)"
+                "cloudkit push: whole-batch cascade, rotated \(entryIds.count, privacy: .public) rows to back of queue"
             )
             try? await Task.sleep(nanoseconds: 2_000_000_000)
             return PushReport(
