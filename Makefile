@@ -92,13 +92,26 @@ build-app: verify-version stamp-build
 	# SPM-generated resource bundles — each Swift Package that declares
 	# resources produces a `<Package>_<Target>.bundle` at build time.
 	# `Bundle.module` inside the package looks for these next to the
-	# main binary. On a second-Mac install (no .build tree) the fallback
-	# search path is gone; missing bundle → fatal assertion at the first
-	# `Bundle.module` access (killed axiom + thor when Preferences opened
-	# and KeyboardShortcuts.Recorder initialized).
+	# main binary.
+	#
+	# Three caveats before macOS will load them:
+	#   1. Must live at Contents/Resources/ (copy step below).
+	#   2. Info.plist must include CFBundleIdentifier + CFBundlePackageType.
+	#      SPM writes a stub with only CFBundleDevelopmentRegion, which
+	#      Bundle(url:) rejects. Patch via PlistBuddy after copy.
+	#   3. Must be codesigned (see codesign loop further down).
 	@for b in $(BUILD_DIR)/$(BUILD_CONFIG)/*.bundle; do \
 	    if [ -d "$$b" ]; then \
+	        name=$$(basename "$$b" .bundle); \
+	        dest=$(APP_BUNDLE_DIR)/Contents/Resources/$$(basename "$$b"); \
 	        cp -R "$$b" $(APP_BUNDLE_DIR)/Contents/Resources/; \
+	        /usr/libexec/PlistBuddy -c "Add :CFBundleIdentifier string net.phfactor.cpdb.$$name" "$$dest/Info.plist" 2>/dev/null || \
+	            /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier net.phfactor.cpdb.$$name" "$$dest/Info.plist"; \
+	        /usr/libexec/PlistBuddy -c "Add :CFBundlePackageType string BNDL" "$$dest/Info.plist" 2>/dev/null || true; \
+	        /usr/libexec/PlistBuddy -c "Add :CFBundleName string $$name" "$$dest/Info.plist" 2>/dev/null || true; \
+	        /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string 1" "$$dest/Info.plist" 2>/dev/null || true; \
+	        /usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string 1.0" "$$dest/Info.plist" 2>/dev/null || true; \
+	        /usr/libexec/PlistBuddy -c "Add :CFBundleInfoDictionaryVersion string 6.0" "$$dest/Info.plist" 2>/dev/null || true; \
 	        echo "  bundled $$(basename $$b)"; \
 	    fi; \
 	done
