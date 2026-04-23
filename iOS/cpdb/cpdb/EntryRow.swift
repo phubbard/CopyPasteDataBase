@@ -9,6 +9,11 @@ import CpdbShared
 /// scrolling. Detail view (push from this row) shows the full entry.
 struct EntryRow: View {
     let entry: Entry
+    /// For link-kind entries whose title + textPreview are empty,
+    /// this is the URL pulled from the joined `public.url` /
+    /// `public.utf8-plain-text` flavor. Non-nil only in that fallback
+    /// case; text/image/etc. entries get nil here.
+    var linkURL: String? = nil
 
     private static let relative: RelativeDateTimeFormatter = {
         let f = RelativeDateTimeFormatter()
@@ -49,6 +54,7 @@ struct EntryRow: View {
     private var snippet: String {
         if let title = entry.title, !title.isEmpty { return title }
         if let text = entry.textPreview, !text.isEmpty { return text }
+        if let url = linkURL, !url.isEmpty { return url }
         return "(\(entry.kind.rawValue))"
     }
 

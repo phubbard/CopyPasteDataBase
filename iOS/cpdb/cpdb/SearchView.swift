@@ -8,10 +8,21 @@ import CpdbShared
 /// Results come from `EntryRepository` in CpdbShared — same logic the
 /// Mac popup uses. iPhone-first layout: vertical list, no strip, no
 /// sidebar. Tap pushes `EntryDetailView`.
+/// Row model: an Entry plus a resolved link URL string when the
+/// entry is kind=.link and lacks a usable `title` / `text_preview`.
+/// The URL comes from a joined sub-query on `entry_flavors`; fetching
+/// it per-row would be N+1 so SearchView's single query resolves it
+/// once for the whole batch.
+struct SearchRow: Identifiable {
+    let entry: Entry
+    let linkURL: String?
+    var id: Int64? { entry.id }
+}
+
 struct SearchView: View {
     @Environment(AppContainer.self) private var container
     @State private var query: String = ""
-    @State private var results: [Entry] = []
+    @State private var results: [SearchRow] = []
     /// Debounce timer token — cancelled on every keystroke so rapid
     /// typing only triggers one query after the user pauses.
     @State private var searchTask: Task<Void, Never>? = nil
@@ -23,9 +34,9 @@ struct SearchView: View {
                    let started = container.pullStartedAt {
                     PullProgressBanner(progress: progress, startedAt: started)
                 }
-                List(results, id: \.id) { entry in
-                    NavigationLink(value: entry.id) {
-                        EntryRow(entry: entry)
+                List(results) { row in
+                    NavigationLink(value: row.entry.id) {
+                        EntryRow(entry: row.entry, linkURL: row.linkURL)
                     }
                 }
                 .listStyle(.plain)
@@ -33,7 +44,12 @@ struct SearchView: View {
             .navigationDestination(for: Int64.self) { entryId in
                 EntryDetailView(entryId: entryId)
             }
-            .navigationTitle("cpdb")
+            // Title is rendered via the principal toolbar slot (see
+            // below) so we can combine icon + title + subtitle. An
+            // empty navigationTitle keeps VoiceOver happy and
+            // ensures the nav bar still takes its expected height.
+            .navigationTitle("")
+            .navigationBarTitleDisplayMode(.inline)
             .searchable(text: $query, prompt: "Search clipboard history")
             .refreshable {
                 await container.pullNow()
@@ -46,6 +62,9 @@ struct SearchView: View {
                 Task { await runQuery() }
             }
             .toolbar {
+                ToolbarItem(placement: .principal) {
+                    BrandTitle()
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     syncIndicator
                 }
@@ -111,8 +130,9 @@ struct SearchView: View {
         }
     }
 
-    /// Hit the repository for the top N matches. Uses the same
-    /// `EntryRepository.search` used by the Mac popup.
+    /// Query entries + (for link-kind entries) resolve a URL string
+    /// from `entry_flavors`. One SQL call, one per-row post-process,
+    /// no N+1 lookups during rendering.
     private func runQuery() async {
         guard let store = container.store else {
             results = []
@@ -120,24 +140,37 @@ struct SearchView: View {
         }
         let snapshotQuery = query
         do {
-            let rows: [Entry] = try await store.dbQueue.read { db in
+            let rows: [SearchRow] = try await store.dbQueue.read { db in
+                let entries: [Entry]
                 if snapshotQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    return try Entry
+                    entries = try Entry
                         .filter(sql: "deleted_at IS NULL")
                         .order(sql: "created_at DESC")
                         .limit(200)
                         .fetchAll(db)
                 } else {
-                    // Simple LIKE-based fallback for now. A later pass
-                    // can wire EntryRepository + FTS5 once its API is
-                    // exposed the same way on iOS.
                     let like = "%\(snapshotQuery)%"
-                    return try Entry
+                    entries = try Entry
                         .filter(sql: "deleted_at IS NULL AND (title LIKE ? OR text_preview LIKE ? OR ocr_text LIKE ? OR image_tags LIKE ?)",
                                 arguments: [like, like, like, like])
                         .order(sql: "created_at DESC")
                         .limit(200)
                         .fetchAll(db)
+                }
+
+                // For link-kind entries with no usable preview, pull
+                // the URL bytes from the joined flavor. We look for
+                // `public.url` first (exact URL), falling back to
+                // `public.utf8-plain-text` which Safari etc. also
+                // populate with the URL.
+                return try entries.map { entry -> SearchRow in
+                    guard entry.kind == .link,
+                          (entry.title?.isEmpty ?? true) && (entry.textPreview?.isEmpty ?? true)
+                    else {
+                        return SearchRow(entry: entry, linkURL: nil)
+                    }
+                    let url = try Self.resolveLinkURL(entryId: entry.id!, in: db)
+                    return SearchRow(entry: entry, linkURL: url)
                 }
             }
             if !Task.isCancelled {
@@ -149,9 +182,50 @@ struct SearchView: View {
             }
         }
     }
+
+    /// Fetch the stored URL bytes for a link-kind entry and decode
+    /// as UTF-8. Tries `public.url` then `public.utf8-plain-text`.
+    /// Returns nil if neither flavor is present — the caller shows
+    /// a generic "(link)" fallback in that case.
+    private static func resolveLinkURL(entryId: Int64, in db: Database) throws -> String? {
+        for uti in ["public.url", "public.utf8-plain-text"] {
+            if let data = try Data.fetchOne(
+                db,
+                sql: "SELECT data FROM entry_flavors WHERE entry_id = ? AND uti = ? LIMIT 1",
+                arguments: [entryId, uti]
+            ) {
+                return String(data: data, encoding: .utf8)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        }
+        return nil
+    }
 }
 
 import GRDB
+
+/// Compact brand header for the nav bar: app icon glyph + title +
+/// subtitle stacked. Sits in the principal toolbar slot. SF Symbol
+/// `list.clipboard.fill` is the same glyph the Mac menu-bar icon
+/// uses, tinted blue to match the Mac app's rounded-square icon.
+private struct BrandTitle: View {
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "list.clipboard.fill")
+                .font(.system(size: 22))
+                .foregroundStyle(.tint)
+            VStack(alignment: .leading, spacing: 0) {
+                Text("cpdb")
+                    .font(.system(size: 15, weight: .semibold, design: .rounded))
+                Text("CopyPasteDataBase client")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("cpdb, CopyPasteDataBase client")
+    }
+}
 
 /// Slim banner shown at the top of SearchView while a pull is in
 /// flight. Honest reporter: we don't know the total record count
