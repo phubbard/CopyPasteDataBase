@@ -1,5 +1,6 @@
 #if os(iOS)
 import SwiftUI
+import Combine
 import CpdbShared
 
 /// Root view: navigation stack hosting a searchable list of entries.
