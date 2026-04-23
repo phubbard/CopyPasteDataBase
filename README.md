@@ -19,8 +19,8 @@ database.
 | **1.1.x** | Full-width popup · per-kind rendering (text, link, image, file, colour) · thumbnail generation on capture · `regenerate-thumbnails` backfill | ✅ |
 | **1.2.x** | On-device OCR (`.accurate`) + image classifier folded into FTS5 · scope toggles (text · OCR · tags) in popup · match-source badges · configurable OCR languages · password-manager blocklist with 5-second frontmost-app history | ✅ |
 | **1.3.x** | Quick Look previews (⌘Y or Space-when-empty) for text/image/file entries · single-window Finder-like model · optional "remember scroll position" across QL round-trips | ✅ |
-| **2.0-dev** | CloudKit sync across Macs (Private DB, custom zone, silent-push subscriptions) · iCloud-mirrored history with OCR/tags/thumbnails · app icon · multi-Mac deploy script · git-sha build IDs · bundle id rename `local.cpdb` → `net.phfactor.cpdb` with one-time data migration | 🚧 |
-| 2.0+ | iOS companion (search + push-to-Mac), flavor CKAsset sync (full multi-flavor paste on pulled entries), iCloud preferences UI, notarised build | ⏳ |
+| **2.0.0** | CloudKit sync across Macs (Private DB custom zone, silent-push subscriptions, content-addressed CKRecord IDs) · full-fidelity flavor CKAsset sync · iCloud-mirrored OCR text + image tags + thumbnails · About window with live sync progress + library stats · Preferences iCloud pane (pause, reset, re-push) · multi-Mac deploy script · git-sha build IDs · app icon · bundle id rename `local.cpdb` → `net.phfactor.cpdb` with one-time data migration | ✅ |
+| 2.x | iOS companion (search + push-to-Mac via `ActionRequest` records), notarised build, garbage collection of v2.0 wire-format orphans on the CloudKit zone | ⏳ |
 
 ## Features
 
@@ -58,14 +58,16 @@ database.
   `~/Library/Application Support/com.wiheads.paste/Paste.db` — Core Data
   transformable blobs, external-storage references under `.Paste_SUPPORT/`,
   all five Paste entity kinds, pinboards, source apps. Idempotent.
-- **CloudKit sync across your Macs (2.0-dev).** Every entry — metadata,
-  thumbnails, OCR text, image tags — mirrors to your iCloud Private
-  Database. Install on a second Mac signed into the same iCloud account
-  and your whole history appears. Uses a custom zone + server change
-  tokens + APNs silent-push subscriptions for near-real-time pull. Your
-  data, your iCloud, no servers we operate. Flavor bytes (for
-  off-Mac paste) are not yet on the wire; pulled entries render and
-  search correctly but only text-kind copy-to-clipboard works.
+- **CloudKit sync across your Macs (2.0).** Every entry — metadata,
+  thumbnails, full NSPasteboardItem flavors (as `CKAsset`s), OCR text,
+  image tags — mirrors to your iCloud Private Database. Install on a
+  second Mac signed into the same iCloud account and your whole history
+  appears. Uses a custom zone + content-addressed CKRecord IDs +
+  server change tokens + APNs silent-push subscriptions for
+  near-real-time pull. Pulled entries paste back with full multi-flavor
+  fidelity — RTF, images, custom UTIs, everything. Your data, your
+  iCloud, no servers we operate. Progress and controls live under About
+  cpdb → iCloud sync / Preferences → iCloud sync.
 - **Local-first, no third-party cloud, no telemetry.** Everything lives
   under `~/Library/Application Support/net.phfactor.cpdb/` on your
   machine. CloudKit usage is opt-in via the app's entitlements (only
