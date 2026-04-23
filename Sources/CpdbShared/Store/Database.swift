@@ -11,7 +11,13 @@ public final class Store {
     public let dbQueue: DatabaseQueue
 
     /// Opens (or creates) the database at `Paths.databaseURL` and runs migrations.
+    ///
+    /// First runs the one-time v1.x → v2.0 Application Support rename, so
+    /// users upgrading from `local.cpdb` to `net.phfactor.cpdb` carry their
+    /// existing DB, blob store, and lock file with them instead of starting
+    /// fresh at the new path.
     public static func open() throws -> Store {
+        Paths.migrateFromLegacySupportDirectoryIfNeeded()
         try Paths.ensureDirectoriesExist()
         return try Store(path: Paths.databaseURL.path)
     }

@@ -5,7 +5,7 @@
 # plus developer signing so Accessibility permission persists across rebuilds.
 
 APP_NAME         = cpdb
-APP_BUNDLE_ID    = local.cpdb.app
+APP_BUNDLE_ID    = net.phfactor.cpdb
 BUILD_CONFIG    ?= release
 BUILD_DIR        = .build
 APP_BUNDLE_DIR   = $(BUILD_DIR)/app/$(APP_NAME).app
@@ -26,6 +26,11 @@ export DEVELOPER_DIR ?= /Applications/Xcode.app/Contents/Developer
 # override with `make build-app SIGNING_IDENTITY="..."` for ad-hoc (`-`) or a
 # different cert.
 SIGNING_IDENTITY ?= Apple Development: Paul HUBBARD (6442857NX6)
+
+# Entitlements file — attaches iCloud + CloudKit + APNs to the signed
+# binary. Must be passed to codesign via --entitlements; without this,
+# CloudKit requests fail with "Missing application-identifier entitlement".
+ENTITLEMENTS     = Sources/CpdbApp/Resources/cpdb.entitlements
 
 .PHONY: all build build-cli build-app run-app install-app clean test verify-version release version
 
@@ -59,6 +64,14 @@ build-app: verify-version
 	mkdir -p $(APP_BUNDLE_DIR)/Contents/Resources
 	cp $(BUILD_DIR)/$(BUILD_CONFIG)/CpdbApp $(APP_BUNDLE_DIR)/Contents/MacOS/$(APP_NAME)
 	cp Sources/CpdbApp/Resources/Info.plist $(APP_BUNDLE_DIR)/Contents/Info.plist
+	# Entitlements are temporarily NOT attached until we embed a matching
+	# provisioning profile. macOS rejects launching a binary whose
+	# `com.apple.developer.icloud-services` / `aps-environment`
+	# entitlements aren't authorised by an embedded profile. To re-enable:
+	#   1. Download the provisioning profile for net.phfactor.cpdb from
+	#      Apple Developer → Profiles
+	#   2. Copy to $(APP_BUNDLE_DIR)/Contents/embedded.provisionprofile
+	#   3. Re-add --entitlements $(ENTITLEMENTS) to the codesign call below
 	codesign --force --sign "$(SIGNING_IDENTITY)" --timestamp=none --options runtime $(APP_BUNDLE_DIR)
 	@echo
 	@echo "Built $(APP_BUNDLE_DIR) (v$(VERSION))"

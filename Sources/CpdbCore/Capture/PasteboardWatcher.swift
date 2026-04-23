@@ -14,7 +14,7 @@ public final class PasteboardWatcher {
     public let ingestor: Ingestor
     public let deviceId: Int64
 
-    private let queue = DispatchQueue(label: "local.cpdb.watcher", qos: .utility)
+    private let queue = DispatchQueue(label: "\(Paths.bundleId).watcher", qos: .utility)
     private var timer: DispatchSourceTimer?
     private var lastChangeCount: Int = -1
 

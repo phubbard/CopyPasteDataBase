@@ -7,7 +7,7 @@
 	<key>CFBundleExecutable</key>
 	<string>cpdb</string>
 	<key>CFBundleIdentifier</key>
-	<string>local.cpdb.app</string>
+	<string>net.phfactor.cpdb</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>

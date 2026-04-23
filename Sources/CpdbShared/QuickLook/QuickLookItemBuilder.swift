@@ -35,12 +35,14 @@ public struct QuickLookItemBuilder {
         self.tempDir = tempDir ?? Self.defaultTempDir
     }
 
-    /// `~/Library/Caches/local.cpdb.app/quicklook` — created lazily on first
+    /// `~/Library/Caches/<bundleId>/quicklook` — created lazily on first
     /// write. Caches is the canonical OS-sweepable ephemeral location.
+    /// Orphan files from the pre-rename path (`local.cpdb.app`) can just
+    /// age out of macOS's caches sweeper; no migration needed.
     public static var defaultTempDir: URL {
         let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
         return caches
-            .appendingPathComponent("local.cpdb.app", isDirectory: true)
+            .appendingPathComponent(Paths.bundleId, isDirectory: true)
             .appendingPathComponent("quicklook", isDirectory: true)
     }
 

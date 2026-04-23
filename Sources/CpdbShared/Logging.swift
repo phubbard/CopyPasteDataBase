@@ -4,7 +4,7 @@ import os
 /// Tiny logging facade.
 ///
 /// We use `os.Logger` for structured system logging (visible in Console.app
-/// under subsystem `local.cpdb`) and mirror human-readable lines to stderr so
+/// under subsystem `net.phfactor.cpdb`) and mirror human-readable lines to stderr so
 /// they show up when the daemon runs in the foreground.
 public enum Log {
     public static let subsystem = Paths.bundleId

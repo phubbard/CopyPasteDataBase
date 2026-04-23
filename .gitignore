@@ -17,3 +17,5 @@ DerivedData/
 *.p12
 *.cer
 *.mobileprovision
+*.p8
+AuthKey_*.p8

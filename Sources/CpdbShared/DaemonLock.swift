@@ -45,7 +45,7 @@ public final class DaemonLock {
     private var fd: Int32 = -1
     public let owner: Owner
 
-    /// Path to the lock file. Default: `~/Library/Application Support/local.cpdb/daemon.lock`.
+    /// Path to the lock file. Default: `~/Library/Application Support/<bundleId>/daemon.lock`.
     public static var defaultPath: String {
         Paths.supportDirectory.appendingPathComponent("daemon.lock").path
     }

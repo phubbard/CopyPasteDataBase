@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- CloudKit + iCloud Drive container. Must match the container id
+	     registered in Apple Developer → Identifiers → iCloud Containers
+	     and linked to this app id's iCloud capability. -->
+	<key>com.apple.developer.icloud-container-identifiers</key>
+	<array>
+		<string>iCloud.net.phfactor.cpdb</string>
+	</array>
+	<key>com.apple.developer.icloud-services</key>
+	<array>
+		<string>CloudKit</string>
+	</array>
+	<!-- APNs environment for CKDatabaseSubscription silent pushes. Flip
+	     to "production" when we sign with a Developer ID Application
+	     identity for release distribution. -->
+	<key>aps-environment</key>
+	<string>development</string>
+</dict>
+</plist>
