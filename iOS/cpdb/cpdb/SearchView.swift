@@ -57,12 +57,12 @@ struct SearchView: View {
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 0) {
-                if let progress = container.pullProgress,
-                   let started = container.pullStartedAt {
-                    PullProgressBanner(progress: progress, startedAt: started)
-                }
-                List {
+            // No more VStack-wrapped progress banner — it used to sit
+            // above the List and push every row down whenever a pull
+            // started/ended, which felt jumpy. The compact version
+            // now lives in the toolbar next to the filter button;
+            // layout is stable whether we're syncing or not.
+            List {
                     // Brand title as a list header so it scrolls
                     // away with the content. Tapping it opens the
                     // About sheet.
@@ -101,7 +101,6 @@ struct SearchView: View {
                     }
                 }
                 .listStyle(.plain)
-            }
             .navigationDestination(for: Int64.self) { entryId in
                 EntryDetailView(entryId: entryId)
             }
@@ -149,7 +148,19 @@ struct SearchView: View {
             }
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    filterButton
+                    HStack(spacing: 10) {
+                        filterButton
+                        // Inline sync progress — renders only while a
+                        // pull is in flight. Sits next to the filter
+                        // button so the list never shifts. Hidden
+                        // entirely when idle so the toolbar stays
+                        // visually quiet.
+                        if let progress = container.pullProgress,
+                           let started = container.pullStartedAt
+                        {
+                            InlinePullProgress(progress: progress, startedAt: started)
+                        }
+                    }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     syncIndicator
@@ -432,43 +443,38 @@ private struct BrandTitle: View {
     }
 }
 
-/// Slim banner shown at the top of SearchView while a pull is in
-/// flight. Honest reporter: we don't know the total record count
-/// CloudKit will hand us, so no percentage / ETA — just a live
-/// count, an overall rate, and elapsed time. User sees motion and
-/// can gauge pace.
-private struct PullProgressBanner: View {
+/// Inline sync progress shown next to the filter button in the
+/// toolbar while a pull is in flight. Replaces the old full-width
+/// banner above the list — that version pushed rows down when it
+/// appeared/disappeared, which felt jumpy on every pull.
+///
+/// Honest reporter: we don't know the total record count CloudKit
+/// will hand us, so no percentage / ETA — just a live count and
+/// rate. Drops the elapsed-time column from the old banner to fit
+/// inline; if users want it back, tap the refresh button to see the
+/// CLI-equivalent log lines.
+private struct InlinePullProgress: View {
     let progress: CloudKitSyncer.PullReport
     let startedAt: Date
-    /// Ticks every second so the elapsed-time label refreshes even
-    /// when no new page has arrived yet (CloudKit can pause between
-    /// pages for 10+ seconds when throttling).
+    /// Ticks every second so the rate label refreshes even when no
+    /// new page has arrived yet (CloudKit can pause between pages
+    /// for 10+ seconds when throttling).
     @State private var now: Date = Date()
     private static let ticker = Timer.publish(every: 1.0, on: .main, in: .common).autoconnect()
 
     var body: some View {
         let applied = progress.inserted + progress.updated + progress.tombstoned
         let elapsed = max(now.timeIntervalSince(startedAt), 0.001)
-        HStack(spacing: 10) {
+        HStack(spacing: 6) {
             ProgressView().controlSize(.small)
-            VStack(alignment: .leading, spacing: 1) {
-                Text("Pulling from iCloud")
-                    .font(.system(size: 12, weight: .medium))
-                HStack(spacing: 6) {
-                    Text("\(applied) entries")
-                    Text("·")
-                    Text(Self.rateString(applied: applied, elapsed: elapsed))
-                    Text("·")
-                    Text(Self.elapsedString(elapsed))
-                }
-                .font(.system(size: 11, design: .monospaced))
+            Text("\(applied)")
+                .font(.system(size: 11, weight: .medium, design: .monospaced))
                 .foregroundStyle(.secondary)
-            }
-            Spacer()
+            Text(Self.rateString(applied: applied, elapsed: elapsed))
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundStyle(.tertiary)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
-        .background(.thinMaterial)
+        .accessibilityLabel("Pulling from iCloud, \(applied) entries")
         .onReceive(Self.ticker) { self.now = $0 }
     }
 

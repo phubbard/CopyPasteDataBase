@@ -1,5 +1,16 @@
 import Foundation
 
+/// App-wide notifications. Using NotificationCenter avoids wiring
+/// direct dependencies from the capture layer (CpdbCore) into the
+/// sync layer (CpdbShared/Sync) — Ingestor posts, syncer listens.
+public extension Notification.Name {
+    /// Posted immediately after `Ingestor` commits a new (or bumped)
+    /// local entry. The daemon's CloudKit wrapper listens for this
+    /// to run `pushPendingChanges` right away instead of waiting for
+    /// the 5-minute safety-net timer. Object is nil; no userInfo.
+    static let cpdbLocalEntryIngested = Notification.Name("cpdb.localEntryIngested")
+}
+
 /// Canonical version strings for cpdb.
 ///
 /// `marketing` is the hand-edited marketing version — bump here for
@@ -17,7 +28,7 @@ import Foundation
 /// unit tests.
 public enum CpdbVersion {
     /// Marketing version. Human-editable source of truth.
-    public static let marketing = "2.5.1"
+    public static let marketing = "2.5.2"
 
     /// Marketing + git short-sha when the Makefile stamped the build,
     /// otherwise just `marketing`.

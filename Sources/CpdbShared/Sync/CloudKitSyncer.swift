@@ -1003,6 +1003,60 @@ public actor CloudKitSyncer {
             try applyThumbnails(d, entryId: existing.id!, in: db)
             return .updated
         } else {
+            // Cross-device dedup. Same text landing here from
+            // CloudKit within a few seconds of a row we already have
+            // almost always means Universal Clipboard (or three Macs
+            // all running cpdb) captured the same logical content on
+            // each device with byte-different flavor sets — different
+            // content_hash, same visible text. Collapse these at pull
+            // time by bumping the existing row's created_at instead
+            // of inserting a parallel entry. Lookup is symmetric with
+            // the Ingestor's within-window check (5s window here to
+            // account for iCloud delivery lag vs. the 3s local one).
+            if let text = d.textPreview?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+               !text.isEmpty,
+               d.deletedAt == nil
+            {
+                // Tight window: 2s catches Universal Clipboard echoes
+                // and near-simultaneous captures on sibling Macs, but
+                // not "I copied the same string twice on purpose 4s
+                // apart" — that should yield two rows.
+                let window: TimeInterval = 2.0
+                let lo = d.createdAt - window
+                let hi = d.createdAt + window
+                if let siblingId = try Int64.fetchOne(
+                    db,
+                    sql: """
+                        SELECT id FROM entries
+                        WHERE deleted_at IS NULL
+                          AND kind = ?
+                          AND created_at BETWEEN ? AND ?
+                          AND TRIM(COALESCE(text_preview, '')) = ?
+                        ORDER BY created_at DESC
+                        LIMIT 1
+                    """,
+                    arguments: [d.kind.rawValue, lo, hi, text]
+                ) {
+                    Log.cli.info(
+                        "pull: cross-device dedup collapsed incoming record onto id=\(siblingId, privacy: .public) text=\"\(text.prefix(40), privacy: .public)\""
+                    )
+                    // Bump the existing row's created_at to the later
+                    // of the two. Do NOT push this change — we don't
+                    // want to re-sync a bump caused by an inbound pull
+                    // or we'd loop with the other devices forever.
+                    let newer = max(d.createdAt, try Double.fetchOne(
+                        db,
+                        sql: "SELECT created_at FROM entries WHERE id = ?",
+                        arguments: [siblingId]
+                    ) ?? d.createdAt)
+                    try db.execute(
+                        sql: "UPDATE entries SET created_at = ? WHERE id = ?",
+                        arguments: [newer, siblingId]
+                    )
+                    return .updated
+                }
+            }
             var entry = Entry(
                 uuid: d.uuid,
                 createdAt: d.createdAt,
@@ -1028,6 +1082,9 @@ public actor CloudKitSyncer {
                 appName: d.source.appName
             )
             try applyThumbnails(d, entryId: entry.id!, in: db)
+            Log.cli.info(
+                "pull: inserted id=\(entry.id ?? -1, privacy: .public) kind=\(d.kind.rawValue, privacy: .public) textprev=\"\(d.textPreview?.prefix(40) ?? "", privacy: .public)\""
+            )
             return .inserted
         }
     }

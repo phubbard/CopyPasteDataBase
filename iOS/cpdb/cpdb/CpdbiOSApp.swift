@@ -56,7 +56,18 @@ struct CpdbiOSApp: App {
             // syncer. That also dodges a race where .task is still
             // resolving when scenePhase first flips to .active.
             guard phase == .active, container.store != nil else { return }
+            container.startForegroundPolling()
             Task { await container.pullNow() }
+            return
+        }
+        .onChange(of: scenePhase) { _, phase in
+            // Mirror handler for the "going away" side. Split into
+            // its own onChange so the control flow above stays
+            // guard-and-run-when-active; this one only stops the
+            // timer when we move out of .active.
+            if phase != .active {
+                container.stopForegroundPolling()
+            }
         }
     }
 }

@@ -37,6 +37,19 @@ final class AppContainer {
     private(set) var dbChangeToken: Int = 0
     private var entriesObservation: (any DatabaseCancellable)?
 
+    /// Foreground polling task. Runs a pull every N seconds while
+    /// the app is on-screen. Silent push + scene-activation pulls
+    /// handle most cases, but APNs throttles freshly-installed apps
+    /// for days and scene-activation only fires on the .active
+    /// *transition* — if the user just sits in the app, nothing
+    /// else triggers a pull. Cancelled when the scene goes away.
+    private var foregroundPollTask: Task<Void, Never>?
+    /// Interval between foreground polls. 30s is a reasonable floor
+    /// — CloudKit's pull is a single HTTP round-trip for a
+    /// no-change case, cheap on battery, and the user's experience
+    /// of "open the app, see latest" feels instant at 30s.
+    private static let foregroundPollInterval: TimeInterval = 30
+
     /// Identifier for our `BGAppRefreshTask`. Must match the value
     /// declared in the iOS app's Info.plist under
     /// `BGTaskSchedulerPermittedIdentifiers` — the Xcode project sets
@@ -88,6 +101,11 @@ final class AppContainer {
             // capture paths). Stopped never — the observation is
             // cheap and we want it running for the app's lifetime.
             startLiveUpdates()
+            // Kick the 30 s foreground poll once the DB + syncer are
+            // ready. scenePhase may have already moved to .active
+            // before bootstrap completed (its guard on `store != nil`
+            // would have skipped); catch that case here.
+            startForegroundPolling()
             // Re-schedule BGAppRefreshTask every launch — iOS forgets
             // on reboot and after failed runs.
             scheduleBackgroundRefresh()
@@ -165,6 +183,32 @@ final class AppContainer {
     private struct LiveSignal: Equatable {
         let count: Int
         let maxCreated: Double
+    }
+
+    // MARK: - Foreground polling
+
+    /// Start a recurring `pullNow()` tick while the app is active.
+    /// Idempotent — calling twice leaves a single live task.
+    func startForegroundPolling() {
+        guard foregroundPollTask == nil, store != nil else { return }
+        print("[cpdb] fg-poll: start (every \(Int(Self.foregroundPollInterval))s)")
+        foregroundPollTask = Task { [weak self] in
+            let interval = UInt64(Self.foregroundPollInterval * 1_000_000_000)
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: interval)
+                if Task.isCancelled { return }
+                print("[cpdb] fg-poll: tick")
+                await self?.pullNow()
+            }
+        }
+    }
+
+    /// Stop the foreground poll loop. Called from scene-phase
+    /// handling when we leave `.active`, and implicitly on app
+    /// teardown.
+    func stopForegroundPolling() {
+        foregroundPollTask?.cancel()
+        foregroundPollTask = nil
     }
 
     // MARK: - Background refresh

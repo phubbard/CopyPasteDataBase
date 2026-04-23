@@ -34,6 +34,18 @@ public struct Ingestor {
 
         let outcome = try doIngest(snapshot, sourceApp: sourceApp, deviceId: deviceId, hash: hash)
 
+        // Wake the CloudKit push loop so this entry uploads right
+        // now instead of waiting up to 5 minutes for the safety-net
+        // tick. The daemon (AppDelegate) subscribes to this and
+        // calls pushPendingChanges; the syncer's internal `pushing`
+        // guard coalesces simultaneous wakes.
+        switch outcome {
+        case .inserted, .bumped:
+            NotificationCenter.default.post(name: .cpdbLocalEntryIngested, object: nil)
+        case .skipped:
+            break
+        }
+
         // Kick off image analysis after the write transaction has committed.
         // Vision's `.accurate` OCR can run hundreds of milliseconds; the
         // capture loop returns immediately while the analyzer fills in

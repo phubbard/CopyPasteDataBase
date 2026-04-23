@@ -16,6 +16,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private(set) var store: Store?
     private var syncer: CloudKitSyncer?
     private var periodicSyncTask: Task<Void, Never>?
+    /// NotificationCenter token for `.cpdbLocalEntryIngested`. We
+    /// subscribe once the syncer is ready; handler triggers an
+    /// immediate push so a new capture lands in CloudKit within
+    /// seconds instead of waiting for the 5-minute timer.
+    private var ingestedObserver: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         Log.cli.info("cpdb.app starting (pid \(ProcessInfo.processInfo.processIdentifier, privacy: .public))")
@@ -174,6 +179,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             onPasteAction: pasteHandler
         )
         self.syncer = syncer
+
+        // Wake the push loop immediately on every local capture.
+        // Ingestor posts `.cpdbLocalEntryIngested` inside its write
+        // transaction; we run `pushPendingChanges` right after so the
+        // entry reaches CloudKit in seconds, not up to 5 minutes
+        // (the periodic safety-net loop below). The syncer's
+        // internal `pushing` guard coalesces simultaneous wakes, so
+        // a burst of rapid captures only triggers one network trip.
+        ingestedObserver = NotificationCenter.default.addObserver(
+            forName: .cpdbLocalEntryIngested,
+            object: nil,
+            queue: .main
+        ) { _ in
+            Task {
+                do {
+                    let push = try await syncer.pushPendingChanges()
+                    if push.attempted > 0 {
+                        Log.cli.info(
+                            "cloudkit push (wake): attempted=\(push.attempted) saved=\(push.saved) failed=\(push.failed) remaining=\(push.remaining)"
+                        )
+                    }
+                } catch {
+                    Log.cli.error("cloudkit push (wake) failed: \(String(describing: error), privacy: .public)")
+                }
+            }
+        }
 
         // Register for silent push + install the zone subscription so
         // the server wakes us when another device writes. APNs is
