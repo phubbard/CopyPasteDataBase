@@ -70,11 +70,19 @@ let package = Package(
         // with an iOS destination selected — plain
         // `swift build --product CpdbiOS` builds for the Mac host
         // which won't link because UIKit isn't on the Mac SDK.
+        //
+        // Code signing: Configure in Xcode with your Apple Developer account.
+        // See iOS-SIGNING-SETUP.md for detailed setup instructions.
+        // Bundle ID: net.phfactor.cpdb.ios
+        // Required capabilities: iCloud (CloudKit), Push Notifications
         .executableTarget(
             name: "CpdbiOS",
             dependencies: [
                 "CpdbShared",
             ],
+            // Info.plist + entitlements live under Resources/ but are
+            // excluded from SPM processing. Xcode will use them during
+            // the build when you select an iOS destination.
             exclude: [
                 "Resources/Info.plist",
                 "Resources/cpdb-ios.entitlements",

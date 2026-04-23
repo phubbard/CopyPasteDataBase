@@ -605,8 +605,15 @@ public actor CloudKitSyncer {
     /// Updates `UserDefaults` key `cpdb.sync.lastSuccessAt` (the About
     /// window reads this) on any successful fetch, even if zero records
     /// changed.
+    /// Pull remote changes. Optional `progress` fires after every
+    /// successfully-applied page so a UI can show incremental counts
+    /// + elapsed time during a long backfill on a fresh install.
+    /// The callback receives cumulative totals so far, not per-page
+    /// deltas — caller can compute rate from successive samples.
     @discardableResult
-    public func pullRemoteChanges() async throws -> PullReport {
+    public func pullRemoteChanges(
+        progress: (@Sendable (PullReport) -> Void)? = nil
+    ) async throws -> PullReport {
         if Self.isPaused {
             return PullReport(inserted: 0, updated: 0, tombstoned: 0, skipped: 0, moreComing: false)
         }
@@ -617,6 +624,7 @@ public actor CloudKitSyncer {
         // Page loop — CloudKit may split large change sets across
         // multiple fetch calls. We persist the token after every page
         // so a crash mid-pull doesn't lose progress.
+        var pageIndex = 0
         repeat {
             let token = try await loadChangeToken()
             let result = try await client.fetchRecordZoneChanges(zoneID: zoneID, sinceToken: token)
@@ -632,6 +640,11 @@ public actor CloudKitSyncer {
             }
 
             totals.moreComing = result.moreComing
+            pageIndex += 1
+            Log.cli.info(
+                "cloudkit pull page \(pageIndex, privacy: .public): inserted=\(page.inserted, privacy: .public) updated=\(page.updated, privacy: .public) tombstoned=\(page.tombstoned, privacy: .public) skipped=\(page.skipped, privacy: .public) moreComing=\(result.moreComing, privacy: .public)"
+            )
+            progress?(totals)
         } while totals.moreComing
 
         UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: Self.lastSyncSuccessKey)

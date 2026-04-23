@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- App Identity -->
+	<key>CFBundleIdentifier</key>
+	<string>net.phfactor.cpdb.ios</string>
+	<key>CFBundleName</key>
+	<string>cpdb</string>
+	<key>CFBundleDisplayName</key>
+	<string>cpdb</string>
+	<key>CFBundleExecutable</key>
+	<string>CpdbiOS</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	
+	<!-- Version Info (must match marketing version in Version.swift) -->
+	<key>CFBundleShortVersionString</key>
+	<string>2.0.0-dev</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	
+	<!-- Minimum iOS Version -->
+	<key>LSMinimumSystemVersion</key>
+	<string>17.0</string>
+	<key>MinimumOSVersion</key>
+	<string>17.0</string>
+	
+	<!-- Supported Device Families (1 = iPhone, 2 = iPad) -->
+	<key>UIDeviceFamily</key>
+	<array>
+		<integer>1</integer>
+		<integer>2</integer>
+	</array>
+	
+	<!-- Launch Screen -->
+	<key>UILaunchScreen</key>
+	<dict>
+		<key>UIImageName</key>
+		<string>AppIcon</string>
+	</dict>
+	
+	<!-- Interface Orientation -->
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+	<key>UISupportedInterfaceOrientations~ipad</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationPortraitUpsideDown</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+	
+	<!-- Required for CloudKit background updates -->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>remote-notification</string>
+	</array>
+	
+	<!-- Scene Configuration for SwiftUI App -->
+	<key>UIApplicationSceneManifest</key>
+	<dict>
+		<key>UIApplicationSupportsMultipleScenes</key>
+		<true/>
+	</dict>
+</dict>
+</plist>

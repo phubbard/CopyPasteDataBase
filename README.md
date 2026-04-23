@@ -104,32 +104,35 @@ CloudKit Private Database as the Macs and lets you search + view
 clipboard history on your phone. No capture on iOS; the device's
 clipboard never leaves your phone.
 
-Build with Xcode (not `make` / `swift build` — iOS apps need the
-full Xcode build pipeline):
-
+**Quick Start:**
 ```sh
+# For simulator (no signing needed)
+./build-ios.sh simulator
+
+# For physical device
+./build-ios.sh device --device-name "Your iPhone Name"
+
+# Or use Xcode
 open Package.swift            # or `xed .`
 # Xcode scheme: CpdbiOS   →   destination: an iPhone or simulator
 # ⌘R to run.
 ```
 
-One-time setup for device install:
+**Setup Documentation:**
+- **[iOS Quick Start Guide](iOS-QUICK-START.md)** — Fast track for getting the app running
+- **[iOS Signing Setup Guide](iOS-SIGNING-SETUP.md)** — Detailed Apple Developer Portal configuration
 
-1. Apple Developer → Identifiers: register `net.phfactor.cpdb.ios`.
-2. Enable iCloud capability on that identifier and select container
-   `iCloud.net.phfactor.cpdb` (the same container the Mac uses).
-3. Enable Push Notifications.
-4. Register your iPhone's UDID in the portal, regenerate the
-   provisioning profile, download.
-5. In Xcode, select the `CpdbiOS` target → Signing & Capabilities
-   → pick your team, set the profile, confirm the bundle id matches
-   `net.phfactor.cpdb.ios`.
+**One-time setup:**
+1. Apple Developer → Identifiers: register `net.phfactor.cpdb.ios`
+2. Enable iCloud (CloudKit) with container `iCloud.net.phfactor.cpdb`
+3. Enable Push Notifications
+4. Register iOS device UDID, download provisioning profile
+5. See `iOS-SIGNING-SETUP.md` for step-by-step instructions
 
-Limitations today:
-- No push-to-Mac action yet (step 7).
-- Copy-to-clipboard only writes plain-text; multi-flavor UIPasteboard
-  round-trip is a follow-up.
-- No background fetch; pulls run on foreground launch + pull-to-refresh.
+**Current limitations:**
+- No push-to-Mac action yet
+- Copy-to-clipboard only writes plain-text; multi-flavor UIPasteboard round-trip is a follow-up
+- No background fetch; pulls run on foreground launch + pull-to-refresh
 
 ### Multi-Mac install (CloudKit sync, 2.0-dev)
 

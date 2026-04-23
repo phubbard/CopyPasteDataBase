@@ -1,0 +1,22 @@
+# .gitignore additions for iOS development
+
+# iOS Provisioning Profiles
+*.mobileprovision
+
+# iOS signing certificates (if exported)
+*.p12
+*.cer
+
+# Xcode iOS-specific
+*.xcarchive
+**/DerivedData/
+
+# iOS build artifacts
+build/
+*.ipa
+
+# fastlane (if you add it later)
+fastlane/report.xml
+fastlane/Preview.html
+fastlane/screenshots
+fastlane/test_output
