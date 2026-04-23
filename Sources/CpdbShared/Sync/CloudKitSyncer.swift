@@ -252,17 +252,15 @@ public actor CloudKitSyncer {
         let result: CKModifyResult
         do {
             result = try await client.modifyRecords(saving: entryRecords, deleting: [])
-        } catch let ckError as CKError where ckError.code == .zoneBusy || ckError.code == .requestRateLimited {
-            // Zone-level concurrency conflict (CAS op-lock lost to
-            // another device's simultaneous write) or rate limit. This
-            // is expected during bulk catch-up with multiple devices
-            // pushing the same zone. Don't mark failures — the queue
-            // rows stay untouched and the next periodic tick retries.
-            // We sleep the retry-after hint inside this call so the
-            // caller's loop can continue without knowing the detail.
+        } catch let ckError as CKError where Self.isRetryable(ckError) {
+            // Any CloudKit error that supplies a retryAfterSeconds
+            // hint (or is a well-known transient like zoneBusy, rate
+            // limit, service unavailable, network issue) → sleep and
+            // retry next tick. Don't mark failures; the queue rows
+            // stay untouched.
             let retry = ckError.retryAfterSeconds ?? 2.0
             Log.cli.info(
-                "cloudkit push: zone busy / rate-limited, waiting \(retry, privacy: .public)s before next try"
+                "cloudkit push: transient (\(ckError.code.rawValue, privacy: .public)), waiting \(retry, privacy: .public)s before next try"
             )
             let ns = UInt64(max(retry, 0.5) * 1_000_000_000)
             try? await Task.sleep(nanoseconds: ns)
@@ -400,16 +398,15 @@ public actor CloudKitSyncer {
                         errorKindCounts[kind, default: 0] += 1
                     }
                 }
-            } catch let ckError as CKError where ckError.code == .zoneBusy || ckError.code == .requestRateLimited {
+            } catch let ckError as CKError where Self.isRetryable(ckError) {
+                let retry = ckError.retryAfterSeconds ?? 2.0
                 Log.cli.info(
-                    "cloudkit push (flavors): zone busy / rate-limited, next tick will retry"
+                    "cloudkit push (flavors): transient (\(ckError.code.rawValue, privacy: .public)), waiting \(retry, privacy: .public)s"
                 )
+                let ns = UInt64(max(retry, 0.5) * 1_000_000_000)
+                try? await Task.sleep(nanoseconds: ns)
                 // Don't mark anything — entries already landed, flavors
-                // will be re-built and re-tried on next push because the
-                // queue rows weren't enqueued for this re-push.
-                // NB: this is a gap — currently a flavor that fails to
-                // save has no direct retry signal. Future work: a
-                // separate flavor-push-queue table.
+                // will be re-built from local state on the next tick.
             } catch {
                 errorKindCounts["flavor-batch:\(Self.describe(error))", default: 0] += 1
             }
@@ -544,6 +541,25 @@ public actor CloudKitSyncer {
     static func thumbStagingDir() -> URL {
         FileManager.default.temporaryDirectory
             .appendingPathComponent("cpdb-ck-thumbs", isDirectory: true)
+    }
+
+    /// CloudKit errors we treat as "sleep and retry next tick"
+    /// rather than real failures. Any error with a retryAfterSeconds
+    /// hint qualifies — CloudKit explicitly signals "I'll accept this
+    /// later, just not now." We also include well-known transient
+    /// codes that sometimes omit the hint.
+    static func isRetryable(_ error: CKError) -> Bool {
+        if error.retryAfterSeconds != nil { return true }
+        switch error.code {
+        case .zoneBusy,
+             .requestRateLimited,
+             .serviceUnavailable,
+             .networkUnavailable,
+             .networkFailure:
+            return true
+        default:
+            return false
+        }
     }
 
     static func describe(_ error: any Error) -> String {
