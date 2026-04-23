@@ -1,4 +1,5 @@
 import AppKit
+import CloudKit
 import CpdbCore
 import CpdbShared
 import KeyboardShortcuts
@@ -13,6 +14,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: StatusItemController?
     private let lifecycle = DaemonLifecycle()
     private(set) var store: Store?
+    private var syncer: CloudKitSyncer?
+    private var periodicSyncTask: Task<Void, Never>?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         Log.cli.info("cpdb.app starting (pid \(ProcessInfo.processInfo.processIdentifier, privacy: .public))")
@@ -80,10 +83,56 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 PreferencesWindowController.shared.show()
             }
         }
+
+        // Kick off CloudKit sync. Only runs if the user has an iCloud
+        // account; no-op in capturing-mode daemons that happen not to be
+        // signed in. Pull path (step 5) isn't wired yet — this just
+        // drains the push queue on launch and every 5 minutes.
+        if let store = store, lifecycle.mode == .capturing {
+            startCloudKitSync(store: store)
+        }
+    }
+
+    private func startCloudKitSync(store: Store) {
+        let containerID = "iCloud.\(Paths.bundleId)"
+        let client = LiveCloudKitClient(containerIdentifier: containerID)
+        let deviceName = Host.current().localizedName ?? ProcessInfo.processInfo.hostName
+        let deviceID = DeviceIdentity.hardwareUUID() ?? ProcessInfo.processInfo.hostName
+        let syncer = CloudKitSyncer(
+            store: store,
+            client: client,
+            device: .init(identifier: deviceID, name: deviceName)
+        )
+        self.syncer = syncer
+
+        // One-shot kick on launch plus a 5-minute belt-and-braces loop.
+        // Step 5 will replace the loop with CKDatabaseSubscription silent
+        // pushes; for now the periodic drain is enough to see records
+        // land in the CloudKit Dashboard.
+        periodicSyncTask = Task.detached { [weak self] in
+            while !Task.isCancelled {
+                do {
+                    let report = try await syncer.pushPendingChanges()
+                    if report.attempted > 0 {
+                        Log.cli.info(
+                            "cloudkit push: attempted=\(report.attempted) saved=\(report.saved) failed=\(report.failed) remaining=\(report.remaining)"
+                        )
+                    }
+                } catch {
+                    Log.cli.error("cloudkit push failed: \(String(describing: error), privacy: .public)")
+                }
+                // 5-minute sleep. Cancellable: on app quit the task is
+                // dropped and the sleep throws CancellationError which
+                // falls through the catch and exits via isCancelled.
+                try? await Task.sleep(nanoseconds: 5 * 60 * 1_000_000_000)
+                _ = self  // keep self alive for the lifetime of the task
+            }
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         Log.cli.info("cpdb.app terminating")
+        periodicSyncTask?.cancel()
         lifecycle.stop()
     }
 

@@ -71,6 +71,9 @@ public struct Ingestor {
                     sql: "UPDATE entries SET created_at = ? WHERE id = ?",
                     arguments: [now, existingId]
                 )
+                // Bumped created_at is a visible change — other devices
+                // should see it float back to the top of their list.
+                try PushQueue.enqueue(entryId: existingId, in: db, now: now)
                 return .bumped(existingId)
             }
 
@@ -143,6 +146,10 @@ public struct Ingestor {
                 appName: sourceApp?.name
             )
 
+            // Queue for CloudKit push. Stays a no-op when the syncer
+            // isn't running (the rows just accumulate until it starts).
+            try PushQueue.enqueue(entryId: entryId, in: db, now: now)
+
             return .inserted(entryId)
         }
     }
@@ -206,7 +213,7 @@ public enum DeviceIdentity {
 
     /// Pulls the stable hardware UUID from IOKit so entries stay correlated
     /// across reinstalls.
-    static func hardwareUUID() -> String? {
+    public static func hardwareUUID() -> String? {
         let platformExpert = IOServiceGetMatchingService(
             kIOMainPortDefault,
             IOServiceMatching("IOPlatformExpertDevice")

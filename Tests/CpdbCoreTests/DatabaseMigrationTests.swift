@@ -18,6 +18,8 @@ struct DatabaseMigrationTests {
             "pinboard_entries",
             "previews",
             "entries_fts",
+            "cloudkit_push_queue",
+            "cloudkit_state",
         ]
         try store.dbQueue.read { db in
             for name in expected {

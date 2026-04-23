@@ -162,5 +162,53 @@ enum Schema {
                 )
             }
         }
+
+        migrator.registerMigration("v3") { db in
+            // CloudKit sync bookkeeping.
+            //
+            // `cloudkit_push_queue`: one row per Entry that has local
+            // changes the syncer hasn't pushed yet. Keyed on entry_id so
+            // repeated enqueues coalesce — the syncer pushes the *current*
+            // state of the entry, not a log of individual changes. Deletes
+            // don't need a separate op: a tombstone is a save with
+            // deleted_at set.
+            //
+            // `cloudkit_state`: opaque key/value bag for zone change
+            // tokens, last-pull timestamps, and other syncer state that
+            // doesn't deserve its own schema. Values are bytes because
+            // change tokens are NSSecureCoding blobs.
+            try db.execute(sql: """
+                CREATE TABLE cloudkit_push_queue (
+                    entry_id          INTEGER PRIMARY KEY REFERENCES entries(id) ON DELETE CASCADE,
+                    enqueued_at       REAL NOT NULL,
+                    last_attempted_at REAL,
+                    attempt_count     INTEGER NOT NULL DEFAULT 0,
+                    last_error        TEXT
+                );
+            """)
+            try db.execute(sql: """
+                CREATE INDEX idx_cloudkit_push_queue_enqueued_at
+                    ON cloudkit_push_queue(enqueued_at);
+            """)
+            try db.execute(sql: """
+                CREATE TABLE cloudkit_state (
+                    key   TEXT PRIMARY KEY,
+                    value BLOB NOT NULL
+                );
+            """)
+
+            // Seed the push queue with every live entry on a fresh v3 —
+            // a user upgrading from v2 wants their whole history mirrored
+            // to CloudKit, not just entries captured after the upgrade.
+            // On a fresh install (no entries yet) this is a no-op.
+            let now = Date().timeIntervalSince1970
+            try db.execute(
+                sql: """
+                    INSERT INTO cloudkit_push_queue (entry_id, enqueued_at)
+                    SELECT id, ? FROM entries
+                """,
+                arguments: [now]
+            )
+        }
     }
 }

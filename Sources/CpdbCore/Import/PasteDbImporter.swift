@@ -178,6 +178,10 @@ public struct PasteDbImporter {
                 try entry.insert(db)
                 let entryId = entry.id!
                 pastePkToCpdbEntryId[snippet.pk] = entryId
+                // Queue for CloudKit push so a post-v3 import still
+                // propagates. Pre-v3 imports get picked up by the v3
+                // migration's one-shot seed instead.
+                try PushQueue.enqueue(entryId: entryId, in: db)
 
                 for item in snapshot.items {
                     for flavor in item.flavors {
