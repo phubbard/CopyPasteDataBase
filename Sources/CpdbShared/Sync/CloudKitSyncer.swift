@@ -61,11 +61,10 @@ public actor CloudKitSyncer {
     private let device: DeviceInfo
     private let blobs: BlobStore
 
-    /// How many entries to pull off the queue per push call. CloudKit's
-    /// `CKModifyRecordsOperation` tops out around 400 records per batch.
-    /// 200 is safe for metadata-only records (step 4); once flavor
-    /// CKAssets land (step 4.5) this drops to ~50 so one entry's flavor
-    /// fan-out stays under the limit.
+    /// How many entries to pull off the queue per push call. Each
+    /// entry produces 1 Entry CKRecord + N Flavor CKRecords. CloudKit's
+    /// `CKModifyRecordsOperation` limit is ~400 records per batch; 50
+    /// entries with an average ~5 flavors each fits comfortably.
     private let batchSize: Int
 
     private var zoneEnsured = false
@@ -79,7 +78,7 @@ public actor CloudKitSyncer {
             ownerName: CKCurrentUserDefaultName
         ),
         device: DeviceInfo,
-        batchSize: Int = 200,
+        batchSize: Int = 50,
         blobs: BlobStore = BlobStore()
     ) {
         self.store = store
@@ -159,6 +158,40 @@ public actor CloudKitSyncer {
 
             builtRecords.append(record)
             recordIDToEntryId[recordID] = pendingRow.entryId
+
+            // Flavor records — one per (entry, uti). Bytes come from
+            // BlobStore, which handles inline-vs-spilled transparently.
+            // Asset tmp files are tracked in tempFiles for cleanup
+            // after the modifyRecords call returns.
+            let flavors = try await loadFlavors(entryId: pendingRow.entryId)
+            for flavor in flavors {
+                do {
+                    let url = try stageFlavorAsset(flavor, entryUUID: bundle.entry.uuid)
+                    tempFiles.append(url)
+                    let flavorID = FlavorRecordMapper.recordID(
+                        forEntryUUID: bundle.entry.uuid,
+                        uti: flavor.uti,
+                        in: zoneID
+                    )
+                    let flavorRec = CKRecord(recordType: CKSchema.RecordType.flavor, recordID: flavorID)
+                    FlavorRecordMapper.populate(
+                        record: flavorRec,
+                        entryRecordID: recordID,
+                        uti: flavor.uti,
+                        size: flavor.size,
+                        assetURL: url
+                    )
+                    builtRecords.append(flavorRec)
+                } catch {
+                    // Missing blob, disk full, etc. — log and skip this
+                    // flavor. Entry still pushes; reader will see the
+                    // entry with fewer flavors than expected. On a
+                    // clean push next tick we'll try again.
+                    Log.cli.error(
+                        "staging flavor uti=\(flavor.uti, privacy: .public) entry=\(bundle.entry.uuid.base64EncodedString(), privacy: .public) failed: \(String(describing: error), privacy: .public)"
+                    )
+                }
+            }
         }
 
         // 3. Push.
@@ -187,7 +220,12 @@ public actor CloudKitSyncer {
             throw error
         }
 
-        // 4. Process per-record results.
+        // 4. Process per-record results. We only track the Entry record
+        // IDs in `idMap`; Flavor record results are logged but don't
+        // affect the queue. Entries stay in the queue until their parent
+        // Entry record lands; a missing flavor is recoverable on the
+        // next push (deterministic recordIDs make flavor re-pushes
+        // idempotent upserts).
         let idMap = recordIDToEntryId
         let (saved, failed) = try await store.dbQueue.write { db -> (Int, Int) in
             var saved = 0
@@ -247,6 +285,59 @@ public actor CloudKitSyncer {
             )
             let preview = try PreviewRecord.fetchOne(db, key: entryId)
             return EntryBundle(entry: entry, source: source, preview: preview)
+        }
+    }
+
+    /// Pull every flavor row for an entry. Ordered by UTI for stable
+    /// iteration — useful when debugging but not required for
+    /// correctness. Returns empty array when the entry has no flavors
+    /// (shouldn't happen for live entries but we don't crash on it).
+    private func loadFlavors(entryId: Int64) async throws -> [Flavor] {
+        try await store.dbQueue.read { db in
+            try Flavor
+                .filter(Column("entry_id") == entryId)
+                .order(Column("uti"))
+                .fetchAll(db)
+        }
+    }
+
+    /// Write one flavor's raw bytes to a temp file so CloudKit can
+    /// upload it as a `CKAsset`. Small flavors live inline in SQLite,
+    /// large ones spill to blob store — BlobStore.load resolves both.
+    private func stageFlavorAsset(_ flavor: Flavor, entryUUID: Data) throws -> URL {
+        let bytes = try blobs.load(inline: flavor.data, blobKey: flavor.blobKey)
+        let dir = Self.flavorStagingDir()
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let ext = Self.filenameExtension(forUTI: flavor.uti)
+        let hex = entryUUID.prefix(4).map { String(format: "%02x", $0) }.joined()
+        let url = dir.appendingPathComponent("\(hex)-\(UUID().uuidString).\(ext)")
+        try bytes.write(to: url, options: .atomic)
+        return url
+    }
+
+    static func flavorStagingDir() -> URL {
+        FileManager.default.temporaryDirectory
+            .appendingPathComponent("cpdb-ck-flavors", isDirectory: true)
+    }
+
+    /// Best-guess file extension for a UTI. Used only to keep the
+    /// temp file looking right in logs — CloudKit doesn't care what
+    /// extension we hand it. Unknown UTIs get `.bin`.
+    static func filenameExtension(forUTI uti: String) -> String {
+        switch uti {
+        case "public.utf8-plain-text",
+             "public.plain-text",
+             "public.text":            return "txt"
+        case "public.url",
+             "public.file-url":        return "url"
+        case "public.html":            return "html"
+        case "public.rtf":             return "rtf"
+        case "public.png":             return "png"
+        case "public.jpeg":            return "jpg"
+        case "public.tiff":            return "tiff"
+        case "com.compuserve.gif":     return "gif"
+        case "public.heic":            return "heic"
+        default:                       return "bin"
         }
     }
 
@@ -338,34 +429,55 @@ public actor CloudKitSyncer {
         let fallbackID = device.identifier
         let fallbackName = device.name
 
-        // Split work: decode CKRecords on the actor, then apply all
-        // DB mutations inside a single write transaction so partial
-        // application never happens.
-        var decoded: [EntryRecordMapper.Decoded] = []
+        // Split the mixed changedRecords by type. Entries must be
+        // applied before Flavors so the parent row exists when we
+        // insert the child. Unknown types are skipped with a log line.
+        var decodedEntries: [EntryRecordMapper.Decoded] = []
+        var decodedFlavors: [DecodedFlavorBytes] = []
         var skippedCount = 0
         for record in result.changedRecords {
-            do {
-                let d = try EntryRecordMapper.decode(record)
-                decoded.append(d)
-            } catch {
-                // Malformed record on the wire — log and skip. Don't
-                // let one bad row block the whole page.
+            switch record.recordType {
+            case CKSchema.RecordType.entry:
+                do {
+                    decodedEntries.append(try EntryRecordMapper.decode(record))
+                } catch {
+                    skippedCount += 1
+                }
+            case CKSchema.RecordType.flavor:
+                do {
+                    let d = try FlavorRecordMapper.decode(record)
+                    // Read asset bytes eagerly — CloudKit removes the
+                    // temp file on the next fetch call, so we can't
+                    // defer this until the write transaction.
+                    let bytes = try Data(contentsOf: d.assetURL)
+                    decodedFlavors.append(DecodedFlavorBytes(
+                        entryUUID: d.entryUUID, uti: d.uti, bytes: bytes
+                    ))
+                } catch {
+                    skippedCount += 1
+                }
+            default:
+                // ActionRequest records will land here when step 7
+                // ships; for now, unknown type → skip.
                 skippedCount += 1
             }
         }
 
         // Extract UUIDs of records the server says were deleted. Our
-        // recordID scheme is `entry-<32 hex>` — anything that doesn't
-        // match is some other record type and we ignore it.
+        // Entry recordID scheme is `entry-<32 hex>`; we also see
+        // flavor deletions but those are handled server-side via the
+        // CKReference deleteSelf cascade from the parent Entry.
         let deletedUUIDs: [Data] = result.deletedRecordIDs.compactMap { id in
             Self.uuidFromRecordName(id.recordName)
         }
 
-        let decodedSnapshot = decoded
+        let entriesSnapshot = decodedEntries
+        let flavorsSnapshot = decodedFlavors
         let deletedSnapshot = deletedUUIDs
+        let blobStore = blobs
         let (pageInserted, pageUpdated, pageTombstoned) = try await store.dbQueue.write { db -> (Int, Int, Int) in
             var ins = 0, upd = 0, tomb = 0
-            for d in decodedSnapshot {
+            for d in entriesSnapshot {
                 let outcome = try Self.upsert(decoded: d, in: db, fallbackDeviceID: fallbackID, fallbackDeviceName: fallbackName)
                 switch outcome {
                 case .inserted:  ins += 1
@@ -377,6 +489,17 @@ public actor CloudKitSyncer {
                 if try Self.tombstone(uuid: uuid, in: db) {
                     tomb += 1
                 }
+            }
+            // Apply flavor upserts AFTER entries so the parent row
+            // foreign-key constraint is satisfied.
+            for f in flavorsSnapshot {
+                try Self.upsertFlavor(
+                    entryUUID: f.entryUUID,
+                    uti: f.uti,
+                    bytes: f.bytes,
+                    blobs: blobStore,
+                    in: db
+                )
             }
             return (ins, upd, tomb)
         }
@@ -391,6 +514,48 @@ public actor CloudKitSyncer {
     }
 
     private enum UpsertOutcome { case inserted, updated, unchanged }
+
+    /// Decoded-and-read-from-disk form of a pulled Flavor record.
+    /// Bytes are extracted from the CKAsset's fileURL eagerly because
+    /// CloudKit removes that file on the next fetch call; we carry the
+    /// bytes through the write transaction instead of an asset URL.
+    private struct DecodedFlavorBytes: Sendable {
+        var entryUUID: Data
+        var uti: String
+        var bytes: Data
+    }
+
+    /// Insert or update a flavor row from a pulled Flavor CKRecord.
+    /// Looks up the parent entry by UUID; if the parent doesn't exist
+    /// locally (rare — means we pulled a Flavor before its Entry in
+    /// the same page, or the Entry was pruned), the flavor is dropped
+    /// silently. The next pull will usually resolve the ordering.
+    private static func upsertFlavor(
+        entryUUID: Data,
+        uti: String,
+        bytes: Data,
+        blobs: BlobStore,
+        in db: Database
+    ) throws {
+        guard let entryId = try Int64.fetchOne(
+            db,
+            sql: "SELECT id FROM entries WHERE uuid = ?",
+            arguments: [entryUUID]
+        ) else {
+            return
+        }
+        let (inline, blobKey) = try blobs.storeForInsert(data: bytes)
+        var row = Flavor(
+            entryId: entryId,
+            uti: uti,
+            size: Int64(bytes.count),
+            data: inline,
+            blobKey: blobKey
+        )
+        // Replace semantics: same (entry_id, uti) composite PK → insert
+        // updates in place. Cheaper than two statements.
+        try row.insert(db, onConflict: .replace)
+    }
 
     /// Insert or update a local Entry from a decoded CKRecord. Handles
     /// apps + devices upsert by (bundleId, identifier) so the local

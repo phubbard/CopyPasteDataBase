@@ -383,6 +383,95 @@ struct CloudKitSyncerTests {
         #expect(stamp > 0)
     }
 
+    // MARK: - Flavor sync (step 4.5)
+
+    /// Build a Flavor CKRecord with a populated CKAsset pointing at a
+    /// tmp file containing `bytes`. Mirrors what CloudKit would hand us
+    /// during a pull.
+    private func makeFlavorRecord(
+        entryUUID: Data,
+        uti: String,
+        bytes: Data
+    ) throws -> (CKRecord, URL) {
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cpdb-test-flavor-\(UUID().uuidString).bin")
+        try bytes.write(to: tmp)
+        let entryID = EntryRecordMapper.recordID(forEntryUUID: entryUUID, in: Self.zone)
+        let flavorID = FlavorRecordMapper.recordID(forEntryUUID: entryUUID, uti: uti, in: Self.zone)
+        let record = CKRecord(recordType: CKSchema.RecordType.flavor, recordID: flavorID)
+        FlavorRecordMapper.populate(
+            record: record,
+            entryRecordID: entryID,
+            uti: uti,
+            size: Int64(bytes.count),
+            assetURL: tmp
+        )
+        return (record, tmp)
+    }
+
+    @Test("pull inserts flavor bytes into entry_flavors alongside the parent entry")
+    func pullAppliesFlavors() async throws {
+        let (store, _) = try seed(entryCount: 0)
+        let client = FakeCloudKitClient()
+
+        let entryUUID = Data((0..<16).map { UInt8($0 + 7) })
+        let entryRecord = makeRecord(uuid: entryUUID, title: "with-flavor")
+        let textBytes = Data("hello flavor".utf8)
+        let (flavorRecord, tmpURL) = try makeFlavorRecord(
+            entryUUID: entryUUID,
+            uti: "public.utf8-plain-text",
+            bytes: textBytes
+        )
+        defer { try? FileManager.default.removeItem(at: tmpURL) }
+
+        await client.seedPull(changed: [entryRecord, flavorRecord])
+
+        let syncer = makeSyncer(store: store, client: client)
+        let report = try await syncer.pullRemoteChanges()
+        #expect(report.inserted == 1)
+        #expect(report.skipped == 0)
+
+        try await store.dbQueue.read { db in
+            let entry = try Entry.filter(Column("uuid") == entryUUID).fetchOne(db)
+            #expect(entry != nil)
+            let flavor = try Flavor
+                .filter(Column("entry_id") == entry!.id!)
+                .filter(Column("uti") == "public.utf8-plain-text")
+                .fetchOne(db)
+            #expect(flavor != nil)
+            #expect(flavor?.data == textBytes)
+            #expect(flavor?.size == Int64(textBytes.count))
+        }
+    }
+
+    @Test("pull flavor for an entry we don't have locally is silently dropped")
+    func pullFlavorWithoutParentIsDropped() async throws {
+        let (store, _) = try seed(entryCount: 0)
+        let client = FakeCloudKitClient()
+
+        let orphanUUID = Data(repeating: 0x99, count: 16)
+        let (flavorRecord, tmpURL) = try makeFlavorRecord(
+            entryUUID: orphanUUID,
+            uti: "public.plain-text",
+            bytes: Data("orphan".utf8)
+        )
+        defer { try? FileManager.default.removeItem(at: tmpURL) }
+
+        await client.seedPull(changed: [flavorRecord])
+
+        let syncer = makeSyncer(store: store, client: client)
+        let report = try await syncer.pullRemoteChanges()
+        // No entry inserted; flavor silently dropped. Not counted as
+        // skipped because decode succeeded — we just had nowhere to
+        // put it.
+        #expect(report.inserted == 0)
+
+        try await store.dbQueue.read { db in
+            let count = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM entry_flavors") ?? 0
+            #expect(count == 0)
+        }
+    }
+
     @Test("ensureSubscription installs our zone subscription id")
     func subscriptionIsInstalled() async throws {
         let (store, _) = try seed(entryCount: 0)
