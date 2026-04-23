@@ -11,17 +11,25 @@ final class StatusItemController {
     private let statusItem: NSStatusItem
 
     init() {
-        // Fixed length so we never collapse to 0px if the SF Symbol
-        // lookup silently fails — a variable-length item with a nil
-        // image renders as zero width, which looks exactly like "the
-        // icon disappeared" without any log signal.
+        // Fixed length so a nil image can't silently collapse us to 0px.
         let item = NSStatusBar.system.statusItem(withLength: 24)
-        item.autosaveName = "net.phfactor.cpdb.statusItem"
+
+        // NO autosaveName. On macOS Sonoma / Sequoia+, setting one opts
+        // the item in to the menu-bar manager's auto-hiding policy:
+        // first launch, macOS notes the autosave name and may decide
+        // the item is a candidate for Control Center overflow, then
+        // hides it after rendering a single frame (matches user report
+        // "flashes into place then disappears"). Without autosave,
+        // macOS treats the item as transient and keeps it pinned
+        // wherever it drops it in the menu bar.
+
+        // Explicitly ensure visible, in case a prior deploy had
+        // autosaveName set and wrote a "hidden" preference we can't
+        // easily delete per-user.
+        item.isVisible = true
+
         if let button = item.button {
             button.image = Self.normalImage
-            // Textual fallback if the image is missing for any reason —
-            // user sees "cpdb" in the menu bar, which is still clickable
-            // and beats an invisible zero-width slot.
             if button.image == nil {
                 button.title = "cpdb"
                 Log.cli.warning("status item: falling back to text — SF Symbol unavailable?")
@@ -31,7 +39,7 @@ final class StatusItemController {
         self.statusItem = item
         let hasImage = item.button?.image != nil ? "yes" : "no"
         Log.cli.info(
-            "status item installed (image=\(hasImage, privacy: .public), length=\(item.length, privacy: .public))"
+            "status item installed (image=\(hasImage, privacy: .public), length=\(item.length, privacy: .public), visible=\(item.isVisible, privacy: .public))"
         )
     }
 
