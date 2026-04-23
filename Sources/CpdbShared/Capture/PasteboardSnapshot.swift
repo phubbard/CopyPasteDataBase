@@ -38,15 +38,23 @@ public struct PasteboardSnapshot: Sendable {
     /// Preference order:
     ///   1. UTF-8 plain text flavors — the dominant modern format.
     ///   2. UTF-16 variants — old Cocoa apps still emit these.
-    ///   3. `public.url` / `public.file-url` bytes decoded as UTF-8.
-    ///      Some sources (notably iOS share-sheet → Copy bridged to the
-    ///      Mac via Universal Clipboard) arrive with ONLY a URL flavor
-    ///      and no separate plain-text flavor. Without this fallback
-    ///      the entry lands in SQLite with `text_preview=NULL` and
-    ///      renders as an empty LinkCard.
+    ///   3. `public.url` bytes decoded as UTF-8. Some sources
+    ///      (notably iOS share-sheet → Copy bridged to Mac via
+    ///      Universal Clipboard) arrive with ONLY a URL flavor and
+    ///      no separate plain-text flavor. Without this fallback
+    ///      the entry lands with `text_preview=NULL` and renders as
+    ///      an empty LinkCard.
     ///   4. `public.url-name` — human-readable title that sometimes
-    ///      accompanies a URL. Last resort because it may be empty
-    ///      while the URL itself is present.
+    ///      accompanies a URL.
+    ///
+    /// We deliberately do NOT fall back on `public.file-url` here.
+    /// A screenshot copied from Finder (or any image dragged from
+    /// disk) ships a file-url alongside its image bytes; if we
+    /// surfaced the file path as plainText, `deriveTitle` would
+    /// make the entry's title a 200-char `file:///Users/...` blob
+    /// instead of the filename. File-url handling lives in
+    /// `Ingestor.deriveTitle` which already extracts
+    /// `url.lastPathComponent` correctly.
     public var plainText: String? {
         for item in items {
             for flavor in item.flavors {
@@ -58,9 +66,9 @@ public struct PasteboardSnapshot: Sendable {
                 }
             }
         }
-        // Fallback #1: a URL flavor carried without a text shadow.
+        // Fallback #1: a web URL carried without a text shadow.
         for item in items {
-            for flavor in item.flavors where flavor.uti == "public.url" || flavor.uti == "public.file-url" {
+            for flavor in item.flavors where flavor.uti == "public.url" {
                 if let s = String(data: flavor.data, encoding: .utf8)?
                     .trimmingCharacters(in: .whitespacesAndNewlines),
                    !s.isEmpty
