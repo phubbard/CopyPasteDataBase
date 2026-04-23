@@ -49,6 +49,14 @@ if [[ ! -d "$APP_BUNDLE" ]]; then
     exit 1
 fi
 
+# Relaunch the locally-installed copy too. `make install-app` quits any
+# running instance and replaces /Applications/cpdb.app, so the next
+# capture won't happen until someone opens it again. Do that now so the
+# build machine is running the freshly-deployed bits alongside the
+# remotes.
+echo "==> launching local copy"
+open -a cpdb
+
 echo "==> packaging $APP_BUNDLE → $TARBALL"
 tar -czf "$TARBALL" -C "$(dirname "$APP_BUNDLE")" "$(basename "$APP_BUNDLE")"
 TARBALL_SIZE=$(ls -lh "$TARBALL" | awk '{print $5}')
