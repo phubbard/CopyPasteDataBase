@@ -1,4 +1,6 @@
 import SwiftUI
+import AppKit
+import GRDB
 import CpdbCore
 import CpdbShared
 
@@ -30,6 +32,9 @@ struct EntryStripView: View {
                         .onTapGesture {
                             state.selectedIndex = index
                         }
+                        .contextMenu {
+                            contextMenu(for: row, index: index)
+                        }
                     }
                 }
                 .padding(.horizontal, 16)
@@ -54,6 +59,146 @@ struct EntryStripView: View {
                 guard state.rows.indices.contains(state.selectedIndex) else { return }
                 let id = state.rows[state.selectedIndex].entry.id!
                 proxy.scrollTo(id, anchor: .leading)
+            }
+        }
+    }
+
+    /// Right-click menu on a card. Three actions mirroring the iOS
+    /// detail view's toolbar so the two platforms feel the same:
+    ///   - Quick Look (⌘Y also works via the popup's key monitor)
+    ///   - Share via the macOS share sheet (NSSharingServicePicker)
+    ///   - Delete (tombstone + CloudKit push)
+    @ViewBuilder
+    private func contextMenu(
+        for row: EntryRepository.EntryRow,
+        index: Int
+    ) -> some View {
+        Button {
+            state.selectedIndex = index
+            PopupController.shared.previewSelected()
+        } label: {
+            Label("Quick Look", systemImage: "eye")
+        }
+
+        Button {
+            share(row: row)
+        } label: {
+            Label("Share…", systemImage: "square.and.arrow.up")
+        }
+
+        Divider()
+
+        Button(role: .destructive) {
+            delete(row: row)
+        } label: {
+            Label("Delete", systemImage: "trash")
+        }
+    }
+
+    /// Build the best representation of the entry's payload we can
+    /// offer the share sheet. Text-like entries share their text;
+    /// link entries share the resolved URL; image entries stage the
+    /// largest inline flavor bytes to a temp PNG/JPEG so receiving
+    /// apps recognize it as an image. Falls back to text_preview
+    /// when nothing better is available.
+    private func share(row: EntryRepository.EntryRow) {
+        let entry = row.entry
+        var items: [Any] = []
+
+        if entry.kind == .image {
+            // Try to stage the full image to a temp file so the share
+            // sheet renders a proper preview. Fall back to textPreview
+            // if the flavor isn't resolvable.
+            if let tempURL = stageImageFlavor(entryId: entry.id!) {
+                items = [tempURL]
+            }
+        } else if entry.kind == .link, let preview = entry.textPreview,
+                  let url = URL(string: preview.trimmingCharacters(in: .whitespacesAndNewlines)),
+                  url.scheme != nil
+        {
+            items = [url]
+        }
+
+        if items.isEmpty, let preview = entry.textPreview, !preview.isEmpty {
+            items = [preview]
+        }
+        if items.isEmpty, let title = entry.title, !title.isEmpty {
+            items = [title]
+        }
+        guard !items.isEmpty else { return }
+
+        // Anchor the picker to the popup panel. Using `showRelativeTo`
+        // is required when the owning window is a transient NSPanel
+        // (the popup) — otherwise AppKit can't find a sensible
+        // position and logs a warning.
+        let picker = NSSharingServicePicker(items: items)
+        if let window = NSApp.keyWindow,
+           let contentView = window.contentView
+        {
+            picker.show(
+                relativeTo: .zero,
+                of: contentView,
+                preferredEdge: .minY
+            )
+        }
+    }
+
+    /// Copy the entry's primary image flavor bytes to a temp file,
+    /// returning the URL. Caller uses it for the share sheet;
+    /// macOS will clean the temp dir in due course.
+    private func stageImageFlavor(entryId: Int64) -> URL? {
+        let blobs = BlobStore()
+        let data: Data? = try? state.store.dbQueue.read { db -> Data? in
+            for uti in ["public.png", "public.jpeg", "public.heic", "public.tiff"] {
+                if let flavor = try Flavor
+                    .filter(Column("entry_id") == entryId)
+                    .filter(Column("uti") == uti)
+                    .fetchOne(db)
+                {
+                    return try blobs.load(inline: flavor.data, blobKey: flavor.blobKey)
+                }
+            }
+            return nil
+        }
+        guard let bytes = data else { return nil }
+        let ext: String = {
+            // Best-effort extension from the magic header so Finder /
+            // Preview / the share sheet render the right app icon.
+            if bytes.count >= 4 {
+                let prefix = bytes.prefix(4)
+                if prefix.starts(with: [0x89, 0x50, 0x4E, 0x47]) { return "png" }
+                if prefix.starts(with: [0xFF, 0xD8, 0xFF]) { return "jpg" }
+            }
+            return "png"
+        }()
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cpdb-share-\(UUID().uuidString).\(ext)")
+        do {
+            try bytes.write(to: tmp)
+            return tmp
+        } catch {
+            return nil
+        }
+    }
+
+    /// Tombstone the entry and nudge the popup to re-query.
+    /// `PopupState.startLiveUpdates`'s ValueObservation will also
+    /// fire, but the explicit refresh makes the row disappear
+    /// immediately instead of one GRDB debounce later.
+    private func delete(row: EntryRepository.EntryRow) {
+        guard let id = row.entry.id else { return }
+        let store = state.store
+        Task.detached {
+            do {
+                let repo = EntryRepository(store: store)
+                try repo.tombstone(id: id)
+            } catch {
+                Log.cli.error(
+                    "delete failed for entry id=\(id, privacy: .public): \(String(describing: error), privacy: .public)"
+                )
+            }
+            await MainActor.run {
+                state.refresh()
             }
         }
     }

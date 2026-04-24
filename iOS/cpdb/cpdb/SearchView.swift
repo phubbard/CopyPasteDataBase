@@ -90,6 +90,21 @@ struct SearchView: View {
                                 Task { await loadMore() }
                             }
                         }
+                        // Swipe-left → Delete. Tombstones the entry
+                        // (sets deleted_at + enqueues for CloudKit
+                        // push), re-runs the query, and ValueObserver
+                        // on `entries` independently picks up the
+                        // change so the list refresh is redundant-
+                        // but-immediate. Blobs stay on disk until
+                        // `cpdb gc` runs.
+                        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                            Button(role: .destructive) {
+                                guard let id = row.entry.id else { return }
+                                Task { await deleteEntry(id: id) }
+                            } label: {
+                                Label("Delete", systemImage: "trash")
+                            }
+                        }
                     }
                     if isLoadingMore {
                         HStack {
@@ -237,6 +252,21 @@ struct SearchView: View {
             )
         } else {
             ContentUnavailableView.search(text: query)
+        }
+    }
+
+    /// Tombstone the entry and refresh the list. Runs off-main for
+    /// the DB write, then hops back to re-query. The `dbChangeToken`
+    /// observer would eventually re-query on its own but we do it
+    /// explicitly here for a snappy "row disappears now" feel.
+    private func deleteEntry(id: Int64) async {
+        guard let store = container.store else { return }
+        do {
+            let repo = EntryRepository(store: store)
+            try await Task.detached { try repo.tombstone(id: id) }.value
+            await runQuery()
+        } catch {
+            print("[cpdb] delete failed for id=\(id): \(error)")
         }
     }
 

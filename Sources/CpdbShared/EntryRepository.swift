@@ -128,6 +128,39 @@ public struct EntryRepository {
         }
     }
 
+    /// Tombstone a single entry (user-initiated delete). Sets
+    /// `deleted_at` on the row, removes the FTS shadow, and enqueues
+    /// for CloudKit push so the tombstone propagates to iOS and
+    /// sibling Macs. Idempotent — tombstoning an already-tombstoned
+    /// row no-ops. Blob cleanup is handled by `cpdb gc` out of band.
+    public func tombstone(id: Int64) throws {
+        let now = Date().timeIntervalSince1970
+        try store.dbQueue.write { db in
+            let affected = try db.execute(
+                sql: """
+                    UPDATE entries
+                    SET deleted_at = ?
+                    WHERE id = ? AND deleted_at IS NULL
+                """,
+                arguments: [now, id]
+            )
+            // `db.execute` returns Void but we can check changes via
+            // another query. Skip if nothing actually changed.
+            let changes = db.changesCount
+            _ = affected
+            if changes > 0 {
+                // Remove from FTS so the deleted row stops showing
+                // up in search results. The entries row itself stays
+                // (with deleted_at set) until `cpdb gc` clears it.
+                try db.execute(
+                    sql: "DELETE FROM entries_fts WHERE rowid = ?",
+                    arguments: [id]
+                )
+                try PushQueue.enqueue(entryId: id, in: db, now: now)
+            }
+        }
+    }
+
     /// Total live entry count — used by the popup header and stats.
     public func totalLiveCount() throws -> Int {
         try store.dbQueue.read { db in
