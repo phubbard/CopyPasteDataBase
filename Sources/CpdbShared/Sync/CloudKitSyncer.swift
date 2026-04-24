@@ -69,6 +69,27 @@ public actor CloudKitSyncer {
     /// sees freshness without a live connection to the syncer.
     public static let lastSyncSuccessKey = "cpdb.sync.lastSuccessAt"
 
+    // MARK: - Safety-net poll interval
+
+    /// UserDefaults key for the safety-net pull interval (minutes).
+    /// Stored as an `Int`. Absent → default 15 min. Clamped to the
+    /// [min, max] range at read time so out-of-band edits can't
+    /// poison the loop with 0 or a huge number.
+    public static let safetyNetIntervalKey = "cpdb.sync.safetyNetIntervalMinutes"
+    public static let safetyNetIntervalDefaultMinutes = 15
+    public static let safetyNetIntervalMinMinutes = 5
+    public static let safetyNetIntervalMaxMinutes = 24 * 60   // 24 h
+
+    /// Current safety-net poll interval in seconds, honouring the
+    /// stored preference. The AppDelegate's periodic loop reads this
+    /// on every idle cycle so the user can tune it without restart.
+    public static var safetyNetIntervalSeconds: TimeInterval {
+        let raw = UserDefaults.standard.object(forKey: safetyNetIntervalKey) as? Int
+            ?? safetyNetIntervalDefaultMinutes
+        let clamped = max(safetyNetIntervalMinMinutes, min(safetyNetIntervalMaxMinutes, raw))
+        return TimeInterval(clamped * 60)
+    }
+
     /// UserDefaults key: Bool. When true, `pushPendingChanges` and
     /// `pullRemoteChanges` return immediately with empty reports. The
     /// Preferences iCloud section toggles this; menu-bar Sync Now
@@ -689,9 +710,17 @@ public actor CloudKitSyncer {
 
             totals.moreComing = result.moreComing
             pageIndex += 1
-            Log.cli.info(
-                "cloudkit pull page \(pageIndex, privacy: .public): inserted=\(page.inserted, privacy: .public) updated=\(page.updated, privacy: .public) tombstoned=\(page.tombstoned, privacy: .public) skipped=\(page.skipped, privacy: .public) moreComing=\(result.moreComing, privacy: .public)"
-            )
+            // Only log pages that actually did something OR are
+            // followed by more pages. Empty-and-final pages are the
+            // "safety net poll found nothing" case; they'd dominate
+            // the log and drown the interesting lines.
+            if page.inserted + page.updated + page.tombstoned + page.skipped > 0
+                || result.moreComing
+            {
+                Log.cli.info(
+                    "cloudkit pull page \(pageIndex, privacy: .public): inserted=\(page.inserted, privacy: .public) updated=\(page.updated, privacy: .public) tombstoned=\(page.tombstoned, privacy: .public) skipped=\(page.skipped, privacy: .public) moreComing=\(result.moreComing, privacy: .public)"
+                )
+            }
             progress?(totals)
         } while totals.moreComing
 

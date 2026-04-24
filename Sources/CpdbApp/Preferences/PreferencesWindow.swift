@@ -78,6 +78,35 @@ private struct PreferencesView: View {
     @State private var syncLastPullText: String = PreferencesView.formattedLastSync()
     @State private var syncActionStatus: String = ""
     @State private var syncPollTask: Task<Void, Never>? = nil
+    /// Adaptive step for the safety-net stepper: 5-min increments
+    /// at the short end, bigger jumps as we climb. Keeps the total
+    /// click count manageable (min→max is ~30 clicks).
+    private var safetyNetStep: Int {
+        switch safetyNetMinutes {
+        case ..<30:      return 5        // 5, 10, 15, 20, 25
+        case ..<120:     return 15       // 30, 45, 60, 75, 90, 105
+        case ..<360:     return 30       // 120 … 360
+        case ..<720:     return 60       // 360, 420, …, 720
+        default:         return 120      // 720, 840, …, 1440
+        }
+    }
+
+    private static func formatMinutes(_ m: Int) -> String {
+        if m < 60 { return "\(m) min" }
+        let h = m / 60
+        let rem = m % 60
+        if rem == 0 { return "\(h) h" }
+        return "\(h) h \(rem) min"
+    }
+
+    @State private var safetyNetMinutes: Int = {
+        let raw = UserDefaults.standard.object(forKey: CloudKitSyncer.safetyNetIntervalKey) as? Int
+            ?? CloudKitSyncer.safetyNetIntervalDefaultMinutes
+        return max(
+            CloudKitSyncer.safetyNetIntervalMinMinutes,
+            min(CloudKitSyncer.safetyNetIntervalMaxMinutes, raw)
+        )
+    }()
 
     var body: some View {
         Form {
@@ -107,6 +136,31 @@ private struct PreferencesView: View {
                 let pushed = max(0, syncLiveEntries - syncQueueDepth)
                 LabeledContent("Pushed", value: "\(pushed) of \(syncLiveEntries)")
                 LabeledContent("Last pull", value: syncLastPullText)
+
+                // Safety-net interval. New captures push immediately
+                // via an event-driven notification; silent push wakes
+                // the app on inbound changes. This timer just catches
+                // anything those two miss (e.g. a push that landed
+                // while the Mac was asleep). Larger → quieter logs,
+                // longer worst-case delay on a dropped silent push.
+                HStack {
+                    Text("Safety-net pull every")
+                    Spacer()
+                    Stepper(
+                        value: $safetyNetMinutes,
+                        in: (CloudKitSyncer.safetyNetIntervalMinMinutes)...(CloudKitSyncer.safetyNetIntervalMaxMinutes),
+                        step: safetyNetStep
+                    ) {
+                        Text(Self.formatMinutes(safetyNetMinutes))
+                            .font(.system(size: 12, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .frame(minWidth: 90, alignment: .trailing)
+                    }
+                    .onChange(of: safetyNetMinutes) { _, new in
+                        UserDefaults.standard.set(new, forKey: CloudKitSyncer.safetyNetIntervalKey)
+                    }
+                }
+                .help("5 min to 24 h. Applies on the next idle cycle — no restart needed.")
 
                 HStack {
                     Button("Reset change token") {

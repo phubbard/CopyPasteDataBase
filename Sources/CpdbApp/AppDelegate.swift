@@ -252,7 +252,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     Log.cli.error("cloudkit push failed: \(String(describing: error), privacy: .public)")
                 }
                 if shouldPause {
-                    try? await Task.sleep(nanoseconds: 5 * 60 * 1_000_000_000)
+                    // Honour the user's safety-net interval pref on
+                    // every cycle, so changes in Preferences take
+                    // effect within one idle period without restart.
+                    let seconds = CloudKitSyncer.safetyNetIntervalSeconds
+                    try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
                 }
                 _ = self
             }
@@ -295,6 +299,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         didFailToRegisterForRemoteNotificationsWithError error: any Error
     ) {
         Log.cli.error("remote-notification registration failed: \(String(describing: error), privacy: .public)")
+    }
+
+    /// Called when the user launches the app while it's already
+    /// running (double-click from Finder, `open -a cpdb`, etc.).
+    /// cpdb is a menu-bar app (`LSUIElement = true`) so it has no
+    /// Dock icon to bounce, and silently no-op'ing a re-launch feels
+    /// broken — the user's asking for *something* to happen. Show
+    /// the popup so they can search/paste. Returning `false` tells
+    /// AppKit we've handled the reopen ourselves.
+    func applicationShouldHandleReopen(
+        _ sender: NSApplication,
+        hasVisibleWindows flag: Bool
+    ) -> Bool {
+        Log.cli.info("reopen received (hasVisibleWindows=\(flag, privacy: .public)); showing popup")
+        PopupController.shared.show()
+        return false
     }
 
     func applicationWillTerminate(_ notification: Notification) {
