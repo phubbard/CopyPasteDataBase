@@ -276,8 +276,42 @@ final class AppContainer {
 
     // MARK: - Sync
 
+    /// Drain any outbound work (tombstones created by the user's
+    /// swipe-delete action, future iOS-side captures) in a single
+    /// loop. Runs before every `pullNow` so a pull-to-refresh /
+    /// foreground poll also catches up the push queue — same
+    /// contract the Mac's periodic loop has. Idempotent and cheap
+    /// when the queue is empty.
+    func pushNow() async {
+        guard let syncer = syncer else { return }
+        do {
+            while true {
+                let push = try await syncer.pushPendingChanges()
+                if push.attempted > 0 {
+                    print("[cpdb] push: attempted=\(push.attempted) saved=\(push.saved) failed=\(push.failed) remaining=\(push.remaining)")
+                }
+                // Drain multiple batches so a burst of deletes from
+                // `cpdb dedupe`-equivalent flows (or quick successive
+                // swipe-deletes) doesn't need multiple foreground
+                // poll cycles to clear. Stop when nothing left OR
+                // we're making no progress (failed > 0 && remaining
+                // > 0 — avoid spinning on a permanent error).
+                if push.remaining == 0 || push.attempted == 0 || push.failed > 0 {
+                    break
+                }
+            }
+        } catch {
+            print("[cpdb] push failed: \(error)")
+            lastError = "\(error)"
+        }
+    }
+
     /// Force a pull. Called on pull-to-refresh and from the toolbar.
+    /// Runs a push first so local changes (tombstones from swipe-
+    /// delete) drain to CloudKit before we poll for remote changes
+    /// — keeps both directions flowing through one code path.
     func pullNow() async {
+        await pushNow()
         guard let syncer = syncer else { return }
         isSyncing = true
         pullStartedAt = Date()

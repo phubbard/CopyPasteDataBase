@@ -259,12 +259,17 @@ struct SearchView: View {
     /// the DB write, then hops back to re-query. The `dbChangeToken`
     /// observer would eventually re-query on its own but we do it
     /// explicitly here for a snappy "row disappears now" feel.
+    ///
+    /// After the DB write, kick a push so the tombstone propagates
+    /// to the Mac and other devices right away instead of waiting
+    /// for the next foreground poll.
     private func deleteEntry(id: Int64) async {
         guard let store = container.store else { return }
         do {
             let repo = EntryRepository(store: store)
             try await Task.detached { try repo.tombstone(id: id) }.value
             await runQuery()
+            await container.pushNow()
         } catch {
             print("[cpdb] delete failed for id=\(id): \(error)")
         }
