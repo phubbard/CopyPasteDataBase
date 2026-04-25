@@ -46,19 +46,37 @@
                     Background="{ThemeResource SubtleFillColorSecondaryBrush}"
                     CornerRadius="4"
                     Padding="12">
-                <Grid>
-                    <ScrollViewer x:Name="DetailTextScroll" Visibility="Collapsed">
-                        <TextBlock x:Name="DetailText"
+                <Grid RowDefinitions="*,Auto" RowSpacing="8">
+                    <Grid Grid.Row="0">
+                        <ScrollViewer x:Name="DetailTextScroll" Visibility="Collapsed">
+                            <TextBlock x:Name="DetailText"
+                                       TextWrapping="Wrap"
+                                       IsTextSelectionEnabled="True"
+                                       FontFamily="Consolas"/>
+                        </ScrollViewer>
+                        <Image x:Name="DetailImage" Visibility="Collapsed" Stretch="Uniform"/>
+                        <TextBlock x:Name="DetailEmpty"
+                                   Text="Select an entry to preview"
+                                   Opacity="0.5"
+                                   HorizontalAlignment="Center"
+                                   VerticalAlignment="Center"/>
+                    </Grid>
+                    <StackPanel x:Name="DetailMeta" Grid.Row="1" Visibility="Collapsed" Spacing="2">
+                        <HyperlinkButton x:Name="DetailSourceUrl"
+                                         Visibility="Collapsed"
+                                         Padding="0"
+                                         FontSize="12"/>
+                        <HyperlinkButton x:Name="DetailPageUrl"
+                                         Visibility="Collapsed"
+                                         Padding="0"
+                                         FontSize="12"/>
+                        <TextBlock x:Name="DetailHtmlNote"
+                                   Visibility="Collapsed"
+                                   Opacity="0.6"
+                                   FontSize="11"
                                    TextWrapping="Wrap"
-                                   IsTextSelectionEnabled="True"
                                    FontFamily="Consolas"/>
-                    </ScrollViewer>
-                    <Image x:Name="DetailImage" Visibility="Collapsed" Stretch="Uniform"/>
-                    <TextBlock x:Name="DetailEmpty"
-                               Text="Select an entry to preview"
-                               Opacity="0.5"
-                               HorizontalAlignment="Center"
-                               VerticalAlignment="Center"/>
+                    </StackPanel>
                 </Grid>
             </Border>
         </Grid>

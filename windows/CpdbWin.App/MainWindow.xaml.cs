@@ -105,11 +105,21 @@ public sealed partial class MainWindow : Window
         DetailTextScroll.Visibility  = Visibility.Collapsed;
         DetailImage.Visibility       = Visibility.Collapsed;
         DetailImage.Source           = null;
+        ResetMeta();
+    }
+
+    private void ResetMeta()
+    {
+        DetailMeta.Visibility       = Visibility.Collapsed;
+        DetailSourceUrl.Visibility  = Visibility.Collapsed;
+        DetailPageUrl.Visibility    = Visibility.Collapsed;
+        DetailHtmlNote.Visibility   = Visibility.Collapsed;
     }
 
     private void ShowDetail(EntryViewModel vm)
     {
         DetailEmpty.Visibility = Visibility.Collapsed;
+        ResetMeta();
 
         // Image entries first — show the larger preview if we have one.
         var thumb = _host.Entries.GetThumbLarge(vm.EntryId);
@@ -118,6 +128,9 @@ public sealed partial class MainWindow : Window
             DetailImage.Source = LoadBitmap(thumb);
             DetailImage.Visibility      = Visibility.Visible;
             DetailTextScroll.Visibility = Visibility.Collapsed;
+            // Browsers ride a source URL + HTML snippet alongside the image
+            // bytes — surface them so the user can chase the original.
+            ShowMetadata(vm.EntryId, includeImageMetadata: true);
             return;
         }
 
@@ -136,6 +149,43 @@ public sealed partial class MainWindow : Window
         DetailText.Text = "(no preview available)";
         DetailTextScroll.Visibility = Visibility.Visible;
         DetailImage.Visibility      = Visibility.Collapsed;
+    }
+
+    private void ShowMetadata(long entryId, bool includeImageMetadata)
+    {
+        bool any = false;
+
+        if (includeImageMetadata)
+        {
+            // public.url for image entries is the image's direct URL
+            // (UniformResourceLocatorW from Chromium / Firefox).
+            var url = _host.Entries.GetFlavorBytes(entryId, "public.url");
+            if (url is not null)
+            {
+                var s = Encoding.UTF8.GetString(url).Trim();
+                if (s.Length > 0)
+                {
+                    DetailSourceUrl.Content = "Image: " + s;
+                    if (Uri.TryCreate(s, UriKind.Absolute, out var u)) DetailSourceUrl.NavigateUri = u;
+                    DetailSourceUrl.Visibility = Visibility.Visible;
+                    any = true;
+                }
+            }
+
+            var html = _host.Entries.GetFlavorBytes(entryId, "public.html");
+            if (html is not null)
+            {
+                var s = Encoding.UTF8.GetString(html).Trim();
+                if (s.Length > 0)
+                {
+                    DetailHtmlNote.Text = s.Length > 200 ? s[..200] + "…" : s;
+                    DetailHtmlNote.Visibility = Visibility.Visible;
+                    any = true;
+                }
+            }
+        }
+
+        DetailMeta.Visibility = any ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private static BitmapImage? LoadBitmap(byte[] bytes)
@@ -202,6 +252,15 @@ public sealed partial class MainWindow : Window
                 if (count > activate && EntryList.Items[activate] is EntryViewModel vm)
                     ActivateEntry(vm);
                 e.Handled = true;
+                return;
+            case VirtualKey.Delete:
+                // Repurpose Delete for "remove the highlighted list entry"
+                // when there is one — search-text editing uses Backspace.
+                if (sel >= 0 && count > sel && EntryList.Items[sel] is EntryViewModel del)
+                {
+                    DeleteEntry(del);
+                    e.Handled = true;
+                }
                 return;
             case VirtualKey.Escape:
                 if (!string.IsNullOrEmpty(SearchBox.Text)) SearchBox.Text = "";
