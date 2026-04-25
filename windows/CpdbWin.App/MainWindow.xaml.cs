@@ -99,6 +99,14 @@ public sealed partial class MainWindow : Window
 
     private void Refresh()
     {
+        // Guard against the InitializeComponent firing path: when XAML
+        // applies SelectedIndex="0" to the KindFilter ComboBox during
+        // base ctor, SelectionChanged runs before _host has been assigned
+        // by our constructor. Without this null check we'd dereference
+        // _host and bubble a NullReferenceException out through XAML
+        // parsing as a XamlParseException 0x802B000A.
+        if (_host is null) return;
+
         // Preserve multi-selection across refreshes — clipboard events can
         // fire between user keystrokes; without this, Down → capture-Refresh
         // → Delete would no-op because the selection reset to empty.
@@ -140,6 +148,7 @@ public sealed partial class MainWindow : Window
 
     private void UpdateFooter(int shown)
     {
+        if (_host is null) return;
         var kind = CurrentKindFilter();
         long total;
         try { total = _host.Entries.LiveCount(kind: kind); }
