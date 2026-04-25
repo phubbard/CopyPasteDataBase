@@ -39,8 +39,38 @@ public static class UtiTranslator
             "PNG"                     => new Translation("public.png",  raw.ToArray()),
             "JFIF" or "JPEG"          => new Translation("public.jpeg", raw.ToArray()),
             "UniformResourceLocatorW" => new Translation("public.url",  DecodeUtf16LeWithNullTerm(raw)),
+            "HTML Format"             => CfHtmlParser.ExtractFragment(raw) is { } html
+                                         ? new Translation("public.html", html)
+                                         : null,
             _                         => null,
         };
+    }
+
+    /// <summary>
+    /// Multi-flavor entry point used by the capture pipeline. Currently only
+    /// CF_HDROP can produce more than one translation per source format
+    /// (one <c>public.file-url</c> per path); everything else falls through
+    /// to the single-shot <see cref="Translate"/>.
+    /// </summary>
+    public static IReadOnlyList<Translation> TranslateMulti(uint formatId, string? formatName, ReadOnlySpan<byte> raw)
+    {
+        if (formatId == CF_HDROP)
+        {
+            var paths = HdropParser.ParsePaths(raw);
+            if (paths.Count == 0) return Array.Empty<Translation>();
+            var result = new List<Translation>(paths.Count);
+            foreach (var path in paths)
+            {
+                var url = HdropParser.ToFileUrl(path);
+                if (url is null) continue;
+                result.Add(new Translation("public.file-url",
+                    System.Text.Encoding.UTF8.GetBytes(url)));
+            }
+            return result;
+        }
+
+        var single = Translate(formatId, formatName, raw);
+        return single is null ? Array.Empty<Translation>() : new[] { single.Value };
     }
 
     /// CF_UNICODETEXT and UniformResourceLocatorW are UTF-16 LE with one or

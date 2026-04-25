@@ -41,9 +41,8 @@ public readonly record struct ClipboardSnapshot(IReadOnlyList<CanonicalHash.Flav
                     if (n > 0) name = buf.ToString();
                 }
 
-                var t = UtiTranslator.Translate(format, name, raw);
-                if (t is null) continue;
-                flavors.Add(new CanonicalHash.Flavor(t.Value.Uti, t.Value.Data));
+                foreach (var t in UtiTranslator.TranslateMulti(format, name, raw))
+                    flavors.Add(new CanonicalHash.Flavor(t.Uti, t.Data));
             }
             return new ClipboardSnapshot(flavors);
         }
