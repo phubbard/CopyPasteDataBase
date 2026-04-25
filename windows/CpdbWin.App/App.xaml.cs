@@ -29,10 +29,19 @@ public partial class App : Application
         _mainWindow = new MainWindow(Host);
         _mainWindow.Activate();
 
-        _tray = new TrayIcon { Tooltip = "cpdb-win" };
-        _tray.Activated      += () => _mainWindow.DispatcherQueue.TryEnqueue(BringMainToFront);
-        _tray.ShowRequested  += () => _mainWindow.DispatcherQueue.TryEnqueue(BringMainToFront);
-        _tray.QuitRequested  += () => _mainWindow.DispatcherQueue.TryEnqueue(QuitApp);
+        _tray = new TrayIcon
+        {
+            Tooltip = "cpdb-win",
+            AutoLaunchChecked = AutoLaunch.IsEnabled(),
+        };
+        _tray.Activated         += () => _mainWindow.DispatcherQueue.TryEnqueue(BringMainToFront);
+        _tray.ShowRequested     += () => _mainWindow.DispatcherQueue.TryEnqueue(BringMainToFront);
+        _tray.QuitRequested     += () => _mainWindow.DispatcherQueue.TryEnqueue(QuitApp);
+        _tray.AutoLaunchToggled += enabled =>
+        {
+            AutoLaunch.SetEnabled(enabled);
+            _tray.AutoLaunchChecked = AutoLaunch.IsEnabled();
+        };
         _tray.Start();
 
         // Ctrl+Shift+V — system-wide. Win+V is owned by the OS clipboard
