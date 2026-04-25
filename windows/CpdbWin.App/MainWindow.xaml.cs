@@ -108,18 +108,19 @@ public sealed partial class MainWindow : Window
             .ToHashSet();
 
         var query = SearchBox.Text;
+        var kind = CurrentKindFilter();
         IReadOnlyList<EntryRow> rows;
         try
         {
             rows = string.IsNullOrWhiteSpace(query)
-                ? _host.Entries.Recent()
-                : _host.Entries.Search(query.Trim() + "*");  // prefix match
+                ? _host.Entries.Recent(kind: kind)
+                : _host.Entries.Search(query.Trim() + "*", kind: kind);
         }
         catch
         {
             // Bad FTS5 query (e.g. unbalanced quotes) — fall back to Recent
             // rather than blanking the list.
-            rows = _host.Entries.Recent();
+            rows = _host.Entries.Recent(kind: kind);
         }
         var vms = rows.Select(EntryViewModel.From).ToList();
         EntryList.ItemsSource = vms;
@@ -139,8 +140,9 @@ public sealed partial class MainWindow : Window
 
     private void UpdateFooter(int shown)
     {
+        var kind = CurrentKindFilter();
         long total;
-        try { total = _host.Entries.LiveCount(); }
+        try { total = _host.Entries.LiveCount(kind: kind); }
         catch { total = shown; }
 
         string countLabel = string.IsNullOrWhiteSpace(SearchBox.Text) || total == shown
@@ -148,6 +150,25 @@ public sealed partial class MainWindow : Window
             : $"{shown} of {total}";
 
         FooterText.Text = $"{countLabel} · {CpdbVersion.Full}";
+    }
+
+    private string? CurrentKindFilter()
+    {
+        if (KindFilter is null) return null;
+        if (KindFilter.SelectedItem is ComboBoxItem item
+            && item.Tag is string s
+            && !string.IsNullOrEmpty(s))
+            return s;
+        return null;
+    }
+
+    private void KindFilter_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        // Reset cursor / anchor on filter change — the rows are about to
+        // change shape so any previously valid index is suspect.
+        _cursorIndex = -1;
+        _shiftAnchor = -1;
+        Refresh();
     }
 
     private void SearchBox_TextChanged(object sender, TextChangedEventArgs e) => Refresh();
