@@ -6,12 +6,16 @@ namespace CpdbWin.Core.Tests;
 
 public class ClipboardSnapshotTests : IDisposable
 {
-    public void Dispose() => TestClipboardWriter.Empty();
+    public void Dispose()
+    {
+        TestClipboardWriter.Empty();
+        ProductionDbCleanup.TombstoneTestEntries();
+    }
 
     [Fact]
     public void Capture_ReadsUnicodeTextWeJustWrote()
     {
-        var unique = $"cpdb-snapshot-{Guid.NewGuid()}";
+        var unique = $"{ProductionDbCleanup.TestPrefix}snapshot-{Guid.NewGuid()}";
         TestClipboardWriter.SetUnicodeText(unique);
 
         var snap = ClipboardSnapshot.Capture();
@@ -27,7 +31,7 @@ public class ClipboardSnapshotTests : IDisposable
         // CF_OEMTEXT, and CF_LOCALE on read. The translator drops all three
         // (we don't trust round-tripping through codepages), so the snapshot
         // should contain exactly one flavor — the original UTF-16 we wrote.
-        TestClipboardWriter.SetUnicodeText("hello");
+        TestClipboardWriter.SetUnicodeText($"{ProductionDbCleanup.TestPrefix}auto-synth");
         var snap = ClipboardSnapshot.Capture();
 
         Assert.Single(snap.Flavors);
@@ -37,7 +41,7 @@ public class ClipboardSnapshotTests : IDisposable
     [Fact]
     public void ContentHash_IsStableAcrossRepeatedCaptures()
     {
-        TestClipboardWriter.SetUnicodeText("stable-content-hash");
+        TestClipboardWriter.SetUnicodeText($"{ProductionDbCleanup.TestPrefix}stable-hash");
 
         var a = ClipboardSnapshot.Capture().ContentHash();
         var b = ClipboardSnapshot.Capture().ContentHash();

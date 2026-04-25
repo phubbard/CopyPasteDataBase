@@ -31,6 +31,7 @@ public class CaptureServiceTests : IDisposable
     public void Dispose()
     {
         TestClipboardWriter.Empty();
+        ProductionDbCleanup.TombstoneTestEntries();
         _db.Dispose();
         try { Directory.Delete(_blobRoot, recursive: true); } catch { }
     }
@@ -64,7 +65,7 @@ public class CaptureServiceTests : IDisposable
         };
         svc.Start();
 
-        var unique = $"capture-svc-{Guid.NewGuid()}";
+        var unique = $"{ProductionDbCleanup.TestPrefix}capture-svc-{Guid.NewGuid()}";
         TestClipboardWriter.SetUnicodeText(unique);
 
         Assert.True(fired.Wait(TimeSpan.FromSeconds(2)),

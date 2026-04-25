@@ -19,6 +19,15 @@
                 <ListView.ItemTemplate>
                     <DataTemplate x:DataType="local:EntryViewModel">
                         <Grid ColumnDefinitions="48,*" ColumnSpacing="10" Margin="0,4">
+                            <Grid.ContextFlyout>
+                                <MenuFlyout>
+                                    <MenuFlyoutItem Text="Delete" Click="DeleteMenuItem_Click">
+                                        <MenuFlyoutItem.Icon>
+                                            <SymbolIcon Symbol="Delete"/>
+                                        </MenuFlyoutItem.Icon>
+                                    </MenuFlyoutItem>
+                                </MenuFlyout>
+                            </Grid.ContextFlyout>
                             <Border Width="48" Height="48"
                                     Background="{ThemeResource SubtleFillColorSecondaryBrush}"
                                     CornerRadius="4">

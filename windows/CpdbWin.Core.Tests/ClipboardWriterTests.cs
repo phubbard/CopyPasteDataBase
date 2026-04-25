@@ -6,12 +6,16 @@ namespace CpdbWin.Core.Tests;
 
 public class ClipboardWriterTests : IDisposable
 {
-    public void Dispose() => TestClipboardWriter.Empty();
+    public void Dispose()
+    {
+        TestClipboardWriter.Empty();
+        ProductionDbCleanup.TombstoneTestEntries();
+    }
 
     [Fact]
     public void WriteText_RoundTripsThroughCapture()
     {
-        var unique = $"writer-{Guid.NewGuid()}";
+        var unique = $"{ProductionDbCleanup.TestPrefix}writer-{Guid.NewGuid()}";
         ClipboardWriter.WriteText(unique);
 
         var snap = ClipboardSnapshot.Capture();

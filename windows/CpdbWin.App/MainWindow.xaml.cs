@@ -157,29 +157,65 @@ public sealed partial class MainWindow : Window
         catch { return null; }
     }
 
+    private const int KeyPageSize = 8;
+
     private void SearchBox_KeyDown(object sender, KeyRoutedEventArgs e)
     {
+        int count = EntryList.Items.Count;
+        int sel = EntryList.SelectedIndex;
+        int newSel = sel;
+
         switch (e.Key)
         {
             case VirtualKey.Down:
-                if (EntryList.Items.Count > 0)
-                {
-                    if (EntryList.SelectedIndex < 0) EntryList.SelectedIndex = 0;
-                    ((ListViewItem?)EntryList.ContainerFromIndex(EntryList.SelectedIndex))?.Focus(FocusState.Keyboard);
-                }
+                if (count == 0) { e.Handled = true; return; }
+                newSel = sel < 0 ? 0 : Math.Min(sel + 1, count - 1);
+                e.Handled = true;
+                break;
+            case VirtualKey.Up:
+                if (count == 0) { e.Handled = true; return; }
+                newSel = sel <= 0 ? 0 : sel - 1;
+                e.Handled = true;
+                break;
+            case VirtualKey.PageDown:
+                if (count == 0) { e.Handled = true; return; }
+                newSel = sel < 0 ? 0 : Math.Min(sel + KeyPageSize, count - 1);
+                e.Handled = true;
+                break;
+            case VirtualKey.PageUp:
+                if (count == 0) { e.Handled = true; return; }
+                newSel = sel <= 0 ? 0 : Math.Max(sel - KeyPageSize, 0);
+                e.Handled = true;
+                break;
+            case VirtualKey.Home:
+                if (count == 0) { e.Handled = true; return; }
+                newSel = 0;
+                e.Handled = true;
+                break;
+            case VirtualKey.End:
+                if (count == 0) { e.Handled = true; return; }
+                newSel = count - 1;
                 e.Handled = true;
                 break;
             case VirtualKey.Enter:
-                var idx = EntryList.SelectedIndex >= 0 ? EntryList.SelectedIndex : 0;
-                if (EntryList.Items.Count > idx && EntryList.Items[idx] is EntryViewModel vm)
+                int activate = sel >= 0 ? sel : 0;
+                if (count > activate && EntryList.Items[activate] is EntryViewModel vm)
                     ActivateEntry(vm);
                 e.Handled = true;
-                break;
+                return;
             case VirtualKey.Escape:
                 if (!string.IsNullOrEmpty(SearchBox.Text)) SearchBox.Text = "";
                 else AppWindow.Hide();
                 e.Handled = true;
-                break;
+                return;
+            default:
+                return;
+        }
+
+        if (newSel != sel && newSel >= 0 && newSel < count)
+        {
+            EntryList.SelectedIndex = newSel;
+            EntryList.ScrollIntoView(EntryList.Items[newSel]);
         }
     }
 
@@ -194,12 +230,33 @@ public sealed partial class MainWindow : Window
                     e.Handled = true;
                 }
                 break;
+            case VirtualKey.Delete:
+                if (EntryList.SelectedItem is EntryViewModel del)
+                {
+                    DeleteEntry(del);
+                    e.Handled = true;
+                }
+                break;
             case VirtualKey.Escape:
                 if (!string.IsNullOrEmpty(SearchBox.Text)) SearchBox.Text = "";
                 SearchBox.Focus(FocusState.Keyboard);
                 e.Handled = true;
                 break;
         }
+    }
+
+    private void DeleteMenuItem_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement fe && fe.DataContext is EntryViewModel vm)
+            DeleteEntry(vm);
+    }
+
+    private void DeleteEntry(EntryViewModel vm)
+    {
+        _host.Entries.Tombstone(vm.EntryId);
+        StatusText.Text = $"Deleted #{vm.EntryId}";
+        ShowDetailEmpty();
+        Refresh();
     }
 
     private void ActivateEntry(EntryViewModel vm)

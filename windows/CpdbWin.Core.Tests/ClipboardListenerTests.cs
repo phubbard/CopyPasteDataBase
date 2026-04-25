@@ -5,7 +5,11 @@ namespace CpdbWin.Core.Tests;
 
 public class ClipboardListenerTests : IDisposable
 {
-    public void Dispose() => TestClipboardWriter.Empty();
+    public void Dispose()
+    {
+        TestClipboardWriter.Empty();
+        ProductionDbCleanup.TombstoneTestEntries();
+    }
 
     [Fact]
     public void Lifecycle_StartAndDispose_IsClean()
@@ -32,7 +36,7 @@ public class ClipboardListenerTests : IDisposable
         listener.ClipboardChanged += (_, _) => fired.Set();
         listener.Start();
 
-        TestClipboardWriter.SetUnicodeText($"listener-{Guid.NewGuid()}");
+        TestClipboardWriter.SetUnicodeText($"{ProductionDbCleanup.TestPrefix}listener-{Guid.NewGuid()}");
 
         Assert.True(fired.Wait(TimeSpan.FromSeconds(2)),
             "WM_CLIPBOARDUPDATE was not delivered within 2s of SetClipboardData.");
@@ -53,7 +57,7 @@ public class ClipboardListenerTests : IDisposable
 
         for (int i = 0; i < 3; i++)
         {
-            TestClipboardWriter.SetUnicodeText($"seq-{i}-{Guid.NewGuid()}");
+            TestClipboardWriter.SetUnicodeText($"{ProductionDbCleanup.TestPrefix}seq-{i}-{Guid.NewGuid()}");
             // Tiny gap so Windows coalesces nothing — back-to-back SetClipboardData
             // can sometimes collapse into a single WM_CLIPBOARDUPDATE.
             Thread.Sleep(50);
