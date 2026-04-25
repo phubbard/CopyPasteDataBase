@@ -21,9 +21,10 @@ public sealed class EntryRepository
     private const string SelectEntryColumns = """
         SELECT e.id, e.kind, e.title, e.text_preview,
                e.created_at, e.captured_at, e.total_size,
-               a.bundle_id, a.name
+               a.bundle_id, a.name, p.thumb_small
         FROM entries e
         LEFT JOIN apps a ON a.id = e.source_app_id
+        LEFT JOIN previews p ON p.entry_id = e.id
         """;
 
     /// <summary>Newest live entries first. <paramref name="limit"/> caps the row count.</summary>
@@ -144,7 +145,8 @@ public sealed class EntryRepository
                 CapturedAt: reader.GetDouble(5),
                 TotalSize: reader.GetInt64(6),
                 AppBundleId: reader.IsDBNull(7) ? null : reader.GetString(7),
-                AppName: reader.IsDBNull(8) ? null : reader.GetString(8)
+                AppName: reader.IsDBNull(8) ? null : reader.GetString(8),
+                ThumbSmall: reader.IsDBNull(9) ? null : (byte[])reader.GetValue(9)
             ));
         }
         return rows;
@@ -160,7 +162,8 @@ public readonly record struct EntryRow(
     double CapturedAt,
     long TotalSize,
     string? AppBundleId,
-    string? AppName);
+    string? AppName,
+    byte[]? ThumbSmall);
 
 public readonly record struct FlavorRow(
     long EntryId,

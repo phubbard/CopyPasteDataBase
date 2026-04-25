@@ -4,6 +4,9 @@ using CpdbWin.Core.Ingest;
 using CpdbWin.Core.Store;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Xaml.Media.Imaging;
+using Windows.Storage.Streams;
 
 namespace CpdbWin.App;
 
@@ -107,13 +110,38 @@ public sealed class EntryViewModel
     public long EntryId { get; init; }
     public string Title { get; init; } = "";
     public string Subtitle { get; init; } = "";
+    public ImageSource? Thumbnail { get; init; }
 
     public static EntryViewModel From(EntryRow row) => new()
     {
-        EntryId = row.Id,
-        Title   = row.Title ?? KindLabel(row.Kind),
-        Subtitle = $"{row.AppName ?? "?"} · {FormatTime(row.CreatedAt)} · {row.Kind}",
+        EntryId   = row.Id,
+        Title     = row.Title ?? KindLabel(row.Kind),
+        Subtitle  = $"{row.AppName ?? "?"} · {FormatTime(row.CreatedAt)} · {row.Kind}",
+        Thumbnail = ThumbnailFrom(row.ThumbSmall),
     };
+
+    private static ImageSource? ThumbnailFrom(byte[]? bytes)
+    {
+        if (bytes is null || bytes.Length == 0) return null;
+        try
+        {
+            var img = new BitmapImage();
+            var stream = new InMemoryRandomAccessStream();
+            using (var writer = new DataWriter(stream))
+            {
+                writer.WriteBytes(bytes);
+                writer.StoreAsync().AsTask().GetAwaiter().GetResult();
+                writer.DetachStream();
+            }
+            stream.Seek(0);
+            img.SetSource(stream);
+            return img;
+        }
+        catch
+        {
+            return null;
+        }
+    }
 
     private static string KindLabel(string kind) => kind switch
     {

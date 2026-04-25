@@ -14,10 +14,17 @@
                   SelectionMode="Single">
             <ListView.ItemTemplate>
                 <DataTemplate x:DataType="local:EntryViewModel">
-                    <StackPanel Orientation="Vertical" Margin="0,4">
-                        <TextBlock Text="{x:Bind Title}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
-                        <TextBlock Text="{x:Bind Subtitle}" Opacity="0.6" FontSize="12" TextTrimming="CharacterEllipsis"/>
-                    </StackPanel>
+                    <Grid ColumnDefinitions="48,*" ColumnSpacing="10" Margin="0,4">
+                        <Border Width="48" Height="48"
+                                Background="{ThemeResource SubtleFillColorSecondaryBrush}"
+                                CornerRadius="4">
+                            <Image Source="{x:Bind Thumbnail}" Stretch="UniformToFill"/>
+                        </Border>
+                        <StackPanel Grid.Column="1" Orientation="Vertical" VerticalAlignment="Center">
+                            <TextBlock Text="{x:Bind Title}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
+                            <TextBlock Text="{x:Bind Subtitle}" Opacity="0.6" FontSize="12" TextTrimming="CharacterEllipsis"/>
+                        </StackPanel>
+                    </Grid>
                 </DataTemplate>
             </ListView.ItemTemplate>
         </ListView>

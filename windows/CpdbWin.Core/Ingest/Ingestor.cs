@@ -69,8 +69,46 @@ public sealed class Ingestor
 
         InsertFts(tx, entryId, title, preview, sourceApp?.Name);
 
+        if (kind == "image")
+        {
+            var imageBytes = FindImageFlavorBytes(snapshot.Flavors);
+            if (imageBytes is not null)
+            {
+                var thumbs = Thumbnailer.Generate(imageBytes);
+                if (thumbs.Small is not null || thumbs.Large is not null)
+                    UpsertPreview(tx, entryId, thumbs.Small, thumbs.Large);
+            }
+        }
+
         tx.Commit();
         return new IngestOutcome(IngestKind.Inserted, entryId);
+    }
+
+    private static byte[]? FindImageFlavorBytes(IReadOnlyList<CanonicalHash.Flavor> flavors)
+    {
+        // Prefer PNG (lossless); fall back to JPEG. Both are what the
+        // capture pipeline produces, so one of them is present whenever
+        // KindClassifier returned "image".
+        foreach (var f in flavors)
+            if (f.Uti == "public.png" && f.Data.Length >= 1024) return f.Data.ToArray();
+        foreach (var f in flavors)
+            if (f.Uti == "public.jpeg" && f.Data.Length >= 1024) return f.Data.ToArray();
+        return null;
+    }
+
+    private void UpsertPreview(SqliteTransaction tx, long entryId, byte[]? small, byte[]? large)
+    {
+        using var cmd = _db.CreateCommand();
+        cmd.Transaction = tx;
+        cmd.CommandText = """
+            INSERT INTO previews(entry_id, thumb_small, thumb_large)
+            VALUES($id, $s, $l)
+            ON CONFLICT(entry_id) DO UPDATE SET thumb_small=$s, thumb_large=$l
+            """;
+        cmd.Parameters.AddWithValue("$id", entryId);
+        cmd.Parameters.AddWithValue("$s", (object?)small ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$l", (object?)large ?? DBNull.Value);
+        cmd.ExecuteNonQuery();
     }
 
     // --- queries ---
