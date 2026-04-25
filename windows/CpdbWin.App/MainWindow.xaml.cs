@@ -27,8 +27,10 @@ public sealed partial class MainWindow : Window
     private int _cursorIndex = -1;
 
     [DllImport("user32.dll")] private static extern short GetKeyState(int vKey);
-    private const int VK_SHIFT = 0x10;
-    private static bool IsShiftDown() => (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+    private const int VK_SHIFT   = 0x10;
+    private const int VK_CONTROL = 0x11;
+    private static bool IsShiftDown() => (GetKeyState(VK_SHIFT)   & 0x8000) != 0;
+    private static bool IsCtrlDown()  => (GetKeyState(VK_CONTROL) & 0x8000) != 0;
 
     public MainWindow(AppHost host)
     {
@@ -57,11 +59,15 @@ public sealed partial class MainWindow : Window
         };
 
         // Whenever the window is shown, focus the search box so keyboard
-        // users can type-to-filter without grabbing the mouse.
+        // users can type-to-filter without grabbing the mouse, and reset
+        // the keyboard cursor / shift anchor so a stale state from a
+        // previous session doesn't surface.
         this.Activated += (_, _) =>
         {
             SearchBox.Focus(FocusState.Programmatic);
             SearchBox.SelectAll();
+            _cursorIndex = -1;
+            _shiftAnchor = -1;
         };
 
         Refresh();
@@ -132,15 +138,35 @@ public sealed partial class MainWindow : Window
 
     private void EntryList_ItemClick(object sender, ItemClickEventArgs e)
     {
-        if (e.ClickedItem is EntryViewModel vm)
+        if (e.ClickedItem is not EntryViewModel vm) return;
+        int idx = EntryList.Items.IndexOf(vm);
+        if (idx < 0) return;
+
+        // IsItemClickEnabled fires ItemClick on every click — including
+        // Shift- and Ctrl-modified ones — and suppresses the framework's
+        // default selection-extension. Drive the multi-select gestures
+        // ourselves, and only activate (paste-back + hide) on a plain click.
+        if (IsShiftDown())
         {
-            // A click anchors the cursor at the clicked row and resets any
-            // pending shift-extend so the next keyboard nav starts fresh.
-            int idx = EntryList.Items.IndexOf(vm);
-            if (idx >= 0) _cursorIndex = idx;
-            _shiftAnchor = -1;
-            ActivateEntry(vm);
+            if (_shiftAnchor < 0) _shiftAnchor = idx;
+            ExtendSelection(_shiftAnchor, idx);
+            _cursorIndex = idx;
+            return;
         }
+        if (IsCtrlDown())
+        {
+            if (EntryList.SelectedItems.Contains(vm))
+                EntryList.SelectedItems.Remove(vm);
+            else
+                EntryList.SelectedItems.Add(vm);
+            _shiftAnchor = idx;
+            _cursorIndex = idx;
+            return;
+        }
+
+        _shiftAnchor = idx;
+        _cursorIndex = idx;
+        ActivateEntry(vm);
     }
 
     private void EntryList_SelectionChanged(object sender, SelectionChangedEventArgs e)
