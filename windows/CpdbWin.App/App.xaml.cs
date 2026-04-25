@@ -1,4 +1,6 @@
+using System.Runtime.InteropServices;
 using Microsoft.UI.Xaml;
+using WinRT.Interop;
 
 namespace CpdbWin.App;
 
@@ -58,8 +60,52 @@ public partial class App : Application
     {
         if (_mainWindow is null) return;
         _mainWindow.AppWindow.Show();
+
+        // WinUI's Window.Activate() doesn't reliably steal the foreground
+        // when called from a background-thread event (tray click /
+        // WM_HOTKEY) — Windows' foreground rules block silent z-order
+        // changes from non-foreground processes. The portable workaround
+        // is the AttachThreadInput trick: temporarily attach our input
+        // queue to the current foreground window's thread so the focus
+        // transition counts as "from the same input context."
+        var hwnd = WindowNative.GetWindowHandle(_mainWindow);
+        ForceForeground(hwnd);
         _mainWindow.Activate();
     }
+
+    private static void ForceForeground(IntPtr hwnd)
+    {
+        var thisThread = GetCurrentThreadId();
+        var fg = GetForegroundWindow();
+        uint fgThread = fg != IntPtr.Zero ? GetWindowThreadProcessId(fg, IntPtr.Zero) : 0;
+
+        bool attached = false;
+        if (fgThread != 0 && fgThread != thisThread)
+            attached = AttachThreadInput(fgThread, thisThread, true);
+
+        try
+        {
+            ShowWindow(hwnd, SW_RESTORE);
+            SetForegroundWindow(hwnd);
+            SetActiveWindow(hwnd);
+            SetFocus(hwnd);
+        }
+        finally
+        {
+            if (attached) AttachThreadInput(fgThread, thisThread, false);
+        }
+    }
+
+    private const int SW_RESTORE = 9;
+
+    [DllImport("kernel32.dll")] private static extern uint GetCurrentThreadId();
+    [DllImport("user32.dll")]   private static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")]   private static extern uint GetWindowThreadProcessId(IntPtr hWnd, IntPtr processId);
+    [DllImport("user32.dll")]   private static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
+    [DllImport("user32.dll")]   private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+    [DllImport("user32.dll")]   private static extern bool SetForegroundWindow(IntPtr hWnd);
+    [DllImport("user32.dll")]   private static extern IntPtr SetActiveWindow(IntPtr hWnd);
+    [DllImport("user32.dll")]   private static extern IntPtr SetFocus(IntPtr hWnd);
 
     private void QuitApp()
     {
