@@ -18,6 +18,13 @@ public sealed partial class MainWindow : Window
     private readonly AppHost _host;
     /// <summary>Anchor for Shift+arrow extension when typing in the search box.</summary>
     private int _shiftAnchor = -1;
+    /// <summary>
+    /// Keyboard-cursor position for nav from the search box. Decoupled from
+    /// <see cref="ListView.SelectedIndex"/> because that property collapses
+    /// to the first selected item once a range is selected, which would
+    /// trap repeated Shift+Down at length 2.
+    /// </summary>
+    private int _cursorIndex = -1;
 
     [DllImport("user32.dll")] private static extern short GetKeyState(int vKey);
     private const int VK_SHIFT = 0x10;
@@ -116,13 +123,24 @@ public sealed partial class MainWindow : Window
                 if (prevSelectedIds.Contains(vm.EntryId))
                     EntryList.SelectedItems.Add(vm);
         }
+        // Anchor the cursor on the most recent selection survivor so a
+        // post-refresh Shift+arrow extends from a sensible spot.
+        _cursorIndex = vms.Count == 0 ? -1 : EntryList.SelectedIndex;
     }
 
     private void SearchBox_TextChanged(object sender, TextChangedEventArgs e) => Refresh();
 
     private void EntryList_ItemClick(object sender, ItemClickEventArgs e)
     {
-        if (e.ClickedItem is EntryViewModel vm) ActivateEntry(vm);
+        if (e.ClickedItem is EntryViewModel vm)
+        {
+            // A click anchors the cursor at the clicked row and resets any
+            // pending shift-extend so the next keyboard nav starts fresh.
+            int idx = EntryList.Items.IndexOf(vm);
+            if (idx >= 0) _cursorIndex = idx;
+            _shiftAnchor = -1;
+            ActivateEntry(vm);
+        }
     }
 
     private void EntryList_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -257,7 +275,9 @@ public sealed partial class MainWindow : Window
     private void SearchBox_KeyDown(object sender, KeyRoutedEventArgs e)
     {
         int count = EntryList.Items.Count;
-        int sel = EntryList.SelectedIndex;
+        // Read from our own cursor first; fall back to SelectedIndex for the
+        // initial Down-from-no-selection case.
+        int sel = _cursorIndex >= 0 ? _cursorIndex : EntryList.SelectedIndex;
         int newSel = sel;
 
         switch (e.Key)
@@ -332,6 +352,7 @@ public sealed partial class MainWindow : Window
             _shiftAnchor = -1;
             EntryList.SelectedIndex = newSel;
         }
+        _cursorIndex = newSel;
         EntryList.ScrollIntoView(EntryList.Items[newSel]);
     }
 
@@ -404,6 +425,7 @@ public sealed partial class MainWindow : Window
             : $"Deleted {vms.Count} entries";
         ShowDetailEmpty();
         _shiftAnchor = -1;
+        _cursorIndex = -1;
         Refresh();
     }
 
