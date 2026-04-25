@@ -1,0 +1,51 @@
+name: Windows tests
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'windows/**'
+      - 'docs/schema.md'
+      - '.github/workflows/windows-tests.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'windows/**'
+      - 'docs/schema.md'
+      - '.github/workflows/windows-tests.yml'
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: dotnet test
+    runs-on: windows-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('windows/**/*.csproj', 'windows/Directory.Build.props') }}
+          restore-keys: ${{ runner.os }}-nuget-
+
+      - name: Restore
+        run: dotnet restore windows/CpdbWin.sln
+
+      - name: Build
+        run: dotnet build windows/CpdbWin.sln --no-restore --configuration Debug
+
+      - name: Test
+        # Some tests touch the system clipboard (capture/paste-back round-trip)
+        # and the WinRT image codecs (DibToPng / Thumbnailer). The hosted
+        # windows-latest runner has both — no other clipboard manager is
+        # racing the suite, so the cleanup helper has nothing to scrub.
+        run: dotnet test windows/CpdbWin.sln --no-build --configuration Debug --logger "console;verbosity=normal"
