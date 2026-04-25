@@ -32,6 +32,11 @@ public static class UtiTranslator
         if (formatId == CF_UNICODETEXT)
             return new Translation("public.utf8-plain-text", DecodeUtf16LeWithNullTerm(raw));
 
+        if (formatId == CF_DIB || formatId == CF_DIBV5)
+            return DibToPng.Convert(raw) is { } png
+                ? new Translation("public.png", png)
+                : null;
+
         if (formatName is null) return null;
 
         return formatName switch
