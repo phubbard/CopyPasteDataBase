@@ -18,11 +18,13 @@ public sealed class Ingestor
 
     private readonly SqliteConnection _db;
     private readonly BlobStore _blobs;
+    private readonly IgnoredApps _ignored;
 
-    public Ingestor(SqliteConnection db, BlobStore blobs)
+    public Ingestor(SqliteConnection db, BlobStore blobs, IgnoredApps? ignored = null)
     {
         _db = db;
         _blobs = blobs;
+        _ignored = ignored ?? new IgnoredApps();
     }
 
     public IngestOutcome Ingest(
@@ -33,6 +35,10 @@ public sealed class Ingestor
     {
         if (snapshot.Flavors.Count == 0)
             return new IngestOutcome(IngestKind.Skipped, 0, "empty snapshot");
+
+        if (_ignored.ShouldIgnore(sourceApp))
+            return new IngestOutcome(IngestKind.Skipped, 0,
+                $"ignored app: {sourceApp!.Value.BundleId}");
 
         var hash = snapshot.ContentHash();
         var ts = (capturedAt ?? DateTimeOffset.UtcNow).ToUnixTimeMilliseconds() / 1000.0;
