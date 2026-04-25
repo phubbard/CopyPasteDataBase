@@ -79,6 +79,9 @@
             </Border>
         </Grid>
 
-        <TextBlock x:Name="StatusText" Grid.Row="2" Opacity="0.5" FontSize="11"/>
+        <Grid Grid.Row="2" ColumnDefinitions="*,Auto" ColumnSpacing="12">
+            <TextBlock x:Name="StatusText" Opacity="0.6" FontSize="11" TextTrimming="CharacterEllipsis"/>
+            <TextBlock x:Name="FooterText" Grid.Column="1" Opacity="0.4" FontSize="11"/>
+        </Grid>
     </Grid>
 </Window>

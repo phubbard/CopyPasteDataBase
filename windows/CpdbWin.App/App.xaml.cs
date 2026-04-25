@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using CpdbWin.Core;
 using Microsoft.UI.Xaml;
 using WinRT.Interop;
 
@@ -33,7 +34,7 @@ public partial class App : Application
 
         _tray = new TrayIcon
         {
-            Tooltip = "cpdb-win",
+            Tooltip = CpdbVersion.Full,
             AutoLaunchChecked = AutoLaunch.IsEnabled(),
         };
         _tray.Activated         += () => _mainWindow.DispatcherQueue.TryEnqueue(BringMainToFront);

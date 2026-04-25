@@ -5,5 +5,11 @@
     <LangVersion>latest</LangVersion>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <!--
+      Bumped on each user-visible release. CpdbVersion reads this back via
+      AssemblyInformationalVersionAttribute and surfaces it in the window
+      title, tray tooltip, and (later) preferences/About surface.
+    -->
+    <Version>1.0.0</Version>
   </PropertyGroup>
 </Project>

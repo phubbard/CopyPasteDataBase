@@ -183,4 +183,19 @@ public class EntryRepositoryTests : IDisposable
         _repo.TombstoneMany(Array.Empty<long>());
         Assert.Single(_repo.Recent());
     }
+
+    [Fact]
+    public void LiveCount_TracksLiveAndTombstoned()
+    {
+        Assert.Equal(0, _repo.LiveCount());
+
+        var a = _ingestor.Ingest(TextSnapshot("a"), null, _device).EntryId;
+        var b = _ingestor.Ingest(TextSnapshot("b"), null, _device).EntryId;
+        _ingestor.Ingest(TextSnapshot("c"), null, _device);
+        Assert.Equal(3, _repo.LiveCount());
+
+        _repo.Tombstone(a);
+        _repo.Tombstone(b);
+        Assert.Equal(1, _repo.LiveCount());
+    }
 }

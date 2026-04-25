@@ -81,6 +81,14 @@ public sealed class EntryRepository
         return rows;
     }
 
+    /// <summary>Total live entry count, used by the UI's "M of N" footer.</summary>
+    public long LiveCount()
+    {
+        using var cmd = _db.CreateCommand();
+        cmd.CommandText = "SELECT COUNT(*) FROM entries WHERE deleted_at IS NULL";
+        return (long)cmd.ExecuteScalar()!;
+    }
+
     /// <summary>Returns the large preview thumbnail (≤ 640 px JPEG) or null.</summary>
     public byte[]? GetThumbLarge(long entryId)
     {

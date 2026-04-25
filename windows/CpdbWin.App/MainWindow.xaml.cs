@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using System.Text;
+using CpdbWin.Core;
 using CpdbWin.Core.Capture;
 using CpdbWin.Core.Ingest;
 using CpdbWin.Core.Store;
@@ -35,7 +36,7 @@ public sealed partial class MainWindow : Window
     public MainWindow(AppHost host)
     {
         InitializeComponent();
-        Title = "cpdb-win";
+        Title = CpdbVersion.Full;
         _host = host;
         _host.Capture.Ingested += OnCaptureIngested;
         _host.Capture.Errored += OnCaptureErrored;
@@ -132,6 +133,21 @@ public sealed partial class MainWindow : Window
         // Anchor the cursor on the most recent selection survivor so a
         // post-refresh Shift+arrow extends from a sensible spot.
         _cursorIndex = vms.Count == 0 ? -1 : EntryList.SelectedIndex;
+
+        UpdateFooter(shown: vms.Count);
+    }
+
+    private void UpdateFooter(int shown)
+    {
+        long total;
+        try { total = _host.Entries.LiveCount(); }
+        catch { total = shown; }
+
+        string countLabel = string.IsNullOrWhiteSpace(SearchBox.Text) || total == shown
+            ? $"{total} {(total == 1 ? "entry" : "entries")}"
+            : $"{shown} of {total}";
+
+        FooterText.Text = $"{countLabel} · {CpdbVersion.Full}";
     }
 
     private void SearchBox_TextChanged(object sender, TextChangedEventArgs e) => Refresh();
