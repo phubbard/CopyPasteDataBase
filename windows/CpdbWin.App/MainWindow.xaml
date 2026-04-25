@@ -5,8 +5,7 @@
     <Grid Padding="12" RowDefinitions="Auto,*,Auto" RowSpacing="8">
         <TextBox x:Name="SearchBox"
                  PlaceholderText="Search clipboard history…"
-                 TextChanged="SearchBox_TextChanged"
-                 KeyDown="SearchBox_KeyDown"/>
+                 TextChanged="SearchBox_TextChanged"/>
 
         <Grid Grid.Row="1" ColumnDefinitions="2*,3*" ColumnSpacing="12">
             <ListView x:Name="EntryList"
@@ -14,7 +13,6 @@
                       IsItemClickEnabled="True"
                       ItemClick="EntryList_ItemClick"
                       SelectionChanged="EntryList_SelectionChanged"
-                      KeyDown="EntryList_KeyDown"
                       SelectionMode="Single">
                 <ListView.ItemTemplate>
                     <DataTemplate x:DataType="local:EntryViewModel">

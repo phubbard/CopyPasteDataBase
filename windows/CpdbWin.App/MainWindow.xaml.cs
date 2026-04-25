@@ -24,6 +24,15 @@ public sealed partial class MainWindow : Window
         _host.Capture.Ingested += OnCaptureIngested;
         _host.Capture.Errored += OnCaptureErrored;
 
+        // Use AddHandler with handledEventsToo so we still see KeyDown after
+        // TextBox / ListView mark it handled internally (Delete in TextBox
+        // is the immediate offender — its built-in handler can swallow it
+        // before the routed XAML attribute path fires).
+        SearchBox.AddHandler(UIElement.KeyDownEvent,
+            new KeyEventHandler(SearchBox_KeyDown), handledEventsToo: true);
+        EntryList.AddHandler(UIElement.KeyDownEvent,
+            new KeyEventHandler(EntryList_KeyDown), handledEventsToo: true);
+
         // Closing the X button hides the window instead of exiting the app
         // — capture must keep running. Use the tray menu's Quit to actually
         // shut down.
@@ -69,6 +78,12 @@ public sealed partial class MainWindow : Window
 
     private void Refresh()
     {
+        // Preserve selection across refreshes (e.g. when a new clipboard
+        // event fires between the user's keystrokes). Without this, Down →
+        // capture-Refresh → Delete would no-op because the selection went
+        // back to -1.
+        long? prevSelected = EntryList.SelectedItem is EntryViewModel cur ? cur.EntryId : null;
+
         var query = SearchBox.Text;
         IReadOnlyList<EntryRow> rows;
         try
@@ -83,7 +98,14 @@ public sealed partial class MainWindow : Window
             // rather than blanking the list.
             rows = _host.Entries.Recent();
         }
-        EntryList.ItemsSource = rows.Select(EntryViewModel.From).ToList();
+        var vms = rows.Select(EntryViewModel.From).ToList();
+        EntryList.ItemsSource = vms;
+
+        if (prevSelected is long id)
+        {
+            int idx = vms.FindIndex(v => v.EntryId == id);
+            if (idx >= 0) EntryList.SelectedIndex = idx;
+        }
     }
 
     private void SearchBox_TextChanged(object sender, TextChangedEventArgs e) => Refresh();
