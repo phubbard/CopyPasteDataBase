@@ -20,7 +20,9 @@ database.
 | **1.2.x** | On-device OCR (`.accurate`) + image classifier folded into FTS5 · scope toggles (text · OCR · tags) in popup · match-source badges · configurable OCR languages · password-manager blocklist with 5-second frontmost-app history | ✅ |
 | **1.3.x** | Quick Look previews (⌘Y or Space-when-empty) for text/image/file entries · single-window Finder-like model · optional "remember scroll position" across QL round-trips | ✅ |
 | **2.0.0** | CloudKit sync across Macs (Private DB custom zone, silent-push subscriptions, content-addressed CKRecord IDs) · full-fidelity flavor CKAsset sync · iCloud-mirrored OCR text + image tags + thumbnails · About window with live sync progress + library stats · Preferences iCloud pane (pause, reset, re-push) · multi-Mac deploy script · git-sha build IDs · app icon · bundle id rename `local.cpdb` → `net.phfactor.cpdb` with one-time data migration | ✅ |
-| 2.x | iOS companion (search + push-to-Mac via `ActionRequest` records), notarised build, garbage collection of v2.0 wire-format orphans on the CloudKit zone | ⏳ |
+| **2.5.x** | iOS companion app (search + Quick Look + push-to-Mac via `ActionRequest` · share-sheet · swipe-to-delete · live updates via silent push + scene-phase pull + BGAppRefreshTask + foreground poll · link badges + URL-shaped text reclassification · kind-filter chips) · Mac right-click context menu (Quick Look · Share · Delete) · single-entry delete + tombstone push · cross-device pull dedup (Universal-Clipboard echoes collapse) · event-driven push (`Ingestor` notification → immediate `pushPendingChanges`) · configurable safety-net poll interval (Preferences, 5 min – 24 h, default 15) · `cpdb dedupe` + `cpdb backfill-titles` cleanup commands | ✅ |
+| 2.6+ | Notarisation, App Store submission for the iOS companion, garbage collection of pre-v2.1 wire-format orphans on the CloudKit zone | ⏳ |
+| **cpdb-win 1.0** | Standalone Windows port — C# / .NET 8 / WinUI 3 with the same SQLite + FTS5 schema, `Windows.Media.Ocr`, MSIX install. No cross-device sync in v1; schema kept compatible (see [`docs/schema.md`](docs/schema.md)) so future sync paths stay open | ⏳ |
 
 ## Features
 
@@ -97,42 +99,52 @@ To build just the CLI:
 swift build -c release            # produces .build/release/cpdb-cli
 ```
 
-### iOS companion (2.x-dev)
+### iOS companion (2.5.x)
 
-A read-only iOS app (`Sources/CpdbiOS/`) that connects to the same
-CloudKit Private Database as the Macs and lets you search + view
-clipboard history on your phone. No capture on iOS; the device's
-clipboard never leaves your phone.
+A SwiftUI iPhone app (project at `iOS/cpdb/cpdb.xcodeproj`,
+sources at `iOS/cpdb/cpdb/`) that connects to the same CloudKit
+Private Database as your Macs. **iOS never captures**; the
+phone's clipboard stays on the phone. Build with Xcode and an
+iPhone destination — there's no SPM target, the iOS app is a
+real Xcode project consuming this repo as a Local Package
+(`CpdbShared` only).
 
-**Quick Start:**
-```sh
-# For simulator (no signing needed)
-./build-ios.sh simulator
+**What it does**
 
-# For physical device
-./build-ios.sh device --device-name "Your iPhone Name"
+- Search clipboard history with the same FTS5 + bm25 ranking as the
+  Mac. Kind-filter chips (Text · Link · Image · File · Color · Other)
+  mirror the Mac popup's classification.
+- Quick Look an entry — tap a row → detail view with full image,
+  inline tappable URL autolinking via `NSDataDetector`, OCR /
+  metadata.
+- **Push to Mac.** Pick a sibling Mac, tap the desktop-arrow icon —
+  iOS writes an `ActionRequest` CKRecord, the targeted Mac's syncer
+  consumes it on the next pull and writes the entry's full
+  multi-flavor payload to its `NSPasteboard`. Press ⌘V on that Mac.
+- **Share-sheet** for any entry (text / URL / image bytes routed
+  through SwiftUI `ShareLink` + Transferable).
+- **Swipe-to-delete.** Tombstones propagate to your Macs within
+  seconds via the iOS push path; blobs cleaned up later by `cpdb gc`.
+- **Live updates** — three independent paths feed the UI so
+  freshness doesn't depend on any single transport:
+  1. **Silent push** (CKDatabaseSubscription) — fastest when APNs
+     delivers; ms-to-seconds.
+  2. **Scene-phase pull** — every time the app becomes active.
+  3. **Foreground poll** — 30 s tick while the app is on-screen,
+     belt-and-braces against APNs throttling.
+  4. **`BGAppRefreshTask`** — iOS-granted background slot for
+     periodic catch-up when the app is backgrounded.
 
-# Or use Xcode
-open Package.swift            # or `xed .`
-# Xcode scheme: CpdbiOS   →   destination: an iPhone or simulator
-# ⌘R to run.
-```
+**One-time signing setup** (Apple Developer portal):
 
-**Setup Documentation:**
-- **[iOS Quick Start Guide](iOS-QUICK-START.md)** — Fast track for getting the app running
-- **[iOS Signing Setup Guide](iOS-SIGNING-SETUP.md)** — Detailed Apple Developer Portal configuration
+1. Register the bundle id `net.phfactor.cpdb.ios`.
+2. Enable iCloud (CloudKit) on it; select the existing
+   `iCloud.net.phfactor.cpdb` container shared with the Macs.
+3. Enable Push Notifications on the bundle id.
+4. Register your iPhone's UDID; regenerate the provisioning profile.
 
-**One-time setup:**
-1. Apple Developer → Identifiers: register `net.phfactor.cpdb.ios`
-2. Enable iCloud (CloudKit) with container `iCloud.net.phfactor.cpdb`
-3. Enable Push Notifications
-4. Register iOS device UDID, download provisioning profile
-5. See `iOS-SIGNING-SETUP.md` for step-by-step instructions
-
-**Current limitations:**
-- No push-to-Mac action yet
-- Copy-to-clipboard only writes plain-text; multi-flavor UIPasteboard round-trip is a follow-up
-- No background fetch; pulls run on foreground launch + pull-to-refresh
+Then in Xcode: open `iOS/cpdb/cpdb.xcodeproj`, pick your iPhone as
+the destination, ⌘R. Automatic signing handles the rest.
 
 ### Multi-Mac install (CloudKit sync, 2.0-dev)
 
@@ -159,6 +171,26 @@ launch of the remote, the app captures locally, subscribes to the
 shared CloudKit zone, and pulls your full history. Use the menu bar's
 **Pull from iCloud** item to force a drain if the periodic timer hasn't
 fired yet.
+
+### Windows (cpdb-win, in development)
+
+Two beta testers run Windows; cpdb-win v1 will be a **standalone**
+Windows clipboard manager — no cross-device sync in the first
+release, just the same single-machine experience the Mac app
+shipped with in 1.x. C# / .NET 8 / WinUI 3 / SQLite + FTS5 /
+`Windows.Media.Ocr` for OCR parity. MSIX install for local sideload.
+
+Schema parity with macOS/iOS is the strategic decision:
+[`docs/schema.md`](docs/schema.md) is the canonical reference for
+the on-disk SQLite shape, including the canonical `content_hash`
+algorithm and the Windows-clipboard-format → UTI translation
+table. Keeping new clients bit-compatible leaves every future sync
+path open (shared-folder log sync, self-hosted server, CloudKit Web
+Services, or plain `.sqlite` import/export).
+
+The Windows track will live under `windows/` once scaffolded. Mac
++ iOS development continues from this repo on macOS; Windows work
+runs from a Windows VM with its own Claude Code session.
 
 ## Usage
 
@@ -223,6 +255,16 @@ cpdb --version
 cpdb sync status                          # push-queue depth + last pull time
 cpdb sync push-once                       # drain one batch to CloudKit
 cpdb sync pull-once [--reset]             # pull all remote changes
+
+cpdb dedupe [--dry-run] [--window 5.0]    # collapse near-duplicate captures
+                                          #   (same kind + trimmed text within
+                                          #   window seconds). Tombstones
+                                          #   losers; pushes via CloudKit so
+                                          #   iOS / sibling Macs catch up.
+cpdb backfill-titles [--dry-run]          # fix entries whose title got stored
+                                          #   as a bare file:// URL (a v2.5.0–
+                                          #   2.5.2 regression for some
+                                          #   screenshot tools).
 ```
 
 ## Preferences
@@ -312,7 +354,8 @@ are not backfilled at import — run `cpdb analyze-images` afterwards.
 ```
 Sources/
 ├── cpdb/                    # CLI target (ArgumentParser)
-│   └── Commands/Sync.swift      cpdb sync {status,push-once,pull-once}
+│   └── Commands/                CLI subcommands incl. Sync, Dedupe,
+│                                BackfillTitles, AnalyzeImages, etc.
 ├── CpdbApp/                 # menu-bar app target (SwiftUI)
 │   ├── Popup/                   NSPanel + SwiftUI root
 │   │   └── Cards/                   per-kind renderers
@@ -342,9 +385,29 @@ Sources/
     ├── Restore/                 Restorer (legacy shim over PasteboardWriter)
     └── Import/                  PasteDbImporter + decoder + reader
 
-Tests/CpdbCoreTests/         # swift-testing — 69 tests covering CloudKit
-                             # mapper, syncer push + pull paths, and all
-                             # pre-existing store/search/analysis suites
+iOS/cpdb/                    # iOS companion app (Xcode project)
+├── cpdb.xcodeproj/              consumes this repo as a Local Package
+└── cpdb/                        SwiftUI sources
+    ├── CpdbiOSApp.swift             @main + UIApplicationDelegateAdaptor
+    ├── AppContainer.swift           bootstrap, syncer wiring, BG tasks
+    ├── SearchView.swift             root list + search + filter chips
+    ├── EntryRow.swift               list row + link badges
+    ├── EntryDetailView.swift        detail + share + push-to-Mac
+    ├── DevicePickerSheet.swift      target Mac picker
+    ├── FilterSheet.swift            kind multiselect + scope toggles
+    ├── AboutSheet.swift             version + library stats
+    ├── URLDetection.swift           shared URL helper (row + detail)
+    └── Info.plist                   real plist (BGTask + UIBackgroundModes)
+
+docs/schema.md               # canonical SQLite schema reference for the
+                             # Windows port — DDL, kind classification,
+                             # canonical content_hash algorithm, blob-store
+                             # spillover rule, FTS5 tokenizer chain.
+
+Tests/CpdbCoreTests/         # swift-testing — 87 tests covering CloudKit
+                             # mapper, syncer push + pull paths, action
+                             # request mapper, ingest / hash / search /
+                             # analysis suites
 
 Makefile                      # build-app / install-app / release / stamp-build
 scripts/make-icon.swift       # regenerate Contents/Resources/AppIcon.icns
