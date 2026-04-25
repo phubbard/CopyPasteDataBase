@@ -5,29 +5,54 @@
     <Grid Padding="12" RowDefinitions="Auto,*,Auto" RowSpacing="8">
         <TextBox x:Name="SearchBox"
                  PlaceholderText="Search clipboard history…"
-                 TextChanged="SearchBox_TextChanged"/>
+                 TextChanged="SearchBox_TextChanged"
+                 KeyDown="SearchBox_KeyDown"/>
 
-        <ListView x:Name="EntryList"
-                  Grid.Row="1"
-                  IsItemClickEnabled="True"
-                  ItemClick="EntryList_ItemClick"
-                  SelectionMode="Single">
-            <ListView.ItemTemplate>
-                <DataTemplate x:DataType="local:EntryViewModel">
-                    <Grid ColumnDefinitions="48,*" ColumnSpacing="10" Margin="0,4">
-                        <Border Width="48" Height="48"
-                                Background="{ThemeResource SubtleFillColorSecondaryBrush}"
-                                CornerRadius="4">
-                            <Image Source="{x:Bind Thumbnail}" Stretch="UniformToFill"/>
-                        </Border>
-                        <StackPanel Grid.Column="1" Orientation="Vertical" VerticalAlignment="Center">
-                            <TextBlock Text="{x:Bind Title}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
-                            <TextBlock Text="{x:Bind Subtitle}" Opacity="0.6" FontSize="12" TextTrimming="CharacterEllipsis"/>
-                        </StackPanel>
-                    </Grid>
-                </DataTemplate>
-            </ListView.ItemTemplate>
-        </ListView>
+        <Grid Grid.Row="1" ColumnDefinitions="2*,3*" ColumnSpacing="12">
+            <ListView x:Name="EntryList"
+                      Grid.Column="0"
+                      IsItemClickEnabled="True"
+                      ItemClick="EntryList_ItemClick"
+                      SelectionChanged="EntryList_SelectionChanged"
+                      KeyDown="EntryList_KeyDown"
+                      SelectionMode="Single">
+                <ListView.ItemTemplate>
+                    <DataTemplate x:DataType="local:EntryViewModel">
+                        <Grid ColumnDefinitions="48,*" ColumnSpacing="10" Margin="0,4">
+                            <Border Width="48" Height="48"
+                                    Background="{ThemeResource SubtleFillColorSecondaryBrush}"
+                                    CornerRadius="4">
+                                <Image Source="{x:Bind Thumbnail}" Stretch="UniformToFill"/>
+                            </Border>
+                            <StackPanel Grid.Column="1" Orientation="Vertical" VerticalAlignment="Center">
+                                <TextBlock Text="{x:Bind Title}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
+                                <TextBlock Text="{x:Bind Subtitle}" Opacity="0.6" FontSize="12" TextTrimming="CharacterEllipsis"/>
+                            </StackPanel>
+                        </Grid>
+                    </DataTemplate>
+                </ListView.ItemTemplate>
+            </ListView>
+
+            <Border Grid.Column="1"
+                    Background="{ThemeResource SubtleFillColorSecondaryBrush}"
+                    CornerRadius="4"
+                    Padding="12">
+                <Grid>
+                    <ScrollViewer x:Name="DetailTextScroll" Visibility="Collapsed">
+                        <TextBlock x:Name="DetailText"
+                                   TextWrapping="Wrap"
+                                   IsTextSelectionEnabled="True"
+                                   FontFamily="Consolas"/>
+                    </ScrollViewer>
+                    <Image x:Name="DetailImage" Visibility="Collapsed" Stretch="Uniform"/>
+                    <TextBlock x:Name="DetailEmpty"
+                               Text="Select an entry to preview"
+                               Opacity="0.5"
+                               HorizontalAlignment="Center"
+                               VerticalAlignment="Center"/>
+                </Grid>
+            </Border>
+        </Grid>
 
         <TextBlock x:Name="StatusText" Grid.Row="2" Opacity="0.5" FontSize="11"/>
     </Grid>

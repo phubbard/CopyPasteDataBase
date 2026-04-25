@@ -81,6 +81,16 @@ public sealed class EntryRepository
         return rows;
     }
 
+    /// <summary>Returns the large preview thumbnail (≤ 640 px JPEG) or null.</summary>
+    public byte[]? GetThumbLarge(long entryId)
+    {
+        using var cmd = _db.CreateCommand();
+        cmd.CommandText = "SELECT thumb_large FROM previews WHERE entry_id = $id";
+        cmd.Parameters.AddWithValue("$id", entryId);
+        var v = cmd.ExecuteScalar();
+        return v as byte[];
+    }
+
     /// <summary>
     /// Resolves a single flavor's bytes — either from the inline column or
     /// from the on-disk blob store. Returns null if the flavor doesn't exist.

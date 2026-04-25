@@ -98,6 +98,29 @@ public class IngestorThumbnailTests : IDisposable
     }
 
     [Fact]
+    public void GetThumbLarge_ReturnsBytesForImageEntries()
+    {
+        var png = BuildPng(400, 400);
+        var img = _ingestor.Ingest(
+            new ClipboardSnapshot(new[] { new CanonicalHash.Flavor("public.png", png) }),
+            null, _device);
+
+        var large = _repo.GetThumbLarge(img.EntryId);
+        Assert.NotNull(large);
+        Assert.Equal(0xFF, large![0]);
+        Assert.Equal(0xD8, large[1]);
+    }
+
+    [Fact]
+    public void GetThumbLarge_NullForTextEntries()
+    {
+        var txt = _ingestor.Ingest(
+            new ClipboardSnapshot(new[] { new CanonicalHash.Flavor("public.utf8-plain-text", "hi"u8.ToArray()) }),
+            null, _device);
+        Assert.Null(_repo.GetThumbLarge(txt.EntryId));
+    }
+
+    [Fact]
     public void Recent_ReturnsThumbSmall_OnlyForImageEntries()
     {
         var png = BuildPng(400, 400);

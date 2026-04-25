@@ -4,9 +4,11 @@ using CpdbWin.Core.Ingest;
 using CpdbWin.Core.Store;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
 using Windows.Storage.Streams;
+using Windows.System;
 
 namespace CpdbWin.App;
 
@@ -29,6 +31,14 @@ public sealed partial class MainWindow : Window
         {
             e.Handled = true;
             AppWindow.Hide();
+        };
+
+        // Whenever the window is shown, focus the search box so keyboard
+        // users can type-to-filter without grabbing the mouse.
+        this.Activated += (_, _) =>
+        {
+            SearchBox.Focus(FocusState.Programmatic);
+            SearchBox.SelectAll();
         };
 
         Refresh();
@@ -80,14 +90,131 @@ public sealed partial class MainWindow : Window
 
     private void EntryList_ItemClick(object sender, ItemClickEventArgs e)
     {
-        if (e.ClickedItem is not EntryViewModel vm) return;
+        if (e.ClickedItem is EntryViewModel vm) ActivateEntry(vm);
+    }
+
+    private void EntryList_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (EntryList.SelectedItem is EntryViewModel vm) ShowDetail(vm);
+        else                                             ShowDetailEmpty();
+    }
+
+    private void ShowDetailEmpty()
+    {
+        DetailEmpty.Visibility       = Visibility.Visible;
+        DetailTextScroll.Visibility  = Visibility.Collapsed;
+        DetailImage.Visibility       = Visibility.Collapsed;
+        DetailImage.Source           = null;
+    }
+
+    private void ShowDetail(EntryViewModel vm)
+    {
+        DetailEmpty.Visibility = Visibility.Collapsed;
+
+        // Image entries first — show the larger preview if we have one.
+        var thumb = _host.Entries.GetThumbLarge(vm.EntryId);
+        if (thumb is not null)
+        {
+            DetailImage.Source = LoadBitmap(thumb);
+            DetailImage.Visibility      = Visibility.Visible;
+            DetailTextScroll.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        // Text-shaped flavors next.
+        foreach (var uti in new[] { "public.utf8-plain-text", "public.url", "public.html" })
+        {
+            var bytes = _host.Entries.GetFlavorBytes(vm.EntryId, uti);
+            if (bytes is null) continue;
+            DetailText.Text = Encoding.UTF8.GetString(bytes);
+            DetailTextScroll.Visibility = Visibility.Visible;
+            DetailImage.Visibility      = Visibility.Collapsed;
+            DetailImage.Source          = null;
+            return;
+        }
+
+        DetailText.Text = "(no preview available)";
+        DetailTextScroll.Visibility = Visibility.Visible;
+        DetailImage.Visibility      = Visibility.Collapsed;
+    }
+
+    private static BitmapImage? LoadBitmap(byte[] bytes)
+    {
+        try
+        {
+            var img = new BitmapImage();
+            var stream = new InMemoryRandomAccessStream();
+            using (var writer = new DataWriter(stream))
+            {
+                writer.WriteBytes(bytes);
+                writer.StoreAsync().AsTask().GetAwaiter().GetResult();
+                writer.DetachStream();
+            }
+            stream.Seek(0);
+            img.SetSource(stream);
+            return img;
+        }
+        catch { return null; }
+    }
+
+    private void SearchBox_KeyDown(object sender, KeyRoutedEventArgs e)
+    {
+        switch (e.Key)
+        {
+            case VirtualKey.Down:
+                if (EntryList.Items.Count > 0)
+                {
+                    if (EntryList.SelectedIndex < 0) EntryList.SelectedIndex = 0;
+                    ((ListViewItem?)EntryList.ContainerFromIndex(EntryList.SelectedIndex))?.Focus(FocusState.Keyboard);
+                }
+                e.Handled = true;
+                break;
+            case VirtualKey.Enter:
+                var idx = EntryList.SelectedIndex >= 0 ? EntryList.SelectedIndex : 0;
+                if (EntryList.Items.Count > idx && EntryList.Items[idx] is EntryViewModel vm)
+                    ActivateEntry(vm);
+                e.Handled = true;
+                break;
+            case VirtualKey.Escape:
+                if (!string.IsNullOrEmpty(SearchBox.Text)) SearchBox.Text = "";
+                else AppWindow.Hide();
+                e.Handled = true;
+                break;
+        }
+    }
+
+    private void EntryList_KeyDown(object sender, KeyRoutedEventArgs e)
+    {
+        switch (e.Key)
+        {
+            case VirtualKey.Enter:
+                if (EntryList.SelectedItem is EntryViewModel vm)
+                {
+                    ActivateEntry(vm);
+                    e.Handled = true;
+                }
+                break;
+            case VirtualKey.Escape:
+                if (!string.IsNullOrEmpty(SearchBox.Text)) SearchBox.Text = "";
+                SearchBox.Focus(FocusState.Keyboard);
+                e.Handled = true;
+                break;
+        }
+    }
+
+    private void ActivateEntry(EntryViewModel vm)
+    {
         if (TryWriteFlavorByPriority(vm.EntryId))
+        {
             StatusText.Text = $"Copied #{vm.EntryId} to clipboard";
+            // Hide so the previous app reactivates and the user can paste
+            // immediately. Re-show via tray click or Ctrl+Shift+V.
+            AppWindow.Hide();
+        }
     }
 
     private bool TryWriteFlavorByPriority(long entryId)
     {
-        // Priority order matches what users typically want to paste.
         var text = _host.Entries.GetFlavorBytes(entryId, "public.utf8-plain-text");
         if (text is not null)
         {
