@@ -47,6 +47,11 @@ public sealed class AppHost : IDisposable
         if (!DbHelper.IsInitialized(db)) Schema.Initialize(db);
 
         var blobs = new BlobStore(paths.Blobs);
+
+        // Cheap startup sweep: caps the live entry count, hard-deletes
+        // 30-day-old tombstones, and removes blob files nothing references.
+        new Gc(db, blobs).Run();
+
         var ingestor = new Ingestor(db, blobs);
         var entries = new EntryRepository(db, blobs);
         var capture = new CaptureService(ingestor);
