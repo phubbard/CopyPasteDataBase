@@ -1,0 +1,27 @@
+<Window x:Class="CpdbWin.App.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="using:CpdbWin.App">
+    <Grid Padding="12" RowDefinitions="Auto,*,Auto" RowSpacing="8">
+        <TextBox x:Name="SearchBox"
+                 PlaceholderText="Search clipboard history…"
+                 TextChanged="SearchBox_TextChanged"/>
+
+        <ListView x:Name="EntryList"
+                  Grid.Row="1"
+                  IsItemClickEnabled="True"
+                  ItemClick="EntryList_ItemClick"
+                  SelectionMode="Single">
+            <ListView.ItemTemplate>
+                <DataTemplate x:DataType="local:EntryViewModel">
+                    <StackPanel Orientation="Vertical" Margin="0,4">
+                        <TextBlock Text="{x:Bind Title}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
+                        <TextBlock Text="{x:Bind Subtitle}" Opacity="0.6" FontSize="12" TextTrimming="CharacterEllipsis"/>
+                    </StackPanel>
+                </DataTemplate>
+            </ListView.ItemTemplate>
+        </ListView>
+
+        <TextBlock x:Name="StatusText" Grid.Row="2" Opacity="0.5" FontSize="11"/>
+    </Grid>
+</Window>
