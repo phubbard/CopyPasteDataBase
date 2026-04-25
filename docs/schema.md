@@ -278,14 +278,20 @@ Classification happens at capture time based on the set of UTIs
 present on the clipboard. The current rule hierarchy (first match
 wins):
 
-1. `public.url` present → `link`
-2. Any image UTI (`public.png`, `public.jpeg`, `public.tiff`,
+1. Any image UTI (`public.png`, `public.jpeg`, `public.tiff`,
    `public.heic`, `public.heif`, `public.image`) with ≥ 1024 bytes
    → `image`
+2. `public.url` present → `link`
 3. `public.file-url` present → `file`
 4. `com.apple.cocoa.pasteboard.color` or `public.color` → `color`
 5. Any plain-text flavor → `text`
 6. Otherwise → `other`
+
+The substantive-image rule wins over both `public.url` and
+`public.file-url`: browsers emit a source URL alongside "Copy image",
+and screenshot tools like CleanShot publish a file-url alongside the
+inline PNG. In both cases the image bytes are the payload, the URL
+is breadcrumb metadata.
 
 The 1024-byte image threshold exists so zero-byte placeholder
 flavors don't masquerade as the primary content (some apps
@@ -332,18 +338,24 @@ and as the on-wire record ID for CloudKit sync.
 Hex/base64 encoding is only used for logging and for filenames in
 the blob store — the column itself is always raw bytes.
 
-Test vectors (verify your implementation matches these):
+Test vectors. Confirmed identical on macOS (Swift `CanonicalHash.hash`)
+and Windows (C# `CanonicalHash.Compute`):
 
 | Input | `content_hash` (hex) |
 |---|---|
-| `[[{"public.utf8-plain-text", "hello"}]]` | `2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824` |
-| `[[{"public.utf8-plain-text", "hello"}, {"public.html", "<b>hello</b>"}]]` | *compute and pin once the Windows port has a hasher* |
+| `[[{"public.utf8-plain-text", "hello"}]]` | `b22187611777c1e9c84c3fdd054ed311a47d12f33cba6d1e7761bd3a7314073a` |
+| `[[{"public.utf8-plain-text", "hello"}, {"public.html", "<b>hello</b>"}]]` | `17a95cac0686665cfe5342a3a041d7afedfa4c14a59d6d3c6b7b53a4bf0ad85a` |
 
-(The first test vector is `sha256("hello")` — intentional: a single-flavor plain-text "hello" collapses to hashing just those 5 bytes after the UTI+len prefix if you single-item-prefix-skip.  In practice the separator and uti+len bytes change the hash, so re-derive carefully once you have a port; the macOS hasher is the source of truth.)
+These are the SHA-256 of the canonical byte stream above — *not*
+`sha256("hello")`; the uti+len prefix and `0x01` separator change
+every byte that goes into the digest. Re-derive locally with:
 
-⚠️ **Before shipping Windows**, derive both test vectors from the
-running macOS CLI (`cpdb` has a debug path for this) and pin them
-here so the Windows hasher can assert parity at test time.
+```
+printf 'public.utf8-plain-text\x00\x00\x00\x00\x00\x00\x00\x00\x05hello\x01' | shasum -a 256
+```
+
+Any new client must reproduce both vectors exactly before being
+trusted to write to the live content_hash unique index.
 
 ## Blob store — 256 KB spillover rule
 
