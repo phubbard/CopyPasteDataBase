@@ -3,18 +3,24 @@ using CpdbWin.Core.Capture;
 namespace CpdbWin.Core.Ingest;
 
 /// <summary>
-/// Pure flavor-set → <c>entries.kind</c>. Rules from docs/schema.md
-/// §Kind classification, first match wins:
+/// Pure flavor-set → <c>entries.kind</c>. First match wins:
 /// <list type="number">
-/// <item>public.url present → link</item>
 /// <item>Substantive image flavor (≥ 1024 bytes) → image</item>
+/// <item>public.url present → link</item>
 /// <item>public.file-url present → file</item>
 /// <item>color UTI present → color</item>
 /// <item>any plain-text flavor → text</item>
 /// <item>else → other</item>
 /// </list>
-/// The 1024-byte image threshold matters because some apps advertise empty
-/// image flavors as breadcrumbs alongside the real payload.
+/// The substantive-image rule wins over both <c>public.url</c> and
+/// <c>public.file-url</c>: browsers emit a source URL alongside "Copy
+/// image", and screenshot tools like CleanShot publish a file-url
+/// alongside the inline PNG. In both cases the image bytes are the
+/// payload; the URL is breadcrumb metadata.
+///
+/// The 1024-byte image threshold catches the inverse — apps that
+/// advertise empty image flavors alongside non-image content as
+/// breadcrumbs, where the image flavor is metadata, not the payload.
 /// </summary>
 public static class KindClassifier
 {
@@ -22,10 +28,10 @@ public static class KindClassifier
 
     public static string Classify(IReadOnlyList<CanonicalHash.Flavor> flavors)
     {
-        if (flavors.Any(f => f.Uti == "public.url")) return "link";
-        if (flavors.Any(IsSubstantiveImage))         return "image";
-        if (flavors.Any(f => f.Uti == "public.file-url")) return "file";
-        if (flavors.Any(IsColor))                    return "color";
+        if (flavors.Any(IsSubstantiveImage))                     return "image";
+        if (flavors.Any(f => f.Uti == "public.url"))             return "link";
+        if (flavors.Any(f => f.Uti == "public.file-url"))        return "file";
+        if (flavors.Any(IsColor))                                return "color";
         if (flavors.Any(f => f.Uti == "public.utf8-plain-text")) return "text";
         return "other";
     }

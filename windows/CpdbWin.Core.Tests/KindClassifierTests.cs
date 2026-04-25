@@ -24,6 +24,16 @@ public class KindClassifierTests
         }));
 
     [Fact]
+    public void Image_BeatsUrl_WhenSubstantive() =>
+        // Chrome "Copy image" — the source URL rides along, but the image
+        // bytes are the payload.
+        Assert.Equal("image", KindClassifier.Classify(new[]
+        {
+            F("public.url", "https://example.com/cat.png"),
+            F("public.png", KindClassifier.MinImageBytes),
+        }));
+
+    [Fact]
     public void Image_SubstantivePngCounts() =>
         Assert.Equal("image", KindClassifier.Classify(new[]
         {

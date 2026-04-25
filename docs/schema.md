@@ -278,14 +278,20 @@ Classification happens at capture time based on the set of UTIs
 present on the clipboard. The current rule hierarchy (first match
 wins):
 
-1. `public.url` present → `link`
-2. Any image UTI (`public.png`, `public.jpeg`, `public.tiff`,
+1. Any image UTI (`public.png`, `public.jpeg`, `public.tiff`,
    `public.heic`, `public.heif`, `public.image`) with ≥ 1024 bytes
    → `image`
+2. `public.url` present → `link`
 3. `public.file-url` present → `file`
 4. `com.apple.cocoa.pasteboard.color` or `public.color` → `color`
 5. Any plain-text flavor → `text`
 6. Otherwise → `other`
+
+The substantive-image rule wins over both `public.url` and
+`public.file-url`: browsers emit a source URL alongside "Copy image",
+and screenshot tools like CleanShot publish a file-url alongside the
+inline PNG. In both cases the image bytes are the payload, the URL
+is breadcrumb metadata.
 
 The 1024-byte image threshold exists so zero-byte placeholder
 flavors don't masquerade as the primary content (some apps
