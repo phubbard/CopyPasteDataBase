@@ -13,7 +13,7 @@
                       IsItemClickEnabled="True"
                       ItemClick="EntryList_ItemClick"
                       SelectionChanged="EntryList_SelectionChanged"
-                      SelectionMode="Single">
+                      SelectionMode="Extended">
                 <ListView.ItemTemplate>
                     <DataTemplate x:DataType="local:EntryViewModel">
                         <Grid ColumnDefinitions="48,*" ColumnSpacing="10" Margin="0,4">

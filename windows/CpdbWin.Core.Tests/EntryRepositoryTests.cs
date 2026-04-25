@@ -143,4 +143,44 @@ public class EntryRepositoryTests : IDisposable
     [Fact]
     public void GetFlavorBytes_NullForMissingEntry() =>
         Assert.Null(_repo.GetFlavorBytes(99999, "public.utf8-plain-text"));
+
+    [Fact]
+    public void TombstoneMany_SoftDeletesAllRequestedRows()
+    {
+        var ids = new List<long>();
+        for (int i = 0; i < 4; i++)
+            ids.Add(_ingestor.Ingest(TextSnapshot($"e-{i}"), null, _device).EntryId);
+
+        _repo.TombstoneMany(new[] { ids[0], ids[2] });
+
+        var alive = _repo.Recent().Select(r => r.Id).ToHashSet();
+        Assert.DoesNotContain(ids[0], alive);
+        Assert.Contains(ids[1], alive);
+        Assert.DoesNotContain(ids[2], alive);
+        Assert.Contains(ids[3], alive);
+    }
+
+    [Fact]
+    public void TombstoneMany_RemovesFtsRowsForAll()
+    {
+        var a = _ingestor.Ingest(TextSnapshot("dog walking notes"), null, _device).EntryId;
+        var b = _ingestor.Ingest(TextSnapshot("dog grooming tips"), null, _device).EntryId;
+        var c = _ingestor.Ingest(TextSnapshot("cat behaviour"),     null, _device).EntryId;
+
+        _repo.TombstoneMany(new[] { a, b });
+
+        // Searches that hit the tombstoned ones should now be empty.
+        Assert.Empty(_repo.Search("walking"));
+        Assert.Empty(_repo.Search("grooming"));
+        // The unaffected entry survives.
+        Assert.Single(_repo.Search("behaviour"));
+    }
+
+    [Fact]
+    public void TombstoneMany_EmptyInput_IsNoOp()
+    {
+        _ingestor.Ingest(TextSnapshot("untouched"), null, _device);
+        _repo.TombstoneMany(Array.Empty<long>());
+        Assert.Single(_repo.Recent());
+    }
 }

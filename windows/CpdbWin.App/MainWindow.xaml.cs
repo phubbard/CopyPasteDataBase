@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using System.Text;
 using CpdbWin.Core.Capture;
 using CpdbWin.Core.Ingest;
@@ -15,6 +16,12 @@ namespace CpdbWin.App;
 public sealed partial class MainWindow : Window
 {
     private readonly AppHost _host;
+    /// <summary>Anchor for Shift+arrow extension when typing in the search box.</summary>
+    private int _shiftAnchor = -1;
+
+    [DllImport("user32.dll")] private static extern short GetKeyState(int vKey);
+    private const int VK_SHIFT = 0x10;
+    private static bool IsShiftDown() => (GetKeyState(VK_SHIFT) & 0x8000) != 0;
 
     public MainWindow(AppHost host)
     {
@@ -78,11 +85,13 @@ public sealed partial class MainWindow : Window
 
     private void Refresh()
     {
-        // Preserve selection across refreshes (e.g. when a new clipboard
-        // event fires between the user's keystrokes). Without this, Down →
-        // capture-Refresh → Delete would no-op because the selection went
-        // back to -1.
-        long? prevSelected = EntryList.SelectedItem is EntryViewModel cur ? cur.EntryId : null;
+        // Preserve multi-selection across refreshes — clipboard events can
+        // fire between user keystrokes; without this, Down → capture-Refresh
+        // → Delete would no-op because the selection reset to empty.
+        var prevSelectedIds = EntryList.SelectedItems
+            .OfType<EntryViewModel>()
+            .Select(v => v.EntryId)
+            .ToHashSet();
 
         var query = SearchBox.Text;
         IReadOnlyList<EntryRow> rows;
@@ -101,10 +110,11 @@ public sealed partial class MainWindow : Window
         var vms = rows.Select(EntryViewModel.From).ToList();
         EntryList.ItemsSource = vms;
 
-        if (prevSelected is long id)
+        if (prevSelectedIds.Count > 0)
         {
-            int idx = vms.FindIndex(v => v.EntryId == id);
-            if (idx >= 0) EntryList.SelectedIndex = idx;
+            foreach (var vm in vms)
+                if (prevSelectedIds.Contains(vm.EntryId))
+                    EntryList.SelectedItems.Add(vm);
         }
     }
 
@@ -117,12 +127,25 @@ public sealed partial class MainWindow : Window
 
     private void EntryList_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (EntryList.SelectedItem is EntryViewModel vm) ShowDetail(vm);
-        else                                             ShowDetailEmpty();
+        var n = EntryList.SelectedItems.Count;
+        if (n == 0)                                                     ShowDetailEmpty();
+        else if (n == 1 && EntryList.SelectedItem is EntryViewModel vm) ShowDetail(vm);
+        else                                                            ShowDetailMulti(n);
+    }
+
+    private void ShowDetailMulti(int count)
+    {
+        DetailEmpty.Text = $"{count} entries selected · press Delete to remove";
+        DetailEmpty.Visibility       = Visibility.Visible;
+        DetailTextScroll.Visibility  = Visibility.Collapsed;
+        DetailImage.Visibility       = Visibility.Collapsed;
+        DetailImage.Source           = null;
+        ResetMeta();
     }
 
     private void ShowDetailEmpty()
     {
+        DetailEmpty.Text             = "Select an entry to preview";
         DetailEmpty.Visibility       = Visibility.Visible;
         DetailTextScroll.Visibility  = Visibility.Collapsed;
         DetailImage.Visibility       = Visibility.Collapsed;
@@ -270,17 +293,17 @@ public sealed partial class MainWindow : Window
                 e.Handled = true;
                 break;
             case VirtualKey.Enter:
-                int activate = sel >= 0 ? sel : 0;
-                if (count > activate && EntryList.Items[activate] is EntryViewModel vm)
+                if (EntryList.SelectedItems.Count == 1
+                    && EntryList.SelectedItem is EntryViewModel vm)
                     ActivateEntry(vm);
+                else if (sel < 0 && count > 0 && EntryList.Items[0] is EntryViewModel first)
+                    ActivateEntry(first);
                 e.Handled = true;
                 return;
             case VirtualKey.Delete:
-                // Repurpose Delete for "remove the highlighted list entry"
-                // when there is one — search-text editing uses Backspace.
-                if (sel >= 0 && count > sel && EntryList.Items[sel] is EntryViewModel del)
+                if (EntryList.SelectedItems.Count > 0)
                 {
-                    DeleteEntry(del);
+                    DeleteSelectedEntries();
                     e.Handled = true;
                 }
                 return;
@@ -290,14 +313,36 @@ public sealed partial class MainWindow : Window
                 e.Handled = true;
                 return;
             default:
+                _shiftAnchor = -1;  // any non-nav key resets the anchor
                 return;
         }
 
-        if (newSel != sel && newSel >= 0 && newSel < count)
+        if (newSel < 0 || newSel >= count) return;
+
+        if (IsShiftDown())
         {
-            EntryList.SelectedIndex = newSel;
-            EntryList.ScrollIntoView(EntryList.Items[newSel]);
+            // Shift held — extend the selection from the anchor (set on the
+            // first shift-arrow) to the new cursor.
+            if (_shiftAnchor < 0) _shiftAnchor = sel < 0 ? newSel : sel;
+            ExtendSelection(_shiftAnchor, newSel);
         }
+        else
+        {
+            // Plain navigation — single-select and reset the anchor.
+            _shiftAnchor = -1;
+            EntryList.SelectedIndex = newSel;
+        }
+        EntryList.ScrollIntoView(EntryList.Items[newSel]);
+    }
+
+    private void ExtendSelection(int anchor, int cursor)
+    {
+        int min = Math.Min(anchor, cursor);
+        int max = Math.Max(anchor, cursor);
+
+        EntryList.SelectedItems.Clear();
+        for (int i = min; i <= max; i++)
+            EntryList.SelectedItems.Add(EntryList.Items[i]);
     }
 
     private void EntryList_KeyDown(object sender, KeyRoutedEventArgs e)
@@ -305,16 +350,19 @@ public sealed partial class MainWindow : Window
         switch (e.Key)
         {
             case VirtualKey.Enter:
-                if (EntryList.SelectedItem is EntryViewModel vm)
+                // Only activate single selection — multi-select Enter is a
+                // no-op (avoids accidentally pasting one of N).
+                if (EntryList.SelectedItems.Count == 1
+                    && EntryList.SelectedItem is EntryViewModel vm)
                 {
                     ActivateEntry(vm);
                     e.Handled = true;
                 }
                 break;
             case VirtualKey.Delete:
-                if (EntryList.SelectedItem is EntryViewModel del)
+                if (EntryList.SelectedItems.Count > 0)
                 {
-                    DeleteEntry(del);
+                    DeleteSelectedEntries();
                     e.Handled = true;
                 }
                 break;
@@ -328,15 +376,34 @@ public sealed partial class MainWindow : Window
 
     private void DeleteMenuItem_Click(object sender, RoutedEventArgs e)
     {
+        // If the right-clicked row is part of a multi-selection, delete all
+        // of them; otherwise just the row that was clicked. This matches
+        // Explorer's behaviour for "Delete" on a contextual flyout.
         if (sender is FrameworkElement fe && fe.DataContext is EntryViewModel vm)
-            DeleteEntry(vm);
+        {
+            if (EntryList.SelectedItems.Contains(vm) && EntryList.SelectedItems.Count > 1)
+                DeleteSelectedEntries();
+            else
+                DeleteEntries(new[] { vm });
+        }
     }
 
-    private void DeleteEntry(EntryViewModel vm)
+    private void DeleteSelectedEntries()
     {
-        _host.Entries.Tombstone(vm.EntryId);
-        StatusText.Text = $"Deleted #{vm.EntryId}";
+        var vms = EntryList.SelectedItems.OfType<EntryViewModel>().ToList();
+        if (vms.Count == 0) return;
+        DeleteEntries(vms);
+    }
+
+    private void DeleteEntries(IReadOnlyList<EntryViewModel> vms)
+    {
+        if (vms.Count == 0) return;
+        _host.Entries.TombstoneMany(vms.Select(v => v.EntryId));
+        StatusText.Text = vms.Count == 1
+            ? $"Deleted #{vms[0].EntryId}"
+            : $"Deleted {vms.Count} entries";
         ShowDetailEmpty();
+        _shiftAnchor = -1;
         Refresh();
     }
 

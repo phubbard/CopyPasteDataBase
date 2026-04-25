@@ -115,24 +115,37 @@ public sealed class EntryRepository
     /// blob store keeps its bytes until <c>cpdb gc</c>.
     /// </summary>
     public void Tombstone(long entryId, DateTimeOffset? at = null)
+        => TombstoneMany(new[] { entryId }, at);
+
+    /// <summary>
+    /// Tombstone several entries inside one transaction. Cheaper than
+    /// looping <see cref="Tombstone"/> when the UI deletes multi-selected
+    /// rows.
+    /// </summary>
+    public void TombstoneMany(IEnumerable<long> entryIds, DateTimeOffset? at = null)
     {
         var ts = (at ?? DateTimeOffset.UtcNow).ToUnixTimeMilliseconds() / 1000.0;
 
         using var tx = _db.BeginTransaction();
-        using (var cmd = _db.CreateCommand())
+        using var update = _db.CreateCommand();
+        update.Transaction = tx;
+        update.CommandText = "UPDATE entries SET deleted_at=$t WHERE id=$id AND deleted_at IS NULL";
+        var pT = update.CreateParameter(); pT.ParameterName = "$t"; pT.Value = ts;
+        var pId = update.CreateParameter(); pId.ParameterName = "$id";
+        update.Parameters.Add(pT); update.Parameters.Add(pId);
+
+        using var fts = _db.CreateCommand();
+        fts.Transaction = tx;
+        fts.CommandText = "DELETE FROM entries_fts WHERE rowid=$id";
+        var pFts = fts.CreateParameter(); pFts.ParameterName = "$id";
+        fts.Parameters.Add(pFts);
+
+        foreach (var id in entryIds)
         {
-            cmd.Transaction = tx;
-            cmd.CommandText = "UPDATE entries SET deleted_at=$t WHERE id=$id AND deleted_at IS NULL";
-            cmd.Parameters.AddWithValue("$t", ts);
-            cmd.Parameters.AddWithValue("$id", entryId);
-            cmd.ExecuteNonQuery();
-        }
-        using (var cmd = _db.CreateCommand())
-        {
-            cmd.Transaction = tx;
-            cmd.CommandText = "DELETE FROM entries_fts WHERE rowid=$id";
-            cmd.Parameters.AddWithValue("$id", entryId);
-            cmd.ExecuteNonQuery();
+            pId.Value = id;
+            update.ExecuteNonQuery();
+            pFts.Value = id;
+            fts.ExecuteNonQuery();
         }
         tx.Commit();
     }
