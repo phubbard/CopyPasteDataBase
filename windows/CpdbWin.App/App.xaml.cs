@@ -16,6 +16,7 @@ public partial class App : Application
     public static AppHost? Host { get; private set; }
     private MainWindow? _mainWindow;
     private TrayIcon? _tray;
+    private GlobalHotkey? _hotkey;
 
     public App()
     {
@@ -33,6 +34,15 @@ public partial class App : Application
         _tray.ShowRequested  += () => _mainWindow.DispatcherQueue.TryEnqueue(BringMainToFront);
         _tray.QuitRequested  += () => _mainWindow.DispatcherQueue.TryEnqueue(QuitApp);
         _tray.Start();
+
+        // Ctrl+Shift+V — system-wide. Win+V is owned by the OS clipboard
+        // history. If the hotkey is already taken by another app the
+        // RegisterHotKey call throws; swallow it so the rest of the app
+        // still launches.
+        _hotkey = new GlobalHotkey();
+        _hotkey.Pressed += () => _mainWindow.DispatcherQueue.TryEnqueue(BringMainToFront);
+        try { _hotkey.Start(); }
+        catch (InvalidOperationException) { _hotkey = null; }
     }
 
     private void BringMainToFront()
@@ -44,6 +54,7 @@ public partial class App : Application
 
     private void QuitApp()
     {
+        _hotkey?.Dispose();
         _tray?.Dispose();
         Host?.Dispose();
         Exit();
