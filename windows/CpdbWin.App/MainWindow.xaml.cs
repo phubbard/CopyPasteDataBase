@@ -18,6 +18,16 @@ public sealed partial class MainWindow : Window
         _host = host;
         _host.Capture.Ingested += OnCaptureIngested;
         _host.Capture.Errored += OnCaptureErrored;
+
+        // Closing the X button hides the window instead of exiting the app
+        // — capture must keep running. Use the tray menu's Quit to actually
+        // shut down.
+        this.Closed += (_, e) =>
+        {
+            e.Handled = true;
+            AppWindow.Hide();
+        };
+
         Refresh();
     }
 
