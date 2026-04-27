@@ -8,6 +8,11 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <RuntimeIdentifiers>win-x64;win-arm64</RuntimeIdentifiers>
     <EnableMsixTooling>true</EnableMsixTooling>
+    <!--
+      Disable the auto-generated XAML Main so we can hook Velopack's
+      install/update bootstrapper before WinUI starts (see Program.cs).
+    -->
+    <DefineConstants>$(DefineConstants);DISABLE_XAML_GENERATED_MAIN</DefineConstants>
   </PropertyGroup>
   <!--
     Publish profile: self-contained, single-file. Each `dotnet publish`
@@ -15,18 +20,24 @@
     so end users don't need to install the App Runtime separately. Pick a
     runtime via `dotnet publish -r win-x64` or `-r win-arm64`.
   -->
+  <!--
+    Publish profile defaults: self-contained (bundles .NET 8 runtime +
+    WindowsAppSDK so the user doesn't need either installed) but NOT
+    single-file. Velopack-built installers (build-installer.ps1) want a
+    folder of files so they can ship delta updates between versions; ad
+    hoc `dotnet publish -p:PublishSingleFile=true` still produces a one-
+    file exe for unscripted distribution.
+  -->
   <PropertyGroup Condition="'$(Configuration)' == 'Release'">
     <SelfContained>true</SelfContained>
     <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
-    <PublishSingleFile>true</PublishSingleFile>
-    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
-    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
     <DebugType>embedded</DebugType>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.5.240802000" />
     <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.22621.756" />
+    <PackageReference Include="Velopack" Version="0.0.1298" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\CpdbWin.Core\CpdbWin.Core.csproj" />

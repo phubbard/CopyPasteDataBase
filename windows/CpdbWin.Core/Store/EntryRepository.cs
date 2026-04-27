@@ -27,25 +27,37 @@ public sealed class EntryRepository
         LEFT JOIN previews p ON p.entry_id = e.id
         """;
 
-    /// <summary>Newest live entries first. <paramref name="limit"/> caps the row count.</summary>
-    public IReadOnlyList<EntryRow> Recent(int limit = 100)
+    /// <summary>
+    /// Newest live entries first. <paramref name="limit"/> caps the row count;
+    /// <paramref name="kind"/> narrows to a single <c>entries.kind</c>.
+    /// </summary>
+    public IReadOnlyList<EntryRow> Recent(int limit = 100, string? kind = null)
     {
         var sql = SelectEntryColumns + """
 
             WHERE e.deleted_at IS NULL
+              AND ($kind IS NULL OR e.kind = $kind)
             ORDER BY e.created_at DESC
             LIMIT $limit
             """;
-        return Query(sql, cmd => cmd.Parameters.AddWithValue("$limit", limit));
+        return Query(sql, cmd =>
+        {
+            cmd.Parameters.AddWithValue("$limit", limit);
+            cmd.Parameters.AddWithValue("$kind", (object?)kind ?? DBNull.Value);
+        });
     }
 
-    /// <summary>FTS5 MATCH against the <c>entries_fts</c> shadow table.</summary>
-    public IReadOnlyList<EntryRow> Search(string ftsQuery, int limit = 100)
+    /// <summary>
+    /// FTS5 MATCH against the <c>entries_fts</c> shadow table, optionally
+    /// narrowed to a single <c>entries.kind</c>.
+    /// </summary>
+    public IReadOnlyList<EntryRow> Search(string ftsQuery, int limit = 100, string? kind = null)
     {
         var sql = SelectEntryColumns + """
 
             JOIN entries_fts f ON f.rowid = e.id
             WHERE entries_fts MATCH $q AND e.deleted_at IS NULL
+              AND ($kind IS NULL OR e.kind = $kind)
             ORDER BY e.created_at DESC
             LIMIT $limit
             """;
@@ -53,6 +65,7 @@ public sealed class EntryRepository
         {
             cmd.Parameters.AddWithValue("$q", ftsQuery);
             cmd.Parameters.AddWithValue("$limit", limit);
+            cmd.Parameters.AddWithValue("$kind", (object?)kind ?? DBNull.Value);
         });
     }
 
@@ -79,6 +92,22 @@ public sealed class EntryRepository
             ));
         }
         return rows;
+    }
+
+    /// <summary>
+    /// Live entry count, optionally narrowed to a single kind. Used by the
+    /// UI's "M of N" footer.
+    /// </summary>
+    public long LiveCount(string? kind = null)
+    {
+        using var cmd = _db.CreateCommand();
+        cmd.CommandText = """
+            SELECT COUNT(*) FROM entries
+            WHERE deleted_at IS NULL
+              AND ($kind IS NULL OR kind = $kind)
+            """;
+        cmd.Parameters.AddWithValue("$kind", (object?)kind ?? DBNull.Value);
+        return (long)cmd.ExecuteScalar()!;
     }
 
     /// <summary>Returns the large preview thumbnail (≤ 640 px JPEG) or null.</summary>

@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using System.Text;
+using CpdbWin.Core;
 using CpdbWin.Core.Capture;
 using CpdbWin.Core.Ingest;
 using CpdbWin.Core.Store;
@@ -18,15 +19,24 @@ public sealed partial class MainWindow : Window
     private readonly AppHost _host;
     /// <summary>Anchor for Shift+arrow extension when typing in the search box.</summary>
     private int _shiftAnchor = -1;
+    /// <summary>
+    /// Keyboard-cursor position for nav from the search box. Decoupled from
+    /// <see cref="ListView.SelectedIndex"/> because that property collapses
+    /// to the first selected item once a range is selected, which would
+    /// trap repeated Shift+Down at length 2.
+    /// </summary>
+    private int _cursorIndex = -1;
 
     [DllImport("user32.dll")] private static extern short GetKeyState(int vKey);
-    private const int VK_SHIFT = 0x10;
-    private static bool IsShiftDown() => (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+    private const int VK_SHIFT   = 0x10;
+    private const int VK_CONTROL = 0x11;
+    private static bool IsShiftDown() => (GetKeyState(VK_SHIFT)   & 0x8000) != 0;
+    private static bool IsCtrlDown()  => (GetKeyState(VK_CONTROL) & 0x8000) != 0;
 
     public MainWindow(AppHost host)
     {
         InitializeComponent();
-        Title = "cpdb-win";
+        Title = CpdbVersion.Full;
         _host = host;
         _host.Capture.Ingested += OnCaptureIngested;
         _host.Capture.Errored += OnCaptureErrored;
@@ -50,11 +60,15 @@ public sealed partial class MainWindow : Window
         };
 
         // Whenever the window is shown, focus the search box so keyboard
-        // users can type-to-filter without grabbing the mouse.
+        // users can type-to-filter without grabbing the mouse, and reset
+        // the keyboard cursor / shift anchor so a stale state from a
+        // previous session doesn't surface.
         this.Activated += (_, _) =>
         {
             SearchBox.Focus(FocusState.Programmatic);
             SearchBox.SelectAll();
+            _cursorIndex = -1;
+            _shiftAnchor = -1;
         };
 
         Refresh();
@@ -85,6 +99,14 @@ public sealed partial class MainWindow : Window
 
     private void Refresh()
     {
+        // Guard against the InitializeComponent firing path: when XAML
+        // applies SelectedIndex="0" to the KindFilter ComboBox during
+        // base ctor, SelectionChanged runs before _host has been assigned
+        // by our constructor. Without this null check we'd dereference
+        // _host and bubble a NullReferenceException out through XAML
+        // parsing as a XamlParseException 0x802B000A.
+        if (_host is null) return;
+
         // Preserve multi-selection across refreshes — clipboard events can
         // fire between user keystrokes; without this, Down → capture-Refresh
         // → Delete would no-op because the selection reset to empty.
@@ -94,18 +116,19 @@ public sealed partial class MainWindow : Window
             .ToHashSet();
 
         var query = SearchBox.Text;
+        var kind = CurrentKindFilter();
         IReadOnlyList<EntryRow> rows;
         try
         {
             rows = string.IsNullOrWhiteSpace(query)
-                ? _host.Entries.Recent()
-                : _host.Entries.Search(query.Trim() + "*");  // prefix match
+                ? _host.Entries.Recent(kind: kind)
+                : _host.Entries.Search(query.Trim() + "*", kind: kind);
         }
         catch
         {
             // Bad FTS5 query (e.g. unbalanced quotes) — fall back to Recent
             // rather than blanking the list.
-            rows = _host.Entries.Recent();
+            rows = _host.Entries.Recent(kind: kind);
         }
         var vms = rows.Select(EntryViewModel.From).ToList();
         EntryList.ItemsSource = vms;
@@ -116,13 +139,80 @@ public sealed partial class MainWindow : Window
                 if (prevSelectedIds.Contains(vm.EntryId))
                     EntryList.SelectedItems.Add(vm);
         }
+        // Anchor the cursor on the most recent selection survivor so a
+        // post-refresh Shift+arrow extends from a sensible spot.
+        _cursorIndex = vms.Count == 0 ? -1 : EntryList.SelectedIndex;
+
+        UpdateFooter(shown: vms.Count);
+    }
+
+    private void UpdateFooter(int shown)
+    {
+        if (_host is null) return;
+        var kind = CurrentKindFilter();
+        long total;
+        try { total = _host.Entries.LiveCount(kind: kind); }
+        catch { total = shown; }
+
+        string countLabel = string.IsNullOrWhiteSpace(SearchBox.Text) || total == shown
+            ? $"{total} {(total == 1 ? "entry" : "entries")}"
+            : $"{shown} of {total}";
+
+        FooterText.Text = $"{countLabel} · {CpdbVersion.Full}";
+    }
+
+    private string? CurrentKindFilter()
+    {
+        if (KindFilter is null) return null;
+        if (KindFilter.SelectedItem is ComboBoxItem item
+            && item.Tag is string s
+            && !string.IsNullOrEmpty(s))
+            return s;
+        return null;
+    }
+
+    private void KindFilter_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        // Reset cursor / anchor on filter change — the rows are about to
+        // change shape so any previously valid index is suspect.
+        _cursorIndex = -1;
+        _shiftAnchor = -1;
+        Refresh();
     }
 
     private void SearchBox_TextChanged(object sender, TextChangedEventArgs e) => Refresh();
 
     private void EntryList_ItemClick(object sender, ItemClickEventArgs e)
     {
-        if (e.ClickedItem is EntryViewModel vm) ActivateEntry(vm);
+        if (e.ClickedItem is not EntryViewModel vm) return;
+        int idx = EntryList.Items.IndexOf(vm);
+        if (idx < 0) return;
+
+        // IsItemClickEnabled fires ItemClick on every click — including
+        // Shift- and Ctrl-modified ones — and suppresses the framework's
+        // default selection-extension. Drive the multi-select gestures
+        // ourselves, and only activate (paste-back + hide) on a plain click.
+        if (IsShiftDown())
+        {
+            if (_shiftAnchor < 0) _shiftAnchor = idx;
+            ExtendSelection(_shiftAnchor, idx);
+            _cursorIndex = idx;
+            return;
+        }
+        if (IsCtrlDown())
+        {
+            if (EntryList.SelectedItems.Contains(vm))
+                EntryList.SelectedItems.Remove(vm);
+            else
+                EntryList.SelectedItems.Add(vm);
+            _shiftAnchor = idx;
+            _cursorIndex = idx;
+            return;
+        }
+
+        _shiftAnchor = idx;
+        _cursorIndex = idx;
+        ActivateEntry(vm);
     }
 
     private void EntryList_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -257,7 +347,9 @@ public sealed partial class MainWindow : Window
     private void SearchBox_KeyDown(object sender, KeyRoutedEventArgs e)
     {
         int count = EntryList.Items.Count;
-        int sel = EntryList.SelectedIndex;
+        // Read from our own cursor first; fall back to SelectedIndex for the
+        // initial Down-from-no-selection case.
+        int sel = _cursorIndex >= 0 ? _cursorIndex : EntryList.SelectedIndex;
         int newSel = sel;
 
         switch (e.Key)
@@ -332,6 +424,7 @@ public sealed partial class MainWindow : Window
             _shiftAnchor = -1;
             EntryList.SelectedIndex = newSel;
         }
+        _cursorIndex = newSel;
         EntryList.ScrollIntoView(EntryList.Items[newSel]);
     }
 
@@ -404,6 +497,7 @@ public sealed partial class MainWindow : Window
             : $"Deleted {vms.Count} entries";
         ShowDetailEmpty();
         _shiftAnchor = -1;
+        _cursorIndex = -1;
         Refresh();
     }
 

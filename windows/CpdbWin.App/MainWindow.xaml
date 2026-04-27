@@ -3,9 +3,24 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:local="using:CpdbWin.App">
     <Grid Padding="12" RowDefinitions="Auto,*,Auto" RowSpacing="8">
-        <TextBox x:Name="SearchBox"
-                 PlaceholderText="Search clipboard history…"
-                 TextChanged="SearchBox_TextChanged"/>
+        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+            <TextBox x:Name="SearchBox"
+                     PlaceholderText="Search clipboard history…"
+                     TextChanged="SearchBox_TextChanged"/>
+            <ComboBox x:Name="KindFilter"
+                      Grid.Column="1"
+                      Width="120"
+                      SelectedIndex="0"
+                      SelectionChanged="KindFilter_SelectionChanged">
+                <ComboBoxItem Content="All"   Tag=""/>
+                <ComboBoxItem Content="Text"  Tag="text"/>
+                <ComboBoxItem Content="Link"  Tag="link"/>
+                <ComboBoxItem Content="Image" Tag="image"/>
+                <ComboBoxItem Content="File"  Tag="file"/>
+                <ComboBoxItem Content="Color" Tag="color"/>
+                <ComboBoxItem Content="Other" Tag="other"/>
+            </ComboBox>
+        </Grid>
 
         <Grid Grid.Row="1" ColumnDefinitions="2*,3*" ColumnSpacing="12">
             <ListView x:Name="EntryList"
@@ -79,6 +94,9 @@
             </Border>
         </Grid>
 
-        <TextBlock x:Name="StatusText" Grid.Row="2" Opacity="0.5" FontSize="11"/>
+        <Grid Grid.Row="2" ColumnDefinitions="*,Auto" ColumnSpacing="12">
+            <TextBlock x:Name="StatusText" Opacity="0.6" FontSize="11" TextTrimming="CharacterEllipsis"/>
+            <TextBlock x:Name="FooterText" Grid.Column="1" Opacity="0.4" FontSize="11"/>
+        </Grid>
     </Grid>
 </Window>

@@ -1,0 +1,28 @@
+<Window x:Class="CpdbWin.App.PreferencesWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Grid Padding="20" RowDefinitions="Auto,Auto,*,Auto" RowSpacing="14" MinWidth="420">
+        <TextBlock Text="Preferences" FontSize="20" FontWeight="SemiBold"/>
+
+        <StackPanel Grid.Row="1" Spacing="6">
+            <TextBlock Text="Global hotkey" FontWeight="SemiBold"/>
+            <TextBox x:Name="HotkeyBox"
+                     IsReadOnly="True"
+                     PlaceholderText="Click and press your combo…"
+                     GotFocus="HotkeyBox_GotFocus"
+                     LostFocus="HotkeyBox_LostFocus"
+                     KeyDown="HotkeyBox_KeyDown"/>
+            <TextBlock x:Name="HotkeyHint"
+                       FontSize="11"
+                       Opacity="0.6"
+                       Text="Pick a modifier (Ctrl / Alt / Shift / Win) plus a regular key. Win+V is owned by Windows clipboard history; pick something else."/>
+        </StackPanel>
+
+        <Grid Grid.Row="3" ColumnDefinitions="Auto,*,Auto,Auto" ColumnSpacing="8">
+            <Button Grid.Column="0" Content="Reset to default" Click="Reset_Click"/>
+            <Button Grid.Column="2" Content="Cancel"           Click="Cancel_Click"/>
+            <Button Grid.Column="3" Content="Save"             Click="Save_Click"
+                    Style="{StaticResource AccentButtonStyle}"/>
+        </Grid>
+    </Grid>
+</Window>

@@ -15,6 +15,7 @@ public sealed class TrayIcon : IDisposable
 {
     public event Action? Activated;
     public event Action? ShowRequested;
+    public event Action? PreferencesRequested;
     public event Action? QuitRequested;
     public event Action<bool>? AutoLaunchToggled;
 
@@ -43,7 +44,8 @@ public sealed class TrayIcon : IDisposable
 
     private const int IDM_SHOW         = 1001;
     private const int IDM_AUTO_LAUNCH  = 1002;
-    private const int IDM_QUIT         = 1003;
+    private const int IDM_PREFERENCES  = 1003;
+    private const int IDM_QUIT         = 1004;
 
     private static readonly IntPtr HWND_MESSAGE = new(-3);
 
@@ -159,6 +161,7 @@ public sealed class TrayIcon : IDisposable
     {
         var menu = Native.CreatePopupMenu();
         Native.AppendMenuW(menu, MF_STRING,                  (UIntPtr)IDM_SHOW,        "Show cpdb-win");
+        Native.AppendMenuW(menu, MF_STRING,                  (UIntPtr)IDM_PREFERENCES, "Preferences…");
         Native.AppendMenuW(menu, MF_STRING | (AutoLaunchChecked ? MF_CHECKED : 0),
                                                               (UIntPtr)IDM_AUTO_LAUNCH, "Launch on login");
         Native.AppendMenuW(menu, MF_SEPARATOR,                UIntPtr.Zero,             null);
@@ -178,6 +181,7 @@ public sealed class TrayIcon : IDisposable
             switch (cmd)
             {
                 case IDM_SHOW:        ShowRequested?.Invoke(); break;
+                case IDM_PREFERENCES: PreferencesRequested?.Invoke(); break;
                 case IDM_AUTO_LAUNCH: AutoLaunchToggled?.Invoke(!AutoLaunchChecked); break;
                 case IDM_QUIT:        QuitRequested?.Invoke(); break;
             }

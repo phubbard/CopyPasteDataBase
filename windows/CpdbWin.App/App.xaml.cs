@@ -1,4 +1,7 @@
 using System.Runtime.InteropServices;
+using CpdbWin.Core;
+using CpdbWin.Core.Service;
+using CpdbWin.Core.Store;
 using Microsoft.UI.Xaml;
 using WinRT.Interop;
 
@@ -17,8 +20,11 @@ public partial class App : Application
 {
     public static AppHost? Host { get; private set; }
     private MainWindow? _mainWindow;
+    private PreferencesWindow? _prefsWindow;
     private TrayIcon? _tray;
     private GlobalHotkey? _hotkey;
+    private UserSettings _settings = new();
+    private string _settingsPath = string.Empty;
 
     public App()
     {
@@ -28,32 +34,63 @@ public partial class App : Application
     protected override void OnLaunched(LaunchActivatedEventArgs args)
     {
         Host = AppHost.Bootstrap();
+        _settingsPath = Path.Combine(Host.Paths.Root, "settings.json");
+        _settings = UserSettings.Load(_settingsPath);
+
         _mainWindow = new MainWindow(Host);
         _mainWindow.Activate();
 
         _tray = new TrayIcon
         {
-            Tooltip = "cpdb-win",
+            Tooltip = $"{CpdbVersion.Full} — {HotkeyFormatter.Format(_settings.Hotkey)}",
             AutoLaunchChecked = AutoLaunch.IsEnabled(),
         };
-        _tray.Activated         += () => _mainWindow.DispatcherQueue.TryEnqueue(BringMainToFront);
-        _tray.ShowRequested     += () => _mainWindow.DispatcherQueue.TryEnqueue(BringMainToFront);
-        _tray.QuitRequested     += () => _mainWindow.DispatcherQueue.TryEnqueue(QuitApp);
-        _tray.AutoLaunchToggled += enabled =>
+        _tray.Activated            += () => _mainWindow.DispatcherQueue.TryEnqueue(BringMainToFront);
+        _tray.ShowRequested        += () => _mainWindow.DispatcherQueue.TryEnqueue(BringMainToFront);
+        _tray.PreferencesRequested += () => _mainWindow.DispatcherQueue.TryEnqueue(OpenPreferences);
+        _tray.QuitRequested        += () => _mainWindow.DispatcherQueue.TryEnqueue(QuitApp);
+        _tray.AutoLaunchToggled    += enabled =>
         {
             AutoLaunch.SetEnabled(enabled);
             _tray.AutoLaunchChecked = AutoLaunch.IsEnabled();
         };
         _tray.Start();
 
-        // Ctrl+Shift+V — system-wide. Win+V is owned by the OS clipboard
-        // history. If the hotkey is already taken by another app the
-        // RegisterHotKey call throws; swallow it so the rest of the app
-        // still launches.
-        _hotkey = new GlobalHotkey();
-        _hotkey.Pressed += () => _mainWindow.DispatcherQueue.TryEnqueue(BringMainToFront);
-        try { _hotkey.Start(); }
-        catch (InvalidOperationException) { _hotkey = null; }
+        RegisterHotkey(_settings.Hotkey);
+    }
+
+    private void RegisterHotkey(HotkeyConfig cfg)
+    {
+        _hotkey?.Dispose();
+        _hotkey = new GlobalHotkey { Modifiers = cfg.Modifiers, VirtualKey = cfg.VirtualKey };
+        _hotkey.Pressed += () => _mainWindow!.DispatcherQueue.TryEnqueue(BringMainToFront);
+        try
+        {
+            _hotkey.Start();
+        }
+        catch (InvalidOperationException)
+        {
+            // Combo already taken / OS-reserved — leave the listener null;
+            // the user will notice the hotkey doesn't work and can pick
+            // another via Preferences.
+            _hotkey = null;
+        }
+        // Tray tooltip only reflects the hotkey at launch time — updating
+        // the tray icon's text after Shell_NotifyIcon NIM_ADD requires
+        // NIM_MODIFY plumbing on the tray's message-pump thread, deferred.
+    }
+
+    private void OpenPreferences()
+    {
+        if (_prefsWindow is not null)
+        {
+            _prefsWindow.AppWindow.Show();
+            _prefsWindow.Activate();
+            return;
+        }
+        _prefsWindow = new PreferencesWindow(_settings, _settingsPath, RegisterHotkey);
+        _prefsWindow.Closed += (_, _) => _prefsWindow = null;
+        _prefsWindow.Activate();
     }
 
     private void BringMainToFront()

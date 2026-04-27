@@ -183,4 +183,70 @@ public class EntryRepositoryTests : IDisposable
         _repo.TombstoneMany(Array.Empty<long>());
         Assert.Single(_repo.Recent());
     }
+
+    [Fact]
+    public void LiveCount_TracksLiveAndTombstoned()
+    {
+        Assert.Equal(0, _repo.LiveCount());
+
+        var a = _ingestor.Ingest(TextSnapshot("a"), null, _device).EntryId;
+        var b = _ingestor.Ingest(TextSnapshot("b"), null, _device).EntryId;
+        _ingestor.Ingest(TextSnapshot("c"), null, _device);
+        Assert.Equal(3, _repo.LiveCount());
+
+        _repo.Tombstone(a);
+        _repo.Tombstone(b);
+        Assert.Equal(1, _repo.LiveCount());
+    }
+
+    private static ClipboardSnapshot LinkSnapshot(string url) =>
+        // Mirror what browsers put on the clipboard for "Copy link": both
+        // public.url and public.utf8-plain-text. The latter feeds FTS5; the
+        // former drives the link kind classification.
+        new(new[]
+        {
+            new CanonicalHash.Flavor("public.url", Encoding.UTF8.GetBytes(url)),
+            new CanonicalHash.Flavor("public.utf8-plain-text", Encoding.UTF8.GetBytes(url)),
+        });
+
+    [Fact]
+    public void LiveCount_FiltersByKind()
+    {
+        _ingestor.Ingest(TextSnapshot("text-a"), null, _device);
+        _ingestor.Ingest(TextSnapshot("text-b"), null, _device);
+        _ingestor.Ingest(LinkSnapshot("https://example.com"), null, _device);
+
+        Assert.Equal(3, _repo.LiveCount());
+        Assert.Equal(2, _repo.LiveCount(kind: "text"));
+        Assert.Equal(1, _repo.LiveCount(kind: "link"));
+        Assert.Equal(0, _repo.LiveCount(kind: "image"));
+    }
+
+    [Fact]
+    public void Recent_FiltersByKind()
+    {
+        var t = _ingestor.Ingest(TextSnapshot("plain text"), null, _device).EntryId;
+        var l = _ingestor.Ingest(LinkSnapshot("https://example.com"), null, _device).EntryId;
+
+        var textOnly = _repo.Recent(kind: "text");
+        Assert.Single(textOnly);
+        Assert.Equal(t, textOnly[0].Id);
+
+        var linkOnly = _repo.Recent(kind: "link");
+        Assert.Single(linkOnly);
+        Assert.Equal(l, linkOnly[0].Id);
+    }
+
+    [Fact]
+    public void Search_FiltersByKindOnTopOfFts()
+    {
+        _ingestor.Ingest(TextSnapshot("the quick brown fox"), null, _device);
+        _ingestor.Ingest(LinkSnapshot("brown.example.com"), null, _device);
+
+        // "brown" matches both, but a kind filter narrows to one.
+        Assert.Equal(2, _repo.Search("brown").Count);
+        Assert.Single(_repo.Search("brown", kind: "text"));
+        Assert.Single(_repo.Search("brown", kind: "link"));
+        Assert.Empty(_repo.Search("brown", kind: "image"));
+    }
 }
