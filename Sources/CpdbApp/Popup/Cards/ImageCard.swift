@@ -13,7 +13,7 @@ struct ImageCard: View {
     let row: EntryRepository.EntryRow
 
     var body: some View {
-        ZStack {
+        ZStack(alignment: .bottomLeading) {
             if let thumb = loadThumbnail() {
                 Image(nsImage: thumb)
                     .resizable()
@@ -31,7 +31,69 @@ struct ImageCard: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
+
+            // Source-domain overlay. Browser "Copy Image" actions
+            // ship a `public.url` flavor on the pasteboard alongside
+            // the image bytes — that becomes the entry's
+            // text_preview during ingest. Surfacing the host is a
+            // big visual anchor: "this image came from nytimes.com"
+            // is way more useful at a glance than the truncated
+            // image bytes alone. Skip when the preview isn't a
+            // recognisable URL (screenshots, in-app captures, etc.)
+            //
+            // Layout note: the overlay sits inside an explicit
+            // alignment frame so SwiftUI lays the capsule out as a
+            // fixed-position floating element instead of letting
+            // an unbounded host string blow past the card edge
+            // before truncation kicks in.
+            if let host = sourceDomain {
+                HStack(spacing: 4) {
+                    Image(systemName: "globe")
+                        .font(.system(size: 9, weight: .semibold))
+                    Text(host)
+                        .font(.system(size: 10, weight: .semibold, design: .rounded))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                .foregroundStyle(.white)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 3)
+                .background(
+                    Capsule()
+                        .fill(.black.opacity(0.55))
+                )
+                // Cap width so a long host (e.g.
+                // `encrypted-tbn0.gstatic.com`) wraps via the
+                // .truncationMode(.middle) above instead of pushing
+                // the whole capsule off-screen.
+                .frame(maxWidth: 220, alignment: .leading)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+                .padding(10)
+                .allowsHitTesting(false)
+                .help(row.entry.textPreview ?? host)
+            }
         }
+    }
+
+    /// Best-effort host extraction. `text_preview` for browser image
+    /// copies is the source URL (set by `Ingestor.deriveTitle` from
+    /// the pasteboard's `public.url` flavor when no plain-text
+    /// flavor is present). Strip the scheme and any leading `www.`
+    /// for a tighter visual.
+    private var sourceDomain: String? {
+        guard let raw = row.entry.textPreview?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              !raw.isEmpty,
+              let url = URL(string: raw),
+              let host = url.host,
+              !host.isEmpty
+        else { return nil }
+        // Drop a leading "www." — it's almost never useful and
+        // burns 4 chars in a tight overlay.
+        if host.hasPrefix("www."), host.count > 4 {
+            return String(host.dropFirst(4))
+        }
+        return host
     }
 
     /// Pulls the thumbnail blob from the `previews` table. This is main-

@@ -79,7 +79,9 @@ database.
 ## Building
 
 Requires Xcode (for `swift-testing`'s runtime framework and the `#Preview`
-macro plugin that `KeyboardShortcuts` uses). Apple Silicon, macOS 14+.
+macro plugin that `KeyboardShortcuts` uses). macOS 14+. Apple Silicon for
+fast dev iteration; release artefacts are universal (arm64 + x86_64) so
+Intel Macs work too.
 
 ```sh
 git clone git@github.com:phubbard/CopyPasteDataBase.git cpdb
@@ -93,11 +95,22 @@ popup-to-paste path also needs **Accessibility** permission
 (System Settings → Privacy & Security → Accessibility → enable cpdb) so
 the synthesised `⌘V` lands in the app you were using.
 
-To build just the CLI:
+To build just the CLI (host arch only):
 
 ```sh
 swift build -c release            # produces .build/release/cpdb-cli
 ```
+
+To build a universal CLI that runs on both Apple Silicon and Intel:
+
+```sh
+make UNIVERSAL=1 build-cli        # → .build/apple/Products/Release/cpdb-cli
+# or directly:
+swift build -c release --arch arm64 --arch x86_64 --product cpdb-cli
+```
+
+`make release` always builds universally — the published `.app.zip` and
+CLI binary on every GitHub release tag work on both architectures.
 
 ### iOS companion (2.5.x)
 

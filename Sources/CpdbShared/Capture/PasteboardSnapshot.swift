@@ -67,8 +67,18 @@ public struct PasteboardSnapshot: Sendable {
             }
         }
         // Fallback #1: a web URL carried without a text shadow.
+        // `public.url` is the standard cross-app convention, but
+        // Chromium-family browsers (Chrome, Brave, Edge, Arc) ship
+        // image copies with `org.chromium.source-url` instead and
+        // never advertise `public.url`. Treat both as equivalent —
+        // surfacing the source domain as text_preview is what
+        // drives the ImageCard's host badge.
+        let webUrlUTIs: Set<String> = [
+            "public.url",
+            "org.chromium.source-url",
+        ]
         for item in items {
-            for flavor in item.flavors where flavor.uti == "public.url" {
+            for flavor in item.flavors where webUrlUTIs.contains(flavor.uti) {
                 if let s = String(data: flavor.data, encoding: .utf8)?
                     .trimmingCharacters(in: .whitespacesAndNewlines),
                    !s.isEmpty

@@ -11,6 +11,25 @@ BUILD_DIR        = .build
 APP_BUNDLE_DIR   = $(BUILD_DIR)/app/$(APP_NAME).app
 RELEASE_DIR      = $(BUILD_DIR)/release-artifacts
 
+# Universal binary support. Set UNIVERSAL=1 to produce a single binary
+# slicing for both Apple Silicon and Intel — required for any beta
+# tester on an Intel Mac. The `release` target turns this on
+# automatically; for fast dev iteration `make build-app` /
+# `make build-cli` stay host-arch-only by default.
+#
+# Multi-arch swift-build emits to `.build/apple/Products/$(BUILD_CONFIG)/`
+# instead of `.build/$(BUILD_CONFIG)/`, hence the SWIFT_BUILD_OUTPUT_DIR
+# computation below — every cp/copy step downstream resolves against
+# this so we don't accidentally ship the host-arch slice.
+UNIVERSAL ?= 0
+ifeq ($(UNIVERSAL),1)
+SWIFT_ARCH_FLAGS    = --arch arm64 --arch x86_64
+SWIFT_BUILD_OUTPUT  = $(BUILD_DIR)/apple/Products/$(shell echo $(BUILD_CONFIG) | awk '{print toupper(substr($$0,1,1)) tolower(substr($$0,2))}')
+else
+SWIFT_ARCH_FLAGS    =
+SWIFT_BUILD_OUTPUT  = $(BUILD_DIR)/$(BUILD_CONFIG)
+endif
+
 # Source of truth for the version. Parsed out of Version.swift so every
 # Makefile target that cares (release zip filename, verify-version) stays
 # consistent without a separate VERSION file to drift against.
@@ -78,14 +97,14 @@ build-cli: stamp-build
 	# Xcode project consumes this repo as a Local Package. The
 	# shipped binary is still named `cpdb` — we rename on copy
 	# in `release` / install.
-	swift build -c $(BUILD_CONFIG) --product cpdb-cli
+	swift build -c $(BUILD_CONFIG) $(SWIFT_ARCH_FLAGS) --product cpdb-cli
 
 build-app: verify-version stamp-build
-	swift build -c $(BUILD_CONFIG) --product CpdbApp
+	swift build -c $(BUILD_CONFIG) $(SWIFT_ARCH_FLAGS) --product CpdbApp
 	rm -rf $(APP_BUNDLE_DIR)
 	mkdir -p $(APP_BUNDLE_DIR)/Contents/MacOS
 	mkdir -p $(APP_BUNDLE_DIR)/Contents/Resources
-	cp $(BUILD_DIR)/$(BUILD_CONFIG)/CpdbApp $(APP_BUNDLE_DIR)/Contents/MacOS/$(APP_NAME)
+	cp $(SWIFT_BUILD_OUTPUT)/CpdbApp $(APP_BUNDLE_DIR)/Contents/MacOS/$(APP_NAME)
 	# App icon. Generated from SF Symbols via `scripts/make-icon.swift`.
 	# CFBundleIconFile in Info.plist names "AppIcon" (no extension); the
 	# resource must live at Contents/Resources/AppIcon.icns.
@@ -107,7 +126,7 @@ build-app: verify-version stamp-build
 	#      a symlink there is enough to resolve the lookup.
 	# Also patch the SPM-stub Info.plist with CFBundleIdentifier +
 	# CFBundlePackageType so macOS Bundle(url:) accepts it.
-	@for b in $(BUILD_DIR)/$(BUILD_CONFIG)/*.bundle; do \
+	@for b in $(SWIFT_BUILD_OUTPUT)/*.bundle; do \
 	    if [ -d "$$b" ]; then \
 	        name=$$(basename "$$b" .bundle); \
 	        bundleName=$$(basename "$$b"); \
@@ -174,12 +193,22 @@ install-app: build-app
 # Package a release artefact: signed .app bundle zipped alongside the CLI
 # binary. Preserves symlinks/codesign via `ditto -c -k --keepParent` — the
 # only macOS-blessed way to zip an .app without breaking its signature.
-release: verify-version build-cli build-app
+#
+# Forces UNIVERSAL=1 so the released artefacts run on both Apple Silicon
+# and Intel — required for the Intel-Mac beta tester. We re-invoke make
+# rather than just setting UNIVERSAL inline so the dependent targets
+# (build-cli, build-app) pick the new arch flags up cleanly.
+release: verify-version
+	$(MAKE) UNIVERSAL=1 build-cli build-app
 	rm -rf $(RELEASE_DIR)
 	mkdir -p $(RELEASE_DIR)
 	/usr/bin/ditto -c -k --keepParent $(APP_BUNDLE_DIR) $(RELEASE_DIR)/cpdb-v$(VERSION).app.zip
-	cp $(BUILD_DIR)/$(BUILD_CONFIG)/cpdb-cli $(RELEASE_DIR)/cpdb
+	cp $(BUILD_DIR)/apple/Products/Release/cpdb-cli $(RELEASE_DIR)/cpdb
 	cd $(RELEASE_DIR) && shasum -a 256 cpdb-v$(VERSION).app.zip cpdb > SHA256SUMS
+	@echo
+	@echo "Architectures (must show both arm64 + x86_64):"
+	@lipo -archs $(RELEASE_DIR)/cpdb
+	@lipo -archs $(APP_BUNDLE_DIR)/Contents/MacOS/$(APP_NAME)
 	@echo
 	@echo "Release artefacts in $(RELEASE_DIR):"
 	@ls -la $(RELEASE_DIR)

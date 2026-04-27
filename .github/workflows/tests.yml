@@ -33,3 +33,24 @@ jobs:
         # cleanly on CI because the real Paste database isn't present —
         # that's expected and not a failure.
         run: swift test
+
+      # Universal binary build, gated on each main / PR push. Catches
+      # arch-specific regressions (arm64-only intrinsics, x86_64-only
+      # SIMD, etc.) before they reach a release. Builds CLI only —
+      # the menu-bar app needs CpdbApp's full bundle dance which is
+      # out of scope for the fast-feedback CI lane. The release
+      # workflow handles the full bundled artefact.
+      - name: Universal build (arm64 + x86_64)
+        run: |
+          swift build -c release --arch arm64 --arch x86_64 --product cpdb-cli
+          BIN=.build/apple/Products/Release/cpdb-cli
+          echo "lipo -archs:"
+          lipo -archs "$BIN"
+          # Hard-fail if either slice is missing.
+          ARCHS=$(lipo -archs "$BIN")
+          for a in arm64 x86_64; do
+            if ! echo "$ARCHS" | tr ' ' '\n' | grep -qx "$a"; then
+              echo "::error::missing $a slice in cpdb-cli (got: $ARCHS)"
+              exit 1
+            fi
+          done
