@@ -175,8 +175,12 @@ setup in Apple Developer:
 Then from your build machine:
 
 ```sh
-./deploy.sh hostname-a hostname-b …     # SSH-based; rebuild, scp .app, relaunch
+./deploy.sh hostname-a hostname-b …     # SSH-based; rebuild universal, scp .app, relaunch
 ```
+
+The script always builds universally (arm64 + x86_64) so the same
+bundle runs on Apple Silicon AND Intel hosts — no surprises when
+adding an Intel Mac to the fleet.
 
 Each remote Mac needs: same iCloud account signed in, SSH public-key
 access from the build machine, matching UDID in the profile. On first

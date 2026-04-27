@@ -26,6 +26,10 @@
 #   - Second and subsequent deploys replace the bundle in place; the
 #     local SQLite + blob store under
 #     ~/Library/Application Support/net.phfactor.cpdb/ is preserved.
+#   - We force UNIVERSAL=1 so the bundle works on both Apple Silicon
+#     and Intel hosts. About 30s extra build time, no other downside;
+#     better than discovering "bad CPU type" the first time you SSH
+#     into an Intel Mac.
 
 set -euo pipefail
 
@@ -41,8 +45,8 @@ TARBALL="/tmp/cpdb-deploy-$(date +%s).tar.gz"
 
 cd "$REPO_DIR"
 
-echo "==> building locally"
-DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer make install-app >/dev/null
+echo "==> building locally (universal)"
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer make UNIVERSAL=1 install-app >/dev/null
 
 if [[ ! -d "$APP_BUNDLE" ]]; then
     echo "error: $APP_BUNDLE not found after build" >&2
@@ -114,6 +118,6 @@ done
 
 rm -f "$TARBALL"
 echo
-echo "all hosts updated. first-time installs will pull ~8500 entries in the background."
+echo "all hosts updated. first-time installs pull your full history in the background."
 echo "drive sync from the menu bar (Sync Now / Pull from iCloud) or watch:"
 echo "    ssh <host> log stream --predicate 'subsystem == \"net.phfactor.cpdb\"' --level info"
