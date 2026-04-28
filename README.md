@@ -500,13 +500,19 @@ make publish                        # universal build, sign with Developer ID,
                                     #   build DMG, sign DMG, submit to Apple
                                     #   notary, wait, staple ticket. ~3-15 min.
 
-make publish-github                 # push main + create vX.Y.Z tag, refresh
-                                    #   SHA256SUMS, generate release notes
-                                    #   from `git log <prev-tag>..`, upload
-                                    #   .dmg / .app.zip / cpdb / SHA256SUMS
-                                    #   via gh. Idempotent — re-run replaces
-                                    #   assets and refreshes notes.
+make publish-github                 # cut CHANGELOG.md [Unreleased] →
+                                    #   [X.Y.Z], commit, push main + tag,
+                                    #   refresh SHA256SUMS, upload .dmg /
+                                    #   .app.zip / cpdb / SHA256SUMS via gh.
+                                    #   Idempotent.
 ```
+
+`CHANGELOG.md` keeps an `[Unreleased]` section at the top. Edit it
+freely between releases — what's in `[Unreleased]` is what ships in
+the next `make publish-github`. Bullets there usually come from
+commit messages but you can rewrite them for human readability.
+`scripts/cut-changelog.sh X.Y.Z --check` previews what the next
+release notes will look like without modifying the file.
 
 Prereqs (one-time setup, see Makefile comments):
 

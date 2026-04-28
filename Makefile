@@ -414,6 +414,14 @@ publish-github: verify-version
 	    exit 1; \
 	fi
 	@echo "  ✓ DMG present"
+	@echo "Cutting CHANGELOG.md [Unreleased] → [v$(VERSION)]…"
+	@notes=$$(scripts/cut-changelog.sh "$(VERSION)") && \
+	    body=$$(printf "## Changes\n\n%s\n\n## Artefacts\n\n- \`cpdb-v$(VERSION).dmg\` — signed, notarized, drag-to-Applications installer (universal arm64+x86_64)\n- \`cpdb-v$(VERSION).app.zip\` — same .app bundle, ditto-zipped (preserves codesign)\n- \`cpdb\` — universal CLI binary\n- \`SHA256SUMS\` — integrity\n" "$$notes") && \
+	    printf '%s\n' "$$body" > $(RELEASE_DIR)/.release-notes.md
+	@echo "  ✓ promoted [Unreleased] body to [v$(VERSION)] (CHANGELOG.md updated)"
+	@echo "Committing CHANGELOG.md…"
+	@git add CHANGELOG.md
+	@git commit -m "docs: changelog for v$(VERSION)" >/dev/null
 	@echo "Pushing main…"
 	@git push origin main
 	@echo "Tagging v$(VERSION)…"
@@ -422,18 +430,9 @@ publish-github: verify-version
 	else \
 	    git tag -a "v$(VERSION)" -m "v$(VERSION)" && git push origin "v$(VERSION)"; \
 	fi
-	@echo "Generating release notes…"
-	@prev_tag=$$(git describe --tags --abbrev=0 "v$(VERSION)^" 2>/dev/null || echo ""); \
-	    if [ -n "$$prev_tag" ]; then \
-	        echo "  range: $$prev_tag..v$(VERSION)"; \
-	        notes=$$(git log "$$prev_tag..v$(VERSION)" --pretty=format:"- %s" --no-merges); \
-	    else \
-	        echo "  range: (initial release — full log)"; \
-	        notes=$$(git log "v$(VERSION)" --pretty=format:"- %s" --no-merges); \
-	    fi; \
-	    body=$$(printf "## Changes\n\n%s\n\n## Artefacts\n\n- \`cpdb-v$(VERSION).dmg\` — signed, notarized, drag-to-Applications installer (universal arm64+x86_64)\n- \`cpdb-v$(VERSION).app.zip\` — same .app bundle, ditto-zipped (preserves codesign)\n- \`cpdb\` — universal CLI binary\n- \`SHA256SUMS\` — integrity\n\nCommit: $$(git rev-parse --short v$(VERSION))" "$$notes"); \
-	    echo "$$body" > $(RELEASE_DIR)/.release-notes.md; \
-	    cat $(RELEASE_DIR)/.release-notes.md
+	@echo "Release notes preview:"
+	@cat $(RELEASE_DIR)/.release-notes.md
+	@echo
 	@echo
 	@echo "Refreshing SHA256SUMS to cover all artefacts…"
 	@cd $(RELEASE_DIR) && shasum -a 256 cpdb-v$(VERSION).app.zip cpdb cpdb-v$(VERSION).dmg > SHA256SUMS
