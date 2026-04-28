@@ -1039,6 +1039,7 @@ public actor CloudKitSyncer {
             existing.ocrText     = d.ocrText
             existing.imageTags   = d.imageTags
             existing.analyzedAt  = d.analyzedAt
+            existing.pinned      = d.pinned
             try existing.update(db)
             try FtsIndex.indexEntry(
                 db: db,
@@ -1118,7 +1119,8 @@ public actor CloudKitSyncer {
                 deletedAt: d.deletedAt,
                 ocrText: d.ocrText,
                 imageTags: d.imageTags,
-                analyzedAt: d.analyzedAt
+                analyzedAt: d.analyzedAt,
+                pinned: d.pinned
             )
             try entry.insert(db)
             try FtsIndex.indexEntry(

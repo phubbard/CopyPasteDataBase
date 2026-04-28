@@ -276,5 +276,26 @@ enum Schema {
                 arguments: [now]
             )
         }
+
+        migrator.registerMigration("v6_pinned") { db in
+            // User-pinned entries skip future eviction policies (time-
+            // window, size-budget) and float to the top of the popup.
+            // Boolean-shaped INTEGER NOT NULL DEFAULT 0 keeps the
+            // column index-friendly. New rows default unpinned; the
+            // migration leaves all existing rows unpinned too.
+            try db.execute(sql: """
+                ALTER TABLE entries
+                ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0;
+            """)
+            // Partial index — pin queries are "give me the pinned
+            // ones", a tiny set, so a partial index over just those
+            // rows is much smaller than a full index on a near-zero
+            // column.
+            try db.execute(sql: """
+                CREATE INDEX idx_entries_pinned
+                    ON entries(created_at DESC)
+                    WHERE pinned = 1 AND deleted_at IS NULL;
+            """)
+        }
     }
 }

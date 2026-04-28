@@ -28,7 +28,7 @@ public extension Notification.Name {
 /// unit tests.
 public enum CpdbVersion {
     /// Marketing version. Human-editable source of truth.
-    public static let marketing = "2.5.10"
+    public static let marketing = "2.6.0"
 
     /// Marketing + git short-sha when the Makefile stamped the build,
     /// otherwise just `marketing`.

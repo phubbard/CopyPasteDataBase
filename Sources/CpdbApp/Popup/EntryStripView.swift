@@ -81,6 +81,19 @@ struct EntryStripView: View {
         }
 
         Button {
+            togglePin(row: row)
+        } label: {
+            // Pinned entries skip eviction policies and float to the
+            // top of the popup. Toggle action lets the same menu
+            // item Pin and Unpin without two separate items.
+            if row.entry.pinned {
+                Label("Unpin", systemImage: "pin.slash")
+            } else {
+                Label("Pin", systemImage: "pin")
+            }
+        }
+
+        Button {
             share(row: row)
         } label: {
             Label("Share…", systemImage: "square.and.arrow.up")
@@ -92,6 +105,26 @@ struct EntryStripView: View {
             delete(row: row)
         } label: {
             Label("Delete", systemImage: "trash")
+        }
+    }
+
+    /// Flip the entry's pin state and refresh the popup. The repo
+    /// also enqueues for CloudKit push, so the new state propagates
+    /// to iOS and sibling Macs.
+    private func togglePin(row: EntryRepository.EntryRow) {
+        guard let id = row.entry.id else { return }
+        let newState = !row.entry.pinned
+        let store = state.store
+        Task.detached {
+            do {
+                let repo = EntryRepository(store: store)
+                try repo.setPinned(id: id, pinned: newState)
+            } catch {
+                Log.cli.error(
+                    "pin toggle failed for entry id=\(id, privacy: .public): \(String(describing: error), privacy: .public)"
+                )
+            }
+            await MainActor.run { state.refresh() }
         }
     }
 

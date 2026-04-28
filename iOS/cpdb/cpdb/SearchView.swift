@@ -105,6 +105,24 @@ struct SearchView: View {
                                 Label("Delete", systemImage: "trash")
                             }
                         }
+                        // Swipe-right → Pin / Unpin. Pinned entries
+                        // skip eviction policies and float to the top
+                        // of the list. Same toggle as the Mac context
+                        // menu's Pin / Unpin item; CloudKit pushes
+                        // the new state to other devices.
+                        .swipeActions(edge: .leading, allowsFullSwipe: false) {
+                            Button {
+                                guard let id = row.entry.id else { return }
+                                Task { await togglePin(id: id, currentlyPinned: row.entry.pinned) }
+                            } label: {
+                                if row.entry.pinned {
+                                    Label("Unpin", systemImage: "pin.slash")
+                                } else {
+                                    Label("Pin", systemImage: "pin")
+                                }
+                            }
+                            .tint(.orange)
+                        }
                     }
                     if isLoadingMore {
                         HStack {
@@ -263,6 +281,23 @@ struct SearchView: View {
     /// After the DB write, kick a push so the tombstone propagates
     /// to the Mac and other devices right away instead of waiting
     /// for the next foreground poll.
+    /// Flip the entry's pin state. Same shape as deleteEntry —
+    /// run the DB write off-main, refresh, kick a push so the
+    /// other devices learn about it within seconds.
+    private func togglePin(id: Int64, currentlyPinned: Bool) async {
+        guard let store = container.store else { return }
+        do {
+            let repo = EntryRepository(store: store)
+            try await Task.detached {
+                try repo.setPinned(id: id, pinned: !currentlyPinned)
+            }.value
+            await runQuery()
+            await container.pushNow()
+        } catch {
+            print("[cpdb] pin toggle failed for id=\(id): \(error)")
+        }
+    }
+
     private func deleteEntry(id: Int64) async {
         guard let store = container.store else { return }
         do {

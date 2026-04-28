@@ -28,6 +28,9 @@ public struct Entry: Codable, FetchableRecord, MutablePersistableRecord, Hashabl
     public var ocrText: String?
     public var imageTags: String?     // comma-separated, lowercased
     public var analyzedAt: Double?    // NULL = never analysed; set even on empty results
+    /// User-pinned entries skip eviction policies and float to the top
+    /// of the popup. Stored as INTEGER 0/1 in SQLite. Defaults to false.
+    public var pinned: Bool = false
 
     public static let databaseTableName = "entries"
 
@@ -47,6 +50,7 @@ public struct Entry: Codable, FetchableRecord, MutablePersistableRecord, Hashabl
         case ocrText         = "ocr_text"
         case imageTags       = "image_tags"
         case analyzedAt      = "analyzed_at"
+        case pinned
     }
 
     public mutating func didInsert(_ inserted: InsertionSuccess) {
@@ -68,7 +72,8 @@ public struct Entry: Codable, FetchableRecord, MutablePersistableRecord, Hashabl
         deletedAt: Double? = nil,
         ocrText: String? = nil,
         imageTags: String? = nil,
-        analyzedAt: Double? = nil
+        analyzedAt: Double? = nil,
+        pinned: Bool = false
     ) {
         self.id = id
         self.uuid = uuid
@@ -85,6 +90,7 @@ public struct Entry: Codable, FetchableRecord, MutablePersistableRecord, Hashabl
         self.ocrText = ocrText
         self.imageTags = imageTags
         self.analyzedAt = analyzedAt
+        self.pinned = pinned
     }
 }
 

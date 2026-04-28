@@ -48,10 +48,23 @@ struct EntryRow: View {
                 .frame(width: 44, height: 44, alignment: .center)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(snippet)
-                    .font(.system(size: 14))
-                    .lineLimit(2)
-                    .foregroundStyle(.primary)
+                HStack(alignment: .top, spacing: 4) {
+                    if entry.pinned {
+                        // Inline pin glyph at the start of the
+                        // snippet so the eye lands on it before
+                        // reading. Tinted accent so it blends with
+                        // the kind icon's visual vocabulary.
+                        Image(systemName: "pin.fill")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(.tint)
+                            .padding(.top, 1)
+                            .accessibilityLabel("Pinned")
+                    }
+                    Text(snippet)
+                        .font(.system(size: 14))
+                        .lineLimit(2)
+                        .foregroundStyle(.primary)
+                }
                 HStack(spacing: 6) {
                     Text(Self.relative.localizedString(
                         for: Date(timeIntervalSince1970: entry.createdAt),

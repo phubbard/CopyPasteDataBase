@@ -97,6 +97,33 @@ struct EntryRecordMapperTests {
         #expect(decoded.deletedAt == entry.deletedAt)
     }
 
+    @Test("round-trip: pinned flag survives the wire trip")
+    func pinnedRoundTrip() throws {
+        var entry = fullEntry()
+        entry.pinned = true
+        let decoded = try roundTrip(entry, source: defaultSource())
+        #expect(decoded.pinned == true)
+
+        // And the unpinned default also round-trips correctly.
+        var unpinned = fullEntry()
+        unpinned.pinned = false
+        let decodedUnpinned = try roundTrip(unpinned, source: defaultSource())
+        #expect(decodedUnpinned.pinned == false)
+    }
+
+    @Test("decode: missing pinned field defaults to false (back-compat)")
+    func pinnedFieldMissingDefaults() throws {
+        // Simulate a pre-v2.6 record by populating manually without
+        // the pinned key. Decoded.pinned should default false.
+        let entry = fullEntry()
+        let id = EntryRecordMapper.recordID(forContentHash: entry.contentHash, in: Self.zone)
+        let record = CKRecord(recordType: CKSchema.RecordType.entry, recordID: id)
+        EntryRecordMapper.populate(record: record, entry: entry, source: defaultSource())
+        record[CKSchema.EntryField.pinned] = nil   // strip what populate set
+        let decoded = try EntryRecordMapper.decode(record)
+        #expect(decoded.pinned == false)
+    }
+
     @Test("round-trip covers every EntryKind")
     func everyKind() throws {
         for kind in EntryKind.allCases {

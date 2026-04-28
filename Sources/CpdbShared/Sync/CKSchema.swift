@@ -48,6 +48,11 @@ public enum CKSchema {
         public static let deviceName         = "deviceName"       // String
         public static let thumbSmall         = "thumbSmall"       // CKAsset?
         public static let thumbLarge         = "thumbLarge"       // CKAsset?
+        // v2.6: per-entry pin state. Stored as Int64 (0 / 1) on the
+        // wire — CKRecord doesn't have a native Bool type. Older
+        // clients that don't know about this field treat it as
+        // missing → unpinned, which is the safe default.
+        public static let pinned             = "pinned"           // Int64 (0 or 1)
     }
 
     public enum FlavorField {

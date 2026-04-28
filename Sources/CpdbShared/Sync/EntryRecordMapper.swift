@@ -79,6 +79,10 @@ public enum EntryRecordMapper {
         record[CKSchema.EntryField.sourceAppName]     = source.appName     as NSString?
         record[CKSchema.EntryField.deviceIdentifier]  = source.deviceIdentifier as NSString
         record[CKSchema.EntryField.deviceName]        = source.deviceName       as NSString
+        // v2.6: pin state. Stored as Int64 0/1 — CKRecord has no
+        // native Bool type. Pre-2.6 clients see this field as
+        // missing-or-nil and treat it as unpinned, the safe default.
+        record[CKSchema.EntryField.pinned] = (entry.pinned ? 1 : 0) as NSNumber
     }
 
     /// Attach thumbnail `CKAsset`s to the record. Pass nil URLs to clear
@@ -117,6 +121,9 @@ public enum EntryRecordMapper {
         public var source: SourceInfo
         public var thumbSmallURL: URL?
         public var thumbLargeURL: URL?
+        /// Defaults to false when the CKRecord predates v2.6 and has
+        /// no `pinned` field — treats missing as "not pinned."
+        public var pinned: Bool = false
     }
 
     public enum DecodeError: Error, CustomStringConvertible {
@@ -180,7 +187,8 @@ public enum EntryRecordMapper {
             analyzedAt:  (record[CKSchema.EntryField.analyzedAt] as? NSNumber)?.doubleValue,
             source: source,
             thumbSmallURL: smallAsset?.fileURL,
-            thumbLargeURL: largeAsset?.fileURL
+            thumbLargeURL: largeAsset?.fileURL,
+            pinned: ((record[CKSchema.EntryField.pinned] as? NSNumber)?.int64Value ?? 0) == 1
         )
     }
 

@@ -49,7 +49,10 @@ public struct EntryRepository {
                 sql += " AND e.kind = ?"
                 args += [kind.rawValue]
             }
-            sql += " ORDER BY e.created_at DESC LIMIT ?"
+            // Pinned-first ordering: SQLite ORDER BY interprets boolean
+            // expressions as 0/1, so `pinned DESC` puts pinned (1)
+            // ahead of unpinned (0). Within each group, newest first.
+            sql += " ORDER BY e.pinned DESC, e.created_at DESC LIMIT ?"
             args += [limit]
             return try Row.fetchAll(db, sql: sql, arguments: args).map { row in
                 let entry = try Entry(row: row)
@@ -125,6 +128,29 @@ public struct EntryRepository {
     public func fetch(id: Int64) throws -> Entry? {
         try store.dbQueue.read { db in
             try Entry.fetchOne(db, key: id)
+        }
+    }
+
+    /// Toggle (or explicitly set) the pinned state of a single
+    /// entry. Pinned entries skip future eviction policies and float
+    /// to the top of the popup. Idempotent — pinning an already-
+    /// pinned row no-ops. Enqueues for CloudKit push so the pin
+    /// state propagates across devices.
+    public func setPinned(id: Int64, pinned: Bool) throws {
+        let now = Date().timeIntervalSince1970
+        try store.dbQueue.write { db in
+            try db.execute(
+                sql: """
+                    UPDATE entries
+                    SET pinned = ?
+                    WHERE id = ? AND deleted_at IS NULL AND pinned != ?
+                """,
+                arguments: [pinned ? 1 : 0, id, pinned ? 1 : 0]
+            )
+            // Only push if we actually changed state.
+            if db.changesCount > 0 {
+                try PushQueue.enqueue(entryId: id, in: db, now: now)
+            }
         }
     }
 

@@ -10,6 +10,14 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+- **Pinning.** New per-entry pin state — pinned entries float to the
+  top of the popup and skip eviction policies (when the eviction
+  policies land in the next two releases). Mac: right-click → Pin /
+  Unpin. iOS: swipe right on a row. Pin glyph in the top-left of the
+  card / inline with the row text marks pinned entries at a glance.
+  CloudKit syncs the state across devices. Schema migration v6 adds
+  `entries.pinned`; pre-v2.6 clients ignore the field.
+
 ## [2.5.10] – 2026-04-27
 
 - **Intel-Mac launch fix, take two.** v2.5.9 stripped the dev

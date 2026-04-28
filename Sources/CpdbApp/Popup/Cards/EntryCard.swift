@@ -31,6 +31,20 @@ struct EntryCard: View {
         .overlay(alignment: .topTrailing) {
             matchBadge
         }
+        .overlay(alignment: .topLeading) {
+            // Pin glyph at top-left for pinned entries. Sits above
+            // the body content but below the selection chrome (which
+            // is the card's stroked overlay). Accent-colored to
+            // match the kind icon, no chrome — pin is a state, not
+            // an action target.
+            if row.entry.pinned {
+                Image(systemName: "pin.fill")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.tint)
+                    .padding(8)
+                    .accessibilityLabel("Pinned")
+            }
+        }
         .shadow(color: .black.opacity(isSelected ? 0.22 : 0.10), radius: isSelected ? 10 : 4, y: 2)
     }
 
