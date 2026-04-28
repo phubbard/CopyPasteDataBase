@@ -76,12 +76,27 @@ database.
   kicks in if you're signed into iCloud) and stays inside your own
   Private Database.
 
-## Building
+## Installing
+
+The fastest path is the signed, notarized DMG on the [latest GitHub
+release](https://github.com/phubbard/CopyPasteDataBase/releases/latest).
+Universal (arm64 + x86_64), so Apple Silicon and Intel Macs both work.
+
+```sh
+# Pick the version you want from the releases page, e.g. v2.5.8:
+curl -LO https://github.com/phubbard/CopyPasteDataBase/releases/download/v2.5.8/cpdb-v2.5.8.dmg
+open cpdb-v2.5.8.dmg          # drag cpdb.app into Applications
+open -a cpdb
+```
+
+No Gatekeeper warnings, no right-click → Open dance — the DMG ships
+through Apple's notary service.
+
+## Building from source
 
 Requires Xcode (for `swift-testing`'s runtime framework and the `#Preview`
 macro plugin that `KeyboardShortcuts` uses). macOS 14+. Apple Silicon for
-fast dev iteration; release artefacts are universal (arm64 + x86_64) so
-Intel Macs work too.
+fast dev iteration; release artefacts are universal (arm64 + x86_64).
 
 ```sh
 git clone git@github.com:phubbard/CopyPasteDataBase.git cpdb
@@ -476,15 +491,30 @@ Two layers:
   dirty, the sha gets a `-dirty` suffix.
 
 ```sh
-# cutting a release
-# 1. edit Sources/CpdbShared/Version.swift  (CpdbVersion.marketing)
-# 2. edit Sources/CpdbApp/Resources/Info.plist (CFBundleShortVersionString only —
-#    CFBundleVersion is regenerated on every build)
-make verify-version
-git commit -am "bump version to X.Y.Z"
-git tag -a vX.Y.Z -m "..."
-git push && git push --tags
+# cutting a release — three commands
+make bump VERSION_NEW=X.Y.Z        # rewrites Version.swift + Info.plist
+                                    #   + iOS pbxproj (locally, gitignored)
+git commit -am "vX.Y.Z: <changelog>"
+
+make publish                        # universal build, sign with Developer ID,
+                                    #   build DMG, sign DMG, submit to Apple
+                                    #   notary, wait, staple ticket. ~3-15 min.
+
+make publish-github                 # push main + create vX.Y.Z tag, refresh
+                                    #   SHA256SUMS, generate release notes
+                                    #   from `git log <prev-tag>..`, upload
+                                    #   .dmg / .app.zip / cpdb / SHA256SUMS
+                                    #   via gh. Idempotent — re-run replaces
+                                    #   assets and refreshes notes.
 ```
+
+Prereqs (one-time setup, see Makefile comments):
+
+- `Developer ID Application` cert in login keychain
+- `xcrun notarytool store-credentials cpdb-notary …` for the Apple notary
+- `brew install create-dmg`
+
+`make verify-developer-id` runs all three checks without touching anything.
 
 The release workflow fires automatically on tag push and creates a
 GitHub release with auto-generated notes.

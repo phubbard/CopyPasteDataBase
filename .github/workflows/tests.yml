@@ -40,10 +40,27 @@ jobs:
       # the menu-bar app needs CpdbApp's full bundle dance which is
       # out of scope for the fast-feedback CI lane. The release
       # workflow handles the full bundled artefact.
+      #
+      # Note: `swift build --arch arm64 --arch x86_64` exits non-zero
+      # on success on some macos-15 runner toolchains (driver bug;
+      # build itself completes and the universal binary lands at the
+      # expected path). We capture the exit code, then derive
+      # success from "binary exists with both slices" instead. The
+      # exit-code path becomes advisory.
       - name: Universal build (arm64 + x86_64)
         run: |
+          set +e
           swift build -c release --arch arm64 --arch x86_64 --product cpdb-cli
+          swift_exit=$?
+          set -e
           BIN=.build/apple/Products/Release/cpdb-cli
+          if [ ! -f "$BIN" ]; then
+            echo "::error::swift build did not produce $BIN (exit $swift_exit)"
+            exit 1
+          fi
+          if [ "$swift_exit" -ne 0 ]; then
+            echo "::warning::swift build exited $swift_exit, but $BIN exists — treating as success"
+          fi
           echo "lipo -archs:"
           lipo -archs "$BIN"
           # Hard-fail if either slice is missing.
