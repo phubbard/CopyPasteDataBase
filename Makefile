@@ -79,6 +79,25 @@ RELEASE_ENTITLEMENTS = Sources/CpdbApp/Resources/cpdb-release.entitlements
 # Gitignored (*.provisionprofile) so credentials never land in the repo.
 PROFILE          = cpdb.provisionprofile
 
+# Developer ID profile — separate from the dev profile above. The dev
+# profile is a UDID allow-list useful for `make install-app` on
+# registered Macs; the Developer ID profile authorises restricted
+# entitlements (iCloud, APNs) for redistributable builds and has no
+# UDID list. Both profiles are tied to the same App ID; the
+# difference is which cert they trust.
+#
+# To create:
+#   1. developer.apple.com → Profiles → + → Distribution → Developer ID
+#   2. App ID: net.phfactor.cpdb
+#   3. Certificate: $(DEVELOPER_ID_IDENTITY)
+#   4. Download as $(DEVELOPER_ID_PROFILE) at the repo root.
+#
+# Without this profile embedded, AMFI on user Macs rejects the
+# launch with "Code Signature Invalid" even though codesign --verify
+# passes — restricted entitlements need profile authorisation, and
+# notary doesn't check that.
+DEVELOPER_ID_PROFILE = cpdb-developer-id.provisionprofile
+
 # DMG paths.
 DMG_STAGING      = $(BUILD_DIR)/dmg-staging
 DMG_FILE         = $(RELEASE_DIR)/cpdb-v$(VERSION).dmg
@@ -279,6 +298,15 @@ verify-developer-id:
 	@command -v create-dmg >/dev/null 2>&1 \
 	    || { echo "error: create-dmg not found. install with: brew install create-dmg"; exit 1; }
 	@echo "  ✓ create-dmg $$(create-dmg --version 2>&1 | head -1)"
+	@echo "Checking Developer ID provisioning profile…"
+	@if [ ! -f $(DEVELOPER_ID_PROFILE) ]; then \
+	    echo "error: $(DEVELOPER_ID_PROFILE) not found at repo root."; \
+	    echo "       Apple Developer → Profiles → + → Developer ID,"; \
+	    echo "       App ID net.phfactor.cpdb, cert Developer ID Application,"; \
+	    echo "       download and place at the repo root."; \
+	    exit 1; \
+	fi
+	@echo "  ✓ $(DEVELOPER_ID_PROFILE)"
 
 # Re-sign the .app at $(APP_BUNDLE_DIR) with Developer ID + hardened
 # runtime + release entitlements. Idempotent: replacing an existing
@@ -291,15 +319,23 @@ verify-developer-id:
 # own --deep signature pass first — `--deep` on the outer call does
 # the depth-first walk for us.
 sign-release: verify-developer-id
-	@echo "Stripping development provisioning profile…"
-	@# build-app embeds cpdb.provisionprofile (an Apple-Development
-	@# profile) into Contents/embedded.provisionprofile. AMFI then
-	@# validates the device's UDID against the profile's allow-list at
-	@# launch — works on the dev fleet, fails with "the application
-	@# cannot be opened" on any other Mac. Developer-ID redistribution
-	@# doesn't use a profile at all (the cert + entitlements is the
-	@# whole trust chain), so we delete it before re-signing.
-	@rm -f $(APP_BUNDLE_DIR)/Contents/embedded.provisionprofile
+	@echo "Checking $(DEVELOPER_ID_PROFILE)…"
+	@if [ ! -f $(DEVELOPER_ID_PROFILE) ]; then \
+	    echo "error: $(DEVELOPER_ID_PROFILE) not found at repo root."; \
+	    echo "       Apple Developer → Profiles → + → Developer ID,"; \
+	    echo "       App ID net.phfactor.cpdb, cert $(DEVELOPER_ID_IDENTITY),"; \
+	    echo "       download and place at the repo root."; \
+	    exit 1; \
+	fi
+	@echo "  ✓ $(DEVELOPER_ID_PROFILE) present"
+	@echo "Embedding Developer ID provisioning profile…"
+	@# Replace the dev profile (UDID allow-list, useful for in-house
+	@# `make install-app`) with the Developer ID profile (no UDIDs,
+	@# authorises iCloud + APNs entitlements for redistribution).
+	@# Without this swap, AMFI on user Macs rejects launch with
+	@# "Code Signature Invalid" — restricted entitlements need a
+	@# matching profile.
+	@cp $(DEVELOPER_ID_PROFILE) $(APP_BUNDLE_DIR)/Contents/embedded.provisionprofile
 	@echo "Re-signing $(APP_BUNDLE_DIR) with Developer ID…"
 	@codesign --force --deep --sign "$(DEVELOPER_ID_IDENTITY)" \
 	    --options=runtime --timestamp \
@@ -318,7 +354,15 @@ dmg: sign-release
 	@echo "Staging $(DMG_STAGING)…"
 	@rm -rf $(DMG_STAGING)
 	@mkdir -p $(DMG_STAGING)
-	@cp -R $(APP_BUNDLE_DIR) $(DMG_STAGING)/
+	@# `ditto` preserves extended attributes + nested signatures
+	@# verbatim. Plain `cp -R` is technically supposed to do the
+	@# same on macOS but has edge cases (resource forks, certain
+	@# symlinks) that can subtly invalidate the codesign seal —
+	@# Apple's own docs recommend ditto specifically for this case.
+	@/usr/bin/ditto $(APP_BUNDLE_DIR) $(DMG_STAGING)/cpdb.app
+	@# Re-verify the staged copy still validates after the move —
+	@# better to fail here than ship a broken DMG.
+	@codesign --verify --deep --strict --verbose=2 $(DMG_STAGING)/cpdb.app 2>&1 | tail -3
 	@mkdir -p $(RELEASE_DIR)
 	@rm -f $(DMG_FILE)
 	@echo "Building $(DMG_FILE)…"

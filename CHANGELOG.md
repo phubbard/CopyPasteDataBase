@@ -10,6 +10,19 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+- **Intel-Mac launch fix, take two.** v2.5.9 stripped the dev
+  provisioning profile (UDID allow-list) but didn't replace it.
+  Restricted entitlements (iCloud, APNs, application-identifier)
+  need a profile to authorise them at launch — `codesign --verify`
+  passes statically, but AMFI rejects with `Code Signature Invalid`
+  on any Mac. We now embed a separate `cpdb-developer-id.provisionprofile`
+  for redistribution (Developer ID-typed, no UDIDs, authorises the
+  iCloud container + APNs). The dev profile keeps being used for
+  in-house `make install-app`.
+- DMG staging uses `ditto` instead of `cp -R`. Apple's blessed
+  primitive for preserving codesign integrity across copies; the
+  difference is rare in practice but worth a belt for free.
+
 ## [2.5.9] – 2026-04-27
 
 - **Intel-Mac launch fix.** `make sign-release` now strips
