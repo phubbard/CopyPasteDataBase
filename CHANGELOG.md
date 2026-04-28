@@ -10,6 +10,8 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+## [2.5.9] – 2026-04-27
+
 - **Intel-Mac launch fix.** `make sign-release` now strips
   `Contents/embedded.provisionprofile` before re-signing with
   Developer ID. The dev profile is a UDID allow-list — leaving it
