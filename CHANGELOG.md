@@ -10,6 +10,8 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+## [2.6.3] – 2026-04-27
+
 - **Test-fixture scaffolding.** New `cpdb fixture …` subcommand
   family lets you snapshot the live data directory, run any cpdb
   command against the snapshot, and delete it when done — no risk
