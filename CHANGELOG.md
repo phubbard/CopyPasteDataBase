@@ -10,6 +10,16 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+- **Intel-Mac launch fix.** `make sign-release` now strips
+  `Contents/embedded.provisionprofile` before re-signing with
+  Developer ID. The dev profile is a UDID allow-list — leaving it
+  embedded caused AMFI on any unregistered Mac to refuse to open the
+  bundle ("the application cpdb.app cannot be opened"), even though
+  the binary was correctly Developer-ID-signed and notarized.
+- Pin CloudKit environment to `Production` in
+  `cpdb-release.entitlements` via
+  `com.apple.developer.icloud-container-environment` — Developer ID
+  apps default to Development, where requests silently fail.
 - README hook: now allows a push if any commit in `<upstream>..HEAD`
   touches README.md (used to require a touch in the most recent commit
   on top of the last README-touching commit, which incorrectly blocked

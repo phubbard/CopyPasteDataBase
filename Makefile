@@ -291,6 +291,15 @@ verify-developer-id:
 # own --deep signature pass first — `--deep` on the outer call does
 # the depth-first walk for us.
 sign-release: verify-developer-id
+	@echo "Stripping development provisioning profile…"
+	@# build-app embeds cpdb.provisionprofile (an Apple-Development
+	@# profile) into Contents/embedded.provisionprofile. AMFI then
+	@# validates the device's UDID against the profile's allow-list at
+	@# launch — works on the dev fleet, fails with "the application
+	@# cannot be opened" on any other Mac. Developer-ID redistribution
+	@# doesn't use a profile at all (the cert + entitlements is the
+	@# whole trust chain), so we delete it before re-signing.
+	@rm -f $(APP_BUNDLE_DIR)/Contents/embedded.provisionprofile
 	@echo "Re-signing $(APP_BUNDLE_DIR) with Developer ID…"
 	@codesign --force --deep --sign "$(DEVELOPER_ID_IDENTITY)" \
 	    --options=runtime --timestamp \
