@@ -19,6 +19,7 @@ public static class Schema
         "v3",
         "v4_reseed_push_queue_for_flavors",
         "v5_content_addressed_records",
+        "v6_pinned",
     };
 
     public const string UnionDdl = """
@@ -37,12 +38,16 @@ public static class Schema
             deleted_at       REAL,
             ocr_text         TEXT,
             image_tags       TEXT,
-            analyzed_at      REAL
+            analyzed_at      REAL,
+            pinned           INTEGER NOT NULL DEFAULT 0
         );
         CREATE INDEX idx_entries_created_at ON entries(created_at DESC);
         CREATE INDEX idx_entries_kind ON entries(kind);
         CREATE UNIQUE INDEX idx_entries_live_content_hash
             ON entries(content_hash) WHERE deleted_at IS NULL;
+        CREATE INDEX idx_entries_pinned
+            ON entries(created_at DESC)
+            WHERE pinned = 1 AND deleted_at IS NULL;
 
         CREATE TABLE entry_flavors (
             entry_id  INTEGER NOT NULL REFERENCES entries(id) ON DELETE CASCADE,
