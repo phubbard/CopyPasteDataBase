@@ -53,6 +53,12 @@ public enum CKSchema {
         // clients that don't know about this field treat it as
         // missing → unpinned, which is the safe default.
         public static let pinned             = "pinned"           // Int64 (0 or 1)
+        // v2.6.2: tier-2 eviction marker. Non-nil = device has
+        // discarded body bytes per its retention policy. Other
+        // devices honour this on pull (don't re-hydrate the bodies
+        // they may still hold) so eviction is per-device but
+        // tombstone-like across the fleet.
+        public static let bodyEvictedAt      = "bodyEvictedAt"    // Double?
     }
 
     public enum FlavorField {

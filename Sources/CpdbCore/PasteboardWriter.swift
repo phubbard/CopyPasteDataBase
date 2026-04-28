@@ -19,9 +19,14 @@ public struct PasteboardWriter {
 
     public enum WriterError: Error, CustomStringConvertible {
         case entryNotFound(Int64)
+        /// The entry exists but its body bytes were discarded by an
+        /// eviction policy. Metadata + thumbnail are still present
+        /// but there's nothing to put on NSPasteboard.
+        case bodyEvicted(Int64)
         public var description: String {
             switch self {
             case .entryNotFound(let id): return "no entry with id \(id)"
+            case .bodyEvicted(let id):   return "entry \(id) body discarded by retention policy"
             }
         }
     }
@@ -37,8 +42,15 @@ public struct PasteboardWriter {
     public func loadItems(entryId: Int64) throws -> [NSPasteboardItem] {
         struct FlavorRow { let uti: String; let data: Data?; let blobKey: String? }
         let flavors: [FlavorRow] = try store.dbQueue.read { db in
-            guard try Entry.fetchOne(db, key: entryId) != nil else {
+            guard let entry = try Entry.fetchOne(db, key: entryId) else {
                 throw WriterError.entryNotFound(entryId)
+            }
+            // Body-evicted entries have no flavor rows. Surface a
+            // distinct error so the caller (popup paste action,
+            // CLI copy command) can tell the user the bytes are
+            // gone vs. the entry never existed.
+            if entry.bodyEvictedAt != nil {
+                throw WriterError.bodyEvicted(entryId)
             }
             let rows = try Row.fetchAll(
                 db,

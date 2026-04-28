@@ -31,6 +31,12 @@ public struct Entry: Codable, FetchableRecord, MutablePersistableRecord, Hashabl
     /// User-pinned entries skip eviction policies and float to the top
     /// of the popup. Stored as INTEGER 0/1 in SQLite. Defaults to false.
     public var pinned: Bool = false
+    /// Set by the time-window / size-budget eviction policies when
+    /// flavor body bytes are discarded for this entry. Metadata +
+    /// thumbnails remain. Nil = body bytes still present locally.
+    /// Survives CloudKit round-trip so other devices know not to
+    /// resurrect the body bytes.
+    public var bodyEvictedAt: Double?
 
     public static let databaseTableName = "entries"
 
@@ -51,6 +57,7 @@ public struct Entry: Codable, FetchableRecord, MutablePersistableRecord, Hashabl
         case imageTags       = "image_tags"
         case analyzedAt      = "analyzed_at"
         case pinned
+        case bodyEvictedAt   = "body_evicted_at"
     }
 
     public mutating func didInsert(_ inserted: InsertionSuccess) {
@@ -73,7 +80,8 @@ public struct Entry: Codable, FetchableRecord, MutablePersistableRecord, Hashabl
         ocrText: String? = nil,
         imageTags: String? = nil,
         analyzedAt: Double? = nil,
-        pinned: Bool = false
+        pinned: Bool = false,
+        bodyEvictedAt: Double? = nil
     ) {
         self.id = id
         self.uuid = uuid
@@ -91,6 +99,7 @@ public struct Entry: Codable, FetchableRecord, MutablePersistableRecord, Hashabl
         self.imageTags = imageTags
         self.analyzedAt = analyzedAt
         self.pinned = pinned
+        self.bodyEvictedAt = bodyEvictedAt
     }
 }
 

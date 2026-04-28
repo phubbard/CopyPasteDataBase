@@ -251,6 +251,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 } catch {
                     Log.cli.error("cloudkit push failed: \(String(describing: error), privacy: .public)")
                 }
+                // Time-window eviction tick. The check is cheap (a
+                // single UserDefaults read + a date compare) so we
+                // run it every loop iteration, but the eviction
+                // itself only fires once per 24h via the
+                // `timeWindowLastRunAt` gate inside the helper.
+                Self.runTimeWindowEvictionIfDue(store: store)
                 if shouldPause {
                     // Honour the user's safety-net interval pref on
                     // every cycle, so changes in Preferences take
@@ -260,6 +266,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 _ = self
             }
+        }
+    }
+
+    /// Run the time-window eviction policy if (a) the user has
+    /// enabled it, AND (b) at least 24h have passed since the last
+    /// successful run. Called from the periodic-sync loop; cheap
+    /// no-op when either gate fails.
+    ///
+    /// Errors are logged and swallowed — eviction is opportunistic;
+    /// failure here shouldn't surface to the user beyond Console.
+    ///
+    /// `nonisolated` so the periodic-sync detached Task can call it
+    /// without an actor hop. The eviction internals are thread-safe
+    /// (GRDB serialises via dbQueue + UserDefaults is its own
+    /// thread-safe API).
+    nonisolated private static func runTimeWindowEvictionIfDue(store: Store) {
+        guard EvictionPrefs.timeWindowEnabled else { return }
+        let dayInSeconds: TimeInterval = 24 * 3600
+        if let last = EvictionPrefs.timeWindowLastRunAt,
+           Date().timeIntervalSince(last) < dayInSeconds
+        {
+            return
+        }
+        do {
+            let evictor = EntryEvictor(store: store)
+            let report = try evictor.evictOlderThan(days: EvictionPrefs.timeWindowDays)
+            EvictionPrefs.timeWindowLastRunAt = Date()
+            if report.entryCount > 0 {
+                Log.cli.info(
+                    "eviction (time-window \(EvictionPrefs.timeWindowDays, privacy: .public)d): freed \(report.entryCount, privacy: .public) entries, \(report.totalBytesFreed, privacy: .public) bytes"
+                )
+            }
+        } catch {
+            Log.cli.error(
+                "eviction failed: \(String(describing: error), privacy: .public)"
+            )
         }
     }
 

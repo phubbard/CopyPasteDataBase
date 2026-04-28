@@ -10,6 +10,26 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+- **Time-window eviction policy.** Optional, off by default.
+  Preferences → Storage → "Discard flavor bodies older than N days"
+  (default 90, range 7–3650). Daemon runs the policy once per
+  24h; users can also force a sweep with the new "Discard now"
+  button or the `cpdb evict --before-days N` CLI command.
+- Eviction discards flavor body bytes (entry_flavors rows + on-disk
+  blobs under `blobs/`) and sets `entries.body_evicted_at`.
+  Metadata + thumbnails stay forever — pinned entries skip eviction
+  entirely. Search history is preserved at full fidelity; only the
+  paste-back content is gone.
+- CloudKit sync of the new `body_evicted_at` field — siblings learn
+  about evicted entries and don't re-hydrate them on pull. (No
+  evict→pull→re-evict loop.)
+- New `RestoreError.bodyEvicted` distinguishes "body was deliberately
+  discarded" from "entry never existed" so the UI can offer the
+  right next step.
+- Schema migration v7 adds `entries.body_evicted_at` (REAL?).
+- Storage diagnostic now surfaces the count of body-evicted entries
+  alongside the live + pinned counts.
+
 ## [2.6.1] – 2026-04-27
 
 - **Storage usage diagnostic.** New `cpdb storage` command and a new

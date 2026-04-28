@@ -939,15 +939,33 @@ public actor CloudKitSyncer {
         blobs: BlobStore,
         in db: Database
     ) throws {
-        guard let entryId = try Int64.fetchOne(
+        // Look up the parent entry. Skip if missing (the entry
+        // record landed but wasn't applied — orphan flavor) OR if
+        // the entry is locally body-evicted. The body_evicted_at
+        // gate prevents the evict→pull→re-evict loop: once any
+        // device clears bodies for this content, this device leaves
+        // them gone even when a sibling pushes flavor records that
+        // still carry the bytes.
+        guard let row = try Row.fetchOne(
             db,
-            sql: "SELECT id FROM entries WHERE content_hash = ? AND deleted_at IS NULL",
+            sql: """
+                SELECT id, body_evicted_at
+                FROM entries
+                WHERE content_hash = ? AND deleted_at IS NULL
+            """,
             arguments: [contentHash]
         ) else {
             return
         }
+        if row["body_evicted_at"] as Double? != nil {
+            // Entry has been evicted locally — drop the inbound
+            // body bytes on the floor. The flavor row stays absent,
+            // which is what eviction wants.
+            return
+        }
+        let entryId: Int64 = row["id"]
         let (inline, blobKey) = try blobs.storeForInsert(data: bytes)
-        var row = Flavor(
+        var flavor = Flavor(
             entryId: entryId,
             uti: uti,
             size: Int64(bytes.count),
@@ -956,7 +974,7 @@ public actor CloudKitSyncer {
         )
         // Replace semantics: same (entry_id, uti) composite PK → insert
         // updates in place. Cheaper than two statements.
-        try row.insert(db, onConflict: .replace)
+        try flavor.insert(db, onConflict: .replace)
     }
 
     /// Insert or update a local Entry from a decoded CKRecord. Handles
@@ -1040,6 +1058,14 @@ public actor CloudKitSyncer {
             existing.imageTags   = d.imageTags
             existing.analyzedAt  = d.analyzedAt
             existing.pinned      = d.pinned
+            // bodyEvictedAt is sticky once set — if any device
+            // evicted the bodies, sibling devices learn about it
+            // here. We don't undo a remote eviction either: if
+            // upstream cleared the field (rare; means the user
+            // deliberately re-hydrated), we honour that too. The
+            // straightforward "last writer wins" assignment is
+            // correct for both directions.
+            existing.bodyEvictedAt = d.bodyEvictedAt
             try existing.update(db)
             try FtsIndex.indexEntry(
                 db: db,
@@ -1120,7 +1146,8 @@ public actor CloudKitSyncer {
                 ocrText: d.ocrText,
                 imageTags: d.imageTags,
                 analyzedAt: d.analyzedAt,
-                pinned: d.pinned
+                pinned: d.pinned,
+                bodyEvictedAt: d.bodyEvictedAt
             )
             try entry.insert(db)
             try FtsIndex.indexEntry(

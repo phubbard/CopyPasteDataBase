@@ -297,5 +297,26 @@ enum Schema {
                     WHERE pinned = 1 AND deleted_at IS NULL;
             """)
         }
+
+        migrator.registerMigration("v7_body_evicted") { db in
+            // Tier-2 eviction: discard flavor body bytes for entries
+            // older than the user's configured retention window. The
+            // entry's metadata + thumbnails stay; only the bytes go.
+            //
+            // body_evicted_at is the sentinel: NULL = bodies still
+            // present, non-NULL = the eviction policy ran and the
+            // bytes are gone. We need this for two reasons:
+            //   1. Display layer renders an "(evicted)" placeholder
+            //      instead of failing silently when a paste is
+            //      attempted on a body-less entry.
+            //   2. CloudKit pull-side check skips re-hydrating
+            //      bodies for already-evicted entries — otherwise
+            //      every pull from a sibling device that hasn't
+            //      evicted would undo our local cleanup.
+            try db.execute(sql: """
+                ALTER TABLE entries
+                ADD COLUMN body_evicted_at REAL;
+            """)
+        }
     }
 }

@@ -83,6 +83,7 @@ public enum EntryRecordMapper {
         // native Bool type. Pre-2.6 clients see this field as
         // missing-or-nil and treat it as unpinned, the safe default.
         record[CKSchema.EntryField.pinned] = (entry.pinned ? 1 : 0) as NSNumber
+        record[CKSchema.EntryField.bodyEvictedAt] = entry.bodyEvictedAt.map { $0 as NSNumber }
     }
 
     /// Attach thumbnail `CKAsset`s to the record. Pass nil URLs to clear
@@ -124,6 +125,12 @@ public enum EntryRecordMapper {
         /// Defaults to false when the CKRecord predates v2.6 and has
         /// no `pinned` field — treats missing as "not pinned."
         public var pinned: Bool = false
+        /// Set on the originating device when the eviction policy
+        /// discarded body bytes. Other devices use it to skip
+        /// re-hydrating the body on pull. Nil for entries whose
+        /// bodies are still on the originating device, or for
+        /// pre-v2.6.2 records.
+        public var bodyEvictedAt: Double?
     }
 
     public enum DecodeError: Error, CustomStringConvertible {
@@ -188,7 +195,8 @@ public enum EntryRecordMapper {
             source: source,
             thumbSmallURL: smallAsset?.fileURL,
             thumbLargeURL: largeAsset?.fileURL,
-            pinned: ((record[CKSchema.EntryField.pinned] as? NSNumber)?.int64Value ?? 0) == 1
+            pinned: ((record[CKSchema.EntryField.pinned] as? NSNumber)?.int64Value ?? 0) == 1,
+            bodyEvictedAt: (record[CKSchema.EntryField.bodyEvictedAt] as? NSNumber)?.doubleValue
         )
     }
 

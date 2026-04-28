@@ -34,6 +34,10 @@ public struct StorageReport: Sendable, Equatable {
     public var liveEntryCount: Int64
     /// Pinned entry count — never evicted.
     public var pinnedEntryCount: Int64
+    /// Live entries whose flavor body bytes were discarded by an
+    /// eviction policy. Search history + thumbnails are still
+    /// present; only the paste-back content is gone.
+    public var bodyEvictedEntryCount: Int64
 
     public var flavorBytes: Int64 { inlineFlavorBytes + blobBytes }
     public var total: Int64 { metadataBytes + thumbnailBytes + flavorBytes }
@@ -44,7 +48,8 @@ public struct StorageReport: Sendable, Equatable {
         inlineFlavorBytes: Int64,
         blobBytes: Int64,
         liveEntryCount: Int64,
-        pinnedEntryCount: Int64
+        pinnedEntryCount: Int64,
+        bodyEvictedEntryCount: Int64 = 0
     ) {
         self.metadataBytes = metadataBytes
         self.thumbnailBytes = thumbnailBytes
@@ -52,6 +57,7 @@ public struct StorageReport: Sendable, Equatable {
         self.blobBytes = blobBytes
         self.liveEntryCount = liveEntryCount
         self.pinnedEntryCount = pinnedEntryCount
+        self.bodyEvictedEntryCount = bodyEvictedEntryCount
     }
 
     /// Pretty-printed tabular output for CLI / About-window display.
@@ -78,6 +84,9 @@ public struct StorageReport: Sendable, Equatable {
         lines.append(row("    on-disk blobs", blobBytes))
         lines.append("")
         lines.append("  \(liveEntryCount) live entries (\(pinnedEntryCount) pinned, skipped by eviction)")
+        if bodyEvictedEntryCount > 0 {
+            lines.append("  \(bodyEvictedEntryCount) entries with bodies discarded by retention policy")
+        }
         return lines.joined(separator: "\n")
     }
 }
@@ -100,6 +109,7 @@ public enum StorageInspector {
         let counts = try store.dbQueue.read { db -> (
             entries: Int64,
             pinned: Int64,
+            evicted: Int64,
             metadataBytes: Int64,
             thumbBytes: Int64,
             inlineBytes: Int64
@@ -116,6 +126,10 @@ public enum StorageInspector {
             let pinned: Int64 = try Int64.fetchOne(
                 db,
                 sql: "SELECT COUNT(*) FROM entries WHERE deleted_at IS NULL AND pinned = 1"
+            ) ?? 0
+            let evicted: Int64 = try Int64.fetchOne(
+                db,
+                sql: "SELECT COUNT(*) FROM entries WHERE deleted_at IS NULL AND body_evicted_at IS NOT NULL"
             ) ?? 0
             let entryRowBytes: Int64 = try Int64.fetchOne(
                 db,
@@ -163,7 +177,7 @@ public enum StorageInspector {
                 db,
                 sql: "SELECT COALESCE(SUM(IFNULL(LENGTH(data), 0)), 0) FROM entry_flavors"
             ) ?? 0
-            return (entries, pinned, metadataBytes, thumbBytes, inlineBytes)
+            return (entries, pinned, evicted, metadataBytes, thumbBytes, inlineBytes)
         }
 
         // On-disk blob bytes — walk the blob store. Skip silently
@@ -190,7 +204,8 @@ public enum StorageInspector {
             inlineFlavorBytes: counts.inlineBytes,
             blobBytes: blobBytes,
             liveEntryCount: counts.entries,
-            pinnedEntryCount: counts.pinned
+            pinnedEntryCount: counts.pinned,
+            bodyEvictedEntryCount: counts.evicted
         )
     }
 }

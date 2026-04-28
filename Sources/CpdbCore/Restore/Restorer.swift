@@ -15,9 +15,16 @@ public struct Restorer {
 
     public enum RestoreError: Error, CustomStringConvertible {
         case entryNotFound(Int64)
+        /// Bodies discarded by the eviction policy. Caller should
+        /// surface a user-visible message — paste/copy can't
+        /// proceed. Re-syncing from CloudKit (if a sibling device
+        /// still has the body) is a future feature; for now the
+        /// content is lost.
+        case bodyEvicted(Int64)
         public var description: String {
             switch self {
             case .entryNotFound(let id): return "no entry with id \(id)"
+            case .bodyEvicted(let id):   return "entry \(id) body discarded by retention policy"
             }
         }
     }
@@ -27,6 +34,8 @@ public struct Restorer {
             return try writer.loadItems(entryId: entryId)
         } catch PasteboardWriter.WriterError.entryNotFound(let id) {
             throw RestoreError.entryNotFound(id)
+        } catch PasteboardWriter.WriterError.bodyEvicted(let id) {
+            throw RestoreError.bodyEvicted(id)
         }
     }
 
@@ -35,6 +44,8 @@ public struct Restorer {
             try writer.write(entryId: entryId, to: pasteboard)
         } catch PasteboardWriter.WriterError.entryNotFound(let id) {
             throw RestoreError.entryNotFound(id)
+        } catch PasteboardWriter.WriterError.bodyEvicted(let id) {
+            throw RestoreError.bodyEvicted(id)
         }
     }
 }

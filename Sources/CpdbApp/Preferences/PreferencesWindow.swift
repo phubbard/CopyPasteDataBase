@@ -60,6 +60,9 @@ private struct PreferencesView: View {
     @State private var dbSize = "—"
     @State private var totalEntries = "—"
     @State private var storageReport: StorageReport? = nil
+    @State private var timeWindowEnabled: Bool = EvictionPrefs.timeWindowEnabled
+    @State private var timeWindowDays: Int = EvictionPrefs.timeWindowDays
+    @State private var evictionStatus: String = ""
 
     // Image analysis prefs — loaded once on appear, written back when
     // individual controls are edited.
@@ -318,6 +321,48 @@ private struct PreferencesView: View {
                         )
                     }
                 }
+
+                Divider()
+
+                // Time-window eviction policy. Toggle off by default
+                // — heavy-image users opt in. The daemon's daily
+                // task runs the policy when enabled; the
+                // "Discard now" button is for users who want
+                // immediate cleanup without waiting for the loop.
+                Toggle("Discard flavor bodies older than", isOn: $timeWindowEnabled)
+                    .onChange(of: timeWindowEnabled) { _, newValue in
+                        EvictionPrefs.timeWindowEnabled = newValue
+                    }
+                if timeWindowEnabled {
+                    HStack {
+                        Spacer()
+                        Stepper(
+                            value: $timeWindowDays,
+                            in: (EvictionPrefs.timeWindowDaysMin)...(EvictionPrefs.timeWindowDaysMax),
+                            step: timeWindowStep
+                        ) {
+                            Text("\(timeWindowDays) days")
+                                .font(.system(size: 12, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                                .frame(minWidth: 90, alignment: .trailing)
+                        }
+                        .onChange(of: timeWindowDays) { _, new in
+                            EvictionPrefs.timeWindowDays = new
+                        }
+                    }
+                    HStack {
+                        Spacer()
+                        Button("Discard now") { runEvictNow() }
+                    }
+                    if !evictionStatus.isEmpty {
+                        Text(evictionStatus)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Text("Pinned entries skip eviction. Metadata + thumbnails stay forever.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
         }
         .formStyle(.grouped)
@@ -470,6 +515,47 @@ private struct PreferencesView: View {
                 let report = try? StorageInspector.report(store: store)
                 if let report = report {
                     await MainActor.run { self.storageReport = report }
+                }
+            }
+        }
+    }
+
+    /// Adaptive step for the eviction days stepper: per-day at the
+    /// short end, weekly past a month, monthly past a year. Keeps
+    /// the click count manageable for the 10-year max.
+    private var timeWindowStep: Int {
+        switch timeWindowDays {
+        case ..<30:   return 1
+        case ..<180:  return 7
+        case ..<730:  return 30
+        default:      return 90
+        }
+    }
+
+    /// Manual one-shot run of the time-window policy. Same code path
+    /// the daemon uses; kicks off-thread so the UI doesn't block on
+    /// the (potentially I/O-heavy) blob deletion.
+    private func runEvictNow() {
+        evictionStatus = "Discarding…"
+        let days = timeWindowDays
+        Task.detached {
+            do {
+                let store = try Store.open()
+                let evictor = EntryEvictor(store: store)
+                let report = try evictor.evictOlderThan(days: days)
+                EvictionPrefs.timeWindowLastRunAt = Date()
+                let fmt = ByteCountFormatter()
+                fmt.countStyle = .file
+                let summary = report.entryCount == 0
+                    ? "Nothing to discard."
+                    : "Discarded \(report.entryCount) entries · \(fmt.string(fromByteCount: report.totalBytesFreed)) freed."
+                await MainActor.run {
+                    evictionStatus = summary
+                    refreshStats()
+                }
+            } catch {
+                await MainActor.run {
+                    evictionStatus = "Failed: \(error)"
                 }
             }
         }
