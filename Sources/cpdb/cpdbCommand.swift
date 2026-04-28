@@ -31,6 +31,7 @@ struct CpdbCommand: ParsableCommand {
             Sync.self,
             Dedupe.self,
             BackfillTitles.self,
+            Storage.self,
         ],
         defaultSubcommand: ListCommand.self
     )

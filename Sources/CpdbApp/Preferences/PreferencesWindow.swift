@@ -59,6 +59,7 @@ private struct PreferencesView: View {
     @State private var dbPath = Paths.databaseURL.path
     @State private var dbSize = "—"
     @State private var totalEntries = "—"
+    @State private var storageReport: StorageReport? = nil
 
     // Image analysis prefs — loaded once on appear, written back when
     // individual controls are edited.
@@ -299,6 +300,24 @@ private struct PreferencesView: View {
                     .truncationMode(.middle)
                 LabeledContent("Size", value: dbSize)
                 LabeledContent("Entries", value: totalEntries)
+
+                // Tiered usage breakdown — drives the user's "should
+                // I enable an eviction policy?" decision. Three rows:
+                // metadata + thumbnails are always kept (cheap);
+                // flavor bodies are the evictable layer that future
+                // policies will target. Pinned count is informational
+                // — those rows skip eviction.
+                if let report = storageReport {
+                    LabeledContent("  Metadata", value: byteFormat(report.metadataBytes))
+                    LabeledContent("  Thumbnails", value: byteFormat(report.thumbnailBytes))
+                    LabeledContent("  Flavor bodies", value: byteFormat(report.flavorBytes))
+                    if report.pinnedEntryCount > 0 {
+                        LabeledContent(
+                            "  Pinned",
+                            value: "\(report.pinnedEntryCount) (skip eviction)"
+                        )
+                    }
+                }
             }
         }
         .formStyle(.grouped)
@@ -443,6 +462,15 @@ private struct PreferencesView: View {
             let repo = EntryRepository(store: store)
             if let total = try? repo.totalLiveCount() {
                 totalEntries = "\(total)"
+            }
+            // Storage tier breakdown — runs O(N-blobs) directory walk
+            // for blob sizes, so do it off the UI render path. The
+            // detached-Task hop keeps us out of any actor surprises.
+            Task.detached {
+                let report = try? StorageInspector.report(store: store)
+                if let report = report {
+                    await MainActor.run { self.storageReport = report }
+                }
             }
         }
     }

@@ -10,6 +10,16 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+- **Storage usage diagnostic.** New `cpdb storage` command and a new
+  Storage section in Preferences break the library down by tier:
+  metadata (always kept, ~MB), thumbnails (always kept, ~tens of MB),
+  flavor bodies (evictable, often hundreds of MB to GB). Surfaces
+  the pinned-entry count too. Driven by a new
+  `StorageInspector.report` API in CpdbShared — a couple of cheap
+  SUM queries plus a directory walk over `blobs/`. No eviction yet;
+  this just lets you see what's eating space before the next two
+  releases land time-window and size-budget policies.
+
 ## [2.6.0] – 2026-04-27
 
 - **Pinning.** New per-entry pin state — pinned entries float to the
