@@ -10,6 +10,8 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+## [2.6.0] – 2026-04-27
+
 - **Pinning.** New per-entry pin state — pinned entries float to the
   top of the popup and skip eviction policies (when the eviction
   policies land in the next two releases). Mac: right-click → Pin /
