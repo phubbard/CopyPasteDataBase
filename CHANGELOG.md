@@ -10,6 +10,8 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+## [2.5.10] – 2026-04-27
+
 - **Intel-Mac launch fix, take two.** v2.5.9 stripped the dev
   provisioning profile (UDID allow-list) but didn't replace it.
   Restricted entitlements (iCloud, APNs, application-identifier)
