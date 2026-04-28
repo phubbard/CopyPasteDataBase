@@ -10,6 +10,15 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+- **Cross-platform parity contracts.** `docs/schema.md` extended with
+  explicit semantic sections for v6 pinning + v7 eviction —
+  describes the *behaviour* a port must implement (sort order, skip
+  rules, sync round-trip, pull-side cooperation), not just the SQL
+  shape. New `docs/parity.md` is the scoreboard: what's shipping
+  on macOS / iOS / Windows with version stamps and links to the
+  contract section. Read both when picking up a port-side feature
+  in a fresh Claude session.
+
 ## [2.6.3] – 2026-04-27
 
 - **Test-fixture scaffolding.** New `cpdb fixture …` subcommand

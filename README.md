@@ -213,11 +213,17 @@ shipped with in 1.x. C# / .NET 8 / WinUI 3 / SQLite + FTS5 /
 `Windows.Media.Ocr` for OCR parity. MSIX install for local sideload.
 
 Schema parity with macOS/iOS is the strategic decision:
-[`docs/schema.md`](docs/schema.md) is the canonical reference for
-the on-disk SQLite shape, including the canonical `content_hash`
-algorithm and the Windows-clipboard-format → UTI translation
-table. Keeping new clients bit-compatible leaves every future sync
-path open (shared-folder log sync, self-hosted server, CloudKit Web
+
+- [`docs/schema.md`](docs/schema.md) — canonical behaviour contract:
+  DDL, kind classification, content_hash algorithm, blob spillover,
+  Windows-clipboard-format → UTI translation table, and per-feature
+  semantics (pinning, eviction, etc.).
+- [`docs/parity.md`](docs/parity.md) — cross-platform scoreboard:
+  what's implemented where, with version stamps. Read this first
+  when picking up a port-side feature.
+
+Keeping new clients bit-compatible leaves every future sync path
+open (shared-folder log sync, self-hosted server, CloudKit Web
 Services, or plain `.sqlite` import/export).
 
 The Windows track will live under `windows/` once scaffolded. Mac
@@ -431,10 +437,12 @@ iOS/cpdb/                    # iOS companion app (Xcode project)
     ├── URLDetection.swift           shared URL helper (row + detail)
     └── Info.plist                   real plist (BGTask + UIBackgroundModes)
 
-docs/schema.md               # canonical SQLite schema reference for the
-                             # Windows port — DDL, kind classification,
-                             # canonical content_hash algorithm, blob-store
-                             # spillover rule, FTS5 tokenizer chain.
+docs/schema.md               # canonical behaviour contract: DDL +
+                             # kind classification + content_hash +
+                             # blob spillover + FTS5 tokenizer +
+                             # pinning/eviction semantics.
+docs/parity.md               # cross-platform scoreboard: what's
+                             # shipping where, with version stamps.
 
 Tests/CpdbCoreTests/         # swift-testing — 87 tests covering CloudKit
                              # mapper, syncer push + pull paths, action

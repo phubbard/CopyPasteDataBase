@@ -20,12 +20,12 @@ index shapes. Anything that diverges makes future sync harder.
 
 ## Current on-disk version
 
-**Schema version:** v5 (migrations `v1` through
-`v5_content_addressed_records`).
+**Schema version:** v7 (migrations `v1` through
+`v7_body_evicted`).
 
 GRDB's `DatabaseMigrator` tracks applied migrations in the built-in
 `grdb_migrations` table; a fresh client that emits the union DDL
-below should seed that table with all five migration names (or
+below should seed that table with all seven migration names (or
 just skip the table if it won't interoperate with a macOS client's
 DB file).
 
@@ -68,15 +68,20 @@ CREATE TABLE entries (
     content_hash     BLOB NOT NULL,
     total_size       INTEGER NOT NULL,
     deleted_at       REAL,
-    ocr_text         TEXT,       -- v2+
-    image_tags       TEXT,       -- v2+
-    analyzed_at      REAL        -- v2+
+    ocr_text         TEXT,                                    -- v2+
+    image_tags       TEXT,                                    -- v2+
+    analyzed_at      REAL,                                    -- v2+
+    pinned           INTEGER NOT NULL DEFAULT 0,              -- v6+ (boolean: 0 / 1)
+    body_evicted_at  REAL                                     -- v7+
 );
 
 CREATE INDEX idx_entries_created_at ON entries(created_at DESC);
 CREATE INDEX idx_entries_kind ON entries(kind);
 CREATE UNIQUE INDEX idx_entries_live_content_hash
     ON entries(content_hash) WHERE deleted_at IS NULL;
+CREATE INDEX idx_entries_pinned                              -- v6+
+    ON entries(created_at DESC)
+    WHERE pinned = 1 AND deleted_at IS NULL;
 ```
 
 Field semantics:
@@ -98,6 +103,8 @@ Field semantics:
 | `ocr_text` | TEXT | On-device OCR of image entries. NULL until analyzed |
 | `image_tags` | TEXT | Space-separated classification tags. NULL until analyzed |
 | `analyzed_at` | Unix-epoch seconds (`REAL`) | Sentinel for the image-analysis backfill |
+| `pinned` | `INTEGER` 0/1 | v6+. User pinned the entry — skips eviction policies and floats to the top of the listing. See §Pinning |
+| `body_evicted_at` | Unix-epoch seconds (`REAL`) | v7+. Set by the eviction policy when this device discarded the flavor body bytes. Metadata + thumbnails remain. See §Eviction |
 
 The `UNIQUE INDEX idx_entries_live_content_hash` is the primary
 dedup enforcement. It only applies to live rows (`deleted_at IS
@@ -378,6 +385,98 @@ GC is manual via `cpdb gc`: the collector unlinks any file on disk
 whose key is no longer referenced by any row in `entry_flavors`.
 
 ---
+
+## Pinning (v6+)
+
+> **Contract** — every client implementing pinning must honour:
+
+- `entries.pinned` is `INTEGER NOT NULL DEFAULT 0`. A column value of
+  `1` means pinned; `0` means not pinned.
+- **Sort order.** The default listing query (recent + search results)
+  uses `ORDER BY pinned DESC, created_at DESC` — pinned rows float
+  to the top of the listing within whatever filter is active.
+- **Eviction skip.** `WHERE pinned = 1` rows are skipped by every
+  eviction policy. This is the user's escape valve.
+- **UI.** Per-platform UI must offer a Pin / Unpin toggle and a
+  visible pin glyph on pinned rows. Mac does this via the popup
+  card's right-click menu; iOS via swipe-leading; the Windows port
+  should pick the idiomatic equivalent (button on the row, hover
+  context, etc.).
+- **Sync.** When a sync substrate is available (CloudKit on Apple),
+  the pinned bit must round-trip per the same conflict-resolution
+  rules as other scalars (last writer wins).
+
+## Eviction (v7+)
+
+> **Contract** — every client implementing eviction must honour:
+
+cpdb has a tiered storage model (see top of this doc):
+metadata is cheap and forever, thumbnails are medium and forever,
+flavor bodies are heavy and **evictable**.
+
+- **Eviction targets only flavor bodies.** Eviction discards rows in
+  `entry_flavors` and unlinks the corresponding files in the on-disk
+  blob store. It does **not** touch `entries`, `previews`,
+  `entries_fts`, `apps`, or `devices`.
+- **`body_evicted_at` is the per-entry sentinel.** When this device
+  evicts an entry, set `entries.body_evicted_at = now()`. NULL means
+  "bodies still present locally"; non-NULL means "bodies were
+  discarded here."
+- **Eviction skip rules.** An entry is a candidate for eviction
+  only if **all** of:
+    - `deleted_at IS NULL` (not tombstoned)
+    - `pinned = 0` (not user-pinned)
+    - `body_evicted_at IS NULL` (not already evicted)
+    - PLUS whichever policy-specific predicate applies (age window,
+      LRU-out-of-budget, etc.)
+- **Pull-side cooperation.** When syncing from a substrate that
+  carries flavor bytes, the apply path must check
+  `body_evicted_at` on the local entry before writing flavor rows.
+  If non-NULL, drop the inbound bytes on the floor — otherwise a
+  sibling device that hasn't evicted will undo our cleanup on every
+  pull (the evict→pull→re-evict loop). The apply path **does** still
+  honour metadata changes (title, pin state, etc.); only the body
+  bytes are gated.
+- **Sync of `body_evicted_at`.** The field round-trips through the
+  sync substrate. Last writer wins is the right semantic — if any
+  device intentionally re-hydrates (clears the field), siblings
+  honour that.
+- **Display.** A body-evicted entry must render in lists exactly the
+  same as before (metadata + thumbnail are intact). Detail / paste /
+  copy operations must surface a distinct error: "body discarded by
+  retention policy" rather than "entry not found."
+
+## Eviction policies (v7+, reference)
+
+The Mac client today implements one policy; the architecture is
+deliberately pluggable so the others can layer in over time.
+
+| Policy | Predicate | Status |
+|---|---|---|
+| Time-window | `created_at < now - N days` | ✅ v2.6.2 (Mac) |
+| Size-budget | LRU+size-weighted, total bytes > budget | ⏳ planned |
+| Per-kind quota | Per-kind sub-budgets | ⏳ planned |
+
+Each policy is "user opt-in" with sensible defaults. The Mac stores
+its preferences in UserDefaults under the
+`cpdb.eviction.<policy>.<key>` namespace; other clients should pick
+a parallel convention.
+
+## Test fixtures (v7+)
+
+The Mac CLI exposes `cpdb fixture {snapshot, list, env, path,
+delete}` for snapshotting the live data directory and running any
+operation against the snapshot without risk to the real archive.
+Implementation contract for porters who want feature parity:
+
+- The data-directory path must be overridable at runtime via an
+  environment variable (Mac uses `CPDB_SUPPORT_DIR`). The fallback
+  remains the platform-default per-app directory.
+- Snapshots use a copy primitive that preserves SQLite WAL files
+  + xattrs (Mac uses `/usr/bin/ditto`). Plain `cp -R` *can* work
+  but has known edge cases.
+- Snapshots live next to (not inside) the live directory so the
+  fixture machinery never collides with itself.
 
 ## Schema evolution policy
 
