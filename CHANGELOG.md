@@ -10,6 +10,8 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+## [2.6.2] – 2026-04-27
+
 - **Time-window eviction policy.** Optional, off by default.
   Preferences → Storage → "Discard flavor bodies older than N days"
   (default 90, range 7–3650). Daemon runs the policy once per
