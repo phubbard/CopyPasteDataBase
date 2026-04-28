@@ -10,6 +10,17 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+- **Test-fixture scaffolding.** New `cpdb fixture …` subcommand
+  family lets you snapshot the live data directory, run any cpdb
+  command against the snapshot, and delete it when done — no risk
+  to the real DB or blobs. `Paths.supportDirectory` honours a new
+  `CPDB_SUPPORT_DIR` environment variable that the fixture command
+  generates with `cpdb fixture env <name>` for shell `eval`. Snapshot
+  uses `/usr/bin/ditto` so SQLite WAL files + xattrs survive intact.
+  Useful for testing eviction policies on real-shaped data without
+  destruction.
+- Subcommands: `snapshot`, `list`, `env`, `path`, `delete`.
+
 ## [2.6.2] – 2026-04-27
 
 - **Time-window eviction policy.** Optional, off by default.

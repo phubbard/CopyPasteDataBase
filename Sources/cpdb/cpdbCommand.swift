@@ -33,6 +33,7 @@ struct CpdbCommand: ParsableCommand {
             BackfillTitles.self,
             Storage.self,
             Evict.self,
+            Fixture.self,
         ],
         defaultSubcommand: ListCommand.self
     )

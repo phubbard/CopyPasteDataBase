@@ -22,11 +22,25 @@ public enum Paths {
     ///
     /// On iOS: the app's own Application Support directory (already
     /// sandboxed per-app, no bundle-id subdirectory needed).
+    ///
+    /// **Override via `CPDB_SUPPORT_DIR` environment variable** — used
+    /// by the `cpdb fixture` test scaffolding to redirect the binary
+    /// at a snapshot copy of the live data without touching the real
+    /// directory. The override applies to ALL derived paths
+    /// (databaseURL, blobsDirectory, etc.) since they branch off this
+    /// one. iOS doesn't honour the env var (no shell from the iOS app
+    /// to set one anyway).
     public static var supportDirectory: URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         #if os(macOS)
+        if let override = ProcessInfo.processInfo.environment["CPDB_SUPPORT_DIR"],
+           !override.isEmpty
+        {
+            return URL(fileURLWithPath: (override as NSString).expandingTildeInPath, isDirectory: true)
+        }
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         return base.appendingPathComponent(bundleId, isDirectory: true)
         #else
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         return base
         #endif
     }
