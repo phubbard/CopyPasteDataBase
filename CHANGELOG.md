@@ -10,6 +10,8 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+## [2.6.1] – 2026-04-27
+
 - **Storage usage diagnostic.** New `cpdb storage` command and a new
   Storage section in Preferences break the library down by tier:
   metadata (always kept, ~MB), thumbnails (always kept, ~tens of MB),
