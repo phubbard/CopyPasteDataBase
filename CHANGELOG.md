@@ -10,6 +10,8 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+## [2.6.4] – 2026-04-27
+
 - **Cross-platform parity contracts.** `docs/schema.md` extended with
   explicit semantic sections for v6 pinning + v7 eviction —
   describes the *behaviour* a port must implement (sort order, skip
