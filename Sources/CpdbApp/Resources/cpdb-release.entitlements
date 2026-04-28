@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Release entitlements. Same shape as cpdb.entitlements except
+	     aps-environment is "production" — required when signing with a
+	     Developer ID Application identity for distribution outside the
+	     Mac App Store. Apple's notary service rejects "development" on
+	     Developer-ID-signed binaries.
+
+	     Note: NO `get-task-allow` here. Notary explicitly rejects that
+	     entitlement on release builds (it's the "let a debugger attach"
+	     flag and would let users sidestep notarization protection). -->
+	<key>com.apple.application-identifier</key>
+	<string>NSR65JVW9F.net.phfactor.cpdb</string>
+	<key>com.apple.developer.team-identifier</key>
+	<string>NSR65JVW9F</string>
+	<key>com.apple.developer.icloud-container-identifiers</key>
+	<array>
+		<string>iCloud.net.phfactor.cpdb</string>
+	</array>
+	<key>com.apple.developer.icloud-services</key>
+	<array>
+		<string>CloudKit</string>
+	</array>
+	<key>com.apple.developer.aps-environment</key>
+	<string>production</string>
+</dict>
+</plist>

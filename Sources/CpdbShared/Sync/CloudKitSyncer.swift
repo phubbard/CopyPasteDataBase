@@ -407,20 +407,32 @@ public actor CloudKitSyncer {
             )
         }
 
-        let (saved, failed) = try await store.dbQueue.write { db -> (Int, Int) in
-            var saved = 0
-            var failed = 0
+        // Run the whole save-results loop INSIDE the dbQueue.write
+        // closure (Swift 6 concurrency forbids mutating outer captured
+        // vars from a Sendable closure), then return the collected
+        // counters to the caller for merging.
+        struct EntryWriteOutcome {
+            var saved: Int
+            var failed: Int
+            var successfulRecordIDs: Set<CKRecord.ID>
+            var errorKindCounts: [String: Int]
+        }
+        let entryOutcome = try await store.dbQueue.write { db -> EntryWriteOutcome in
+            var out = EntryWriteOutcome(
+                saved: 0, failed: 0,
+                successfulRecordIDs: [], errorKindCounts: [:]
+            )
             for (recordID, outcome) in result.saveResults {
                 switch outcome {
                 case .success:
                     if let entryId = idMap[recordID] {
                         try PushQueue.remove(entryId: entryId, in: db)
-                        successfulEntryRecordIDs.insert(recordID)
-                        saved += 1
+                        out.successfulRecordIDs.insert(recordID)
+                        out.saved += 1
                     }
                 case .failure(let error):
                     let kind = "entry:\(Self.describe(error))"
-                    errorKindCounts[kind, default: 0] += 1
+                    out.errorKindCounts[kind, default: 0] += 1
                     // CKErrorDomain:22 (batchRequestFailed) means this
                     // record was fine — another record in our cluster
                     // hit a server-side conflict and cascade-failed us
@@ -437,11 +449,17 @@ public actor CloudKitSyncer {
                             error: Self.describe(error),
                             in: db
                         )
-                        failed += 1
+                        out.failed += 1
                     }
                 }
             }
-            return (saved, failed)
+            return out
+        }
+        let saved = entryOutcome.saved
+        let failed = entryOutcome.failed
+        successfulEntryRecordIDs.formUnion(entryOutcome.successfulRecordIDs)
+        for (k, v) in entryOutcome.errorKindCounts {
+            errorKindCounts[k, default: 0] += v
         }
 
         // 5. Push flavors for entries that successfully landed. Entries

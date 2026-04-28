@@ -146,35 +146,49 @@ final class PopupController {
     private func installMonitors() {
         escapeMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self = self else { return event }
-            return MainActor.assumeIsolated {
-                switch event.keyCode {
+            // NSEvent isn't Sendable, but the handler signature is
+            // declared @Sendable for the API contract. AppKit
+            // actually delivers these on the main thread — but the
+            // compiler can't see that. Pull out the raw values we
+            // need (Sendable scalars) BEFORE hopping onto MainActor,
+            // so we don't carry the NSEvent across the isolation
+            // boundary.
+            let keyCode = event.keyCode
+            let cmdHeld = event.modifierFlags.contains(.command)
+            // Inner block returns a Sendable signal (`true` = consume,
+            // `false` = pass through). The original NSEvent is then
+            // returned from the outer closure based on that signal,
+            // never crossing the MainActor boundary itself.
+            let consumed: Bool = MainActor.assumeIsolated {
+                switch keyCode {
                 case 53: // Escape
                     self.hide()
-                    return nil
+                    return true
                 case 123: // Left arrow
                     self.state?.selectPrevious()
-                    return nil
+                    return true
                 case 124: // Right arrow
                     self.state?.selectNext()
-                    return nil
+                    return true
                 case 36, 76: // Return / Enter
                     self.pasteSelected()
-                    return nil
-                case 16 where event.modifierFlags.contains(.command):
+                    return true
+                case 16 where cmdHeld:
                     // ⌘Y — universal QL shortcut, works regardless of
                     // whether the search field has content.
                     self.previewSelected()
-                    return nil
+                    return true
                 case 49 where (self.state?.query.isEmpty ?? false):
                     // Space — QL shortcut, but only when the search field
                     // is empty. If the user is typing, space remains a
                     // literal character into the query.
                     self.previewSelected()
-                    return nil
+                    return true
                 default:
-                    return event
+                    return false
                 }
             }
+            return consumed ? nil : event
         }
         outsideClickMonitor = NSEvent.addGlobalMonitorForEvents(
             matching: [.leftMouseDown, .rightMouseDown]

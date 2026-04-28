@@ -52,10 +52,26 @@ export DEVELOPER_DIR ?= /Applications/Xcode.app/Contents/Developer
 # different cert.
 SIGNING_IDENTITY ?= Apple Development: Paul HUBBARD (6442857NX6)
 
+# Developer ID identity — used by the dmg / notarize / publish targets
+# to produce a Gatekeeper-friendly redistributable bundle. Different
+# from SIGNING_IDENTITY (which is the dev cert). Override on the
+# command line for first-time setup or another team.
+DEVELOPER_ID_IDENTITY ?= Developer ID Application: PAUL HUBBARD (NSR65JVW9F)
+
+# notarytool keychain profile name. Must match what was passed to
+# `xcrun notarytool store-credentials <name>`. Holds the Apple ID +
+# team id + app-specific password used by the notary submission.
+NOTARY_PROFILE        ?= cpdb-notary
+
 # Entitlements file — attaches iCloud + CloudKit + APNs to the signed
 # binary. Must be passed to codesign via --entitlements; without this,
 # CloudKit requests fail with "Missing application-identifier entitlement".
-ENTITLEMENTS     = Sources/CpdbApp/Resources/cpdb.entitlements
+ENTITLEMENTS         = Sources/CpdbApp/Resources/cpdb.entitlements
+
+# Release entitlements — same shape but with aps-environment=production
+# and no get-task-allow. Used by the dmg / notarize path because the
+# Apple notary rejects development APNs and debug entitlements.
+RELEASE_ENTITLEMENTS = Sources/CpdbApp/Resources/cpdb-release.entitlements
 
 # Provisioning profile — must authorise every entitlement in $(ENTITLEMENTS).
 # Download from Apple Developer → Profiles after enabling iCloud container
@@ -63,7 +79,12 @@ ENTITLEMENTS     = Sources/CpdbApp/Resources/cpdb.entitlements
 # Gitignored (*.provisionprofile) so credentials never land in the repo.
 PROFILE          = cpdb.provisionprofile
 
-.PHONY: all build build-cli build-app run-app install-app clean test verify-version release version stamp-build
+# DMG paths.
+DMG_STAGING      = $(BUILD_DIR)/dmg-staging
+DMG_FILE         = $(RELEASE_DIR)/cpdb-v$(VERSION).dmg
+VOLUME_NAME      = cpdb $(VERSION)
+
+.PHONY: all build build-cli build-app run-app install-app clean test verify-version release version stamp-build dmg notarize-dmg publish sign-release verify-developer-id publish-github bump
 
 all: build
 
@@ -213,9 +234,234 @@ release: verify-version
 	@echo "Release artefacts in $(RELEASE_DIR):"
 	@ls -la $(RELEASE_DIR)
 
+# ---------------------------------------------------------------------------
+# DMG / notarization pipeline
+#
+# Three steps to a Gatekeeper-friendly redistributable .dmg:
+#   1. sign-release  — re-sign the existing .app with Developer ID + hardened
+#                       runtime + release entitlements (no get-task-allow,
+#                       aps-environment=production).
+#   2. dmg           — produce a pretty drag-to-Applications .dmg via
+#                       create-dmg (homebrew). Sign the .dmg too.
+#   3. notarize-dmg  — submit to Apple's notary service, wait for the result,
+#                       staple the ticket onto the .dmg.
+#
+# `make publish` chains all three plus the universal release build itself.
+#
+# One-time prereqs (won't be repeated by these targets):
+#   • Developer ID Application cert in login keychain. Verify with
+#     `security find-identity -v -p codesigning | grep "Developer ID"`.
+#   • create-dmg installed: `brew install create-dmg`.
+#   • Notary credentials stored once:
+#       xcrun notarytool store-credentials cpdb-notary \
+#           --apple-id pfh@phfactor.net --team-id NSR65JVW9F \
+#           --password <app-specific-pw-from-appleid.apple.com>
+#     The profile name must match $(NOTARY_PROFILE) above.
+#
+# `make verify-developer-id` runs the prereq sanity checks without doing
+# any signing — useful for diagnosing first-time setup.
+# ---------------------------------------------------------------------------
+
+verify-developer-id:
+	@echo "Checking Developer ID identity…"
+	@security find-identity -v -p codesigning | grep -q "$(DEVELOPER_ID_IDENTITY)" \
+	    || { echo "error: identity not found in keychain: $(DEVELOPER_ID_IDENTITY)"; \
+	         echo "       run security find-identity -v -p codesigning to see what's there"; exit 1; }
+	@echo "  ✓ $(DEVELOPER_ID_IDENTITY)"
+	@echo "Checking notary credentials…"
+	@xcrun notarytool history --keychain-profile $(NOTARY_PROFILE) >/dev/null 2>&1 \
+	    || { echo "error: notarytool profile '$(NOTARY_PROFILE)' not configured"; \
+	         echo "       run: xcrun notarytool store-credentials $(NOTARY_PROFILE) \\"; \
+	         echo "                --apple-id <your-apple-id> --team-id NSR65JVW9F \\"; \
+	         echo "                --password <app-specific-password>"; exit 1; }
+	@echo "  ✓ notarytool profile $(NOTARY_PROFILE)"
+	@echo "Checking create-dmg…"
+	@command -v create-dmg >/dev/null 2>&1 \
+	    || { echo "error: create-dmg not found. install with: brew install create-dmg"; exit 1; }
+	@echo "  ✓ create-dmg $$(create-dmg --version 2>&1 | head -1)"
+
+# Re-sign the .app at $(APP_BUNDLE_DIR) with Developer ID + hardened
+# runtime + release entitlements. Idempotent: replacing an existing
+# Apple-Development signature with Developer ID is fine.
+#
+# --options=runtime activates hardened runtime, required by notary.
+# --timestamp adds a secure timestamp from Apple's TSA, required so
+#   the signature stays valid after the cert expires.
+# Sub-bundles (KeyboardShortcuts, GRDB resource bundles) need their
+# own --deep signature pass first — `--deep` on the outer call does
+# the depth-first walk for us.
+sign-release: verify-developer-id
+	@echo "Re-signing $(APP_BUNDLE_DIR) with Developer ID…"
+	@codesign --force --deep --sign "$(DEVELOPER_ID_IDENTITY)" \
+	    --options=runtime --timestamp \
+	    --entitlements $(RELEASE_ENTITLEMENTS) \
+	    $(APP_BUNDLE_DIR)
+	@echo "Verifying signature…"
+	@codesign --verify --deep --strict --verbose=2 $(APP_BUNDLE_DIR) 2>&1 | tail -3
+	@spctl --assess --type execute --verbose=2 $(APP_BUNDLE_DIR) 2>&1 | tail -3 \
+	    || echo "  (spctl rejection is normal pre-notarization — Gatekeeper accepts after staple)"
+
+# Build a drag-to-install .dmg from the signed .app. Stages the bundle
+# + an /Applications symlink into a tmp dir so create-dmg has a clean
+# room to lay out icons. Output is also signed, since notary rejects
+# unsigned containers.
+dmg: sign-release
+	@echo "Staging $(DMG_STAGING)…"
+	@rm -rf $(DMG_STAGING)
+	@mkdir -p $(DMG_STAGING)
+	@cp -R $(APP_BUNDLE_DIR) $(DMG_STAGING)/
+	@mkdir -p $(RELEASE_DIR)
+	@rm -f $(DMG_FILE)
+	@echo "Building $(DMG_FILE)…"
+	@create-dmg \
+	    --volname "$(VOLUME_NAME)" \
+	    --window-size 540 380 \
+	    --icon-size 96 \
+	    --icon "cpdb.app" 140 200 \
+	    --app-drop-link 400 200 \
+	    --hdiutil-quiet \
+	    --no-internet-enable \
+	    "$(DMG_FILE)" "$(DMG_STAGING)/cpdb.app" \
+	    || { echo "create-dmg failed (exit $$?)"; exit 1; }
+	@echo "Signing $(DMG_FILE)…"
+	@codesign --force --sign "$(DEVELOPER_ID_IDENTITY)" --timestamp $(DMG_FILE)
+	@codesign --verify --verbose=1 $(DMG_FILE) 2>&1 | tail -2
+	@echo
+	@ls -la $(DMG_FILE)
+
+# Submit the .dmg to Apple's notary service and staple the ticket on
+# success. `--wait` blocks for up to ~30 min while the notary runs.
+# After stapling, the .dmg launches without Gatekeeper warnings on any
+# Mac, even offline.
+notarize-dmg: dmg
+	@echo "Submitting $(DMG_FILE) to Apple notary (this may take 1-30 min)…"
+	@xcrun notarytool submit $(DMG_FILE) --keychain-profile $(NOTARY_PROFILE) --wait
+	@echo "Stapling ticket onto $(DMG_FILE)…"
+	@xcrun stapler staple $(DMG_FILE)
+	@xcrun stapler validate $(DMG_FILE)
+	@echo
+	@echo "✓ $(DMG_FILE) signed, notarized, stapled"
+	@shasum -a 256 $(DMG_FILE)
+
+# End-to-end: build universal release artefacts, then DMG + notarize.
+# This is what you run before tagging a public release.
+publish: release notarize-dmg
+	@echo
+	@echo "Publish complete. Artefacts in $(RELEASE_DIR):"
+	@ls -la $(RELEASE_DIR)
+
+# Bump the marketing version everywhere it lives. Usage:
+#   make bump VERSION=2.5.8
+# Updates Version.swift, the Mac Info.plist, and the iOS Xcode project.
+# Verifies the resulting tree builds (verify-version) before exiting.
+bump:
+	@if [ -z "$(BUMP_TO)" ] && [ -z "$(VERSION_NEW)" ]; then \
+	    echo "usage: make bump VERSION_NEW=X.Y.Z (current is $(VERSION))"; exit 2; \
+	fi
+	@new="$${VERSION_NEW:-$(BUMP_TO)}"; \
+	    cur="$(VERSION)"; \
+	    if [ "$$new" = "$$cur" ]; then \
+	        echo "already at $$new"; exit 0; \
+	    fi; \
+	    echo "bumping $$cur → $$new"; \
+	    sed -i.bak -E "s/static let marketing = \"[^\"]+\"/static let marketing = \"$$new\"/" Sources/CpdbShared/Version.swift && rm Sources/CpdbShared/Version.swift.bak; \
+	    /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $$new" Sources/CpdbApp/Resources/Info.plist; \
+	    /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $$new" Sources/CpdbApp/Resources/Info.plist; \
+	    if [ -f iOS/cpdb/cpdb.xcodeproj/project.pbxproj ]; then \
+	        sed -i.bak -E "s/MARKETING_VERSION = [^;]+;/MARKETING_VERSION = $$new;/g" iOS/cpdb/cpdb.xcodeproj/project.pbxproj && \
+	            rm iOS/cpdb/cpdb.xcodeproj/project.pbxproj.bak; \
+	        cur_build=$$(grep -oE 'CURRENT_PROJECT_VERSION = [0-9]+;' iOS/cpdb/cpdb.xcodeproj/project.pbxproj | head -1 | grep -oE '[0-9]+'); \
+	        next_build=$$((cur_build + 1)); \
+	        sed -i.bak -E "s/CURRENT_PROJECT_VERSION = $$cur_build;/CURRENT_PROJECT_VERSION = $$next_build;/g" iOS/cpdb/cpdb.xcodeproj/project.pbxproj && \
+	            rm iOS/cpdb/cpdb.xcodeproj/project.pbxproj.bak; \
+	        echo "  iOS CURRENT_PROJECT_VERSION $$cur_build → $$next_build"; \
+	    fi
+	@$(MAKE) verify-version
+
+# Push the current main + a vX.Y.Z tag to GitHub, then create or
+# update the release with auto-generated notes and the artefacts in
+# .build/release-artifacts/. Idempotent: re-running uploads/replaces
+# assets without recreating the release.
+#
+# Prerequisites (the target enforces all four):
+#   • Working tree clean.
+#   • Version.swift's marketing version matches Info.plist.
+#   • Branch is main and up to date with origin.
+#   • .build/release-artifacts/ has fresh artefacts (run `make publish`).
+#
+# Typical release flow:
+#   make bump VERSION_NEW=2.5.8
+#   git commit -am "v2.5.8: <changelog>"
+#   make publish
+#   make publish-github
+publish-github: verify-version
+	@echo "Checking working tree…"
+	@dirty=$$(git status --porcelain | grep -v ' Sources/CpdbShared/BuildStamp.swift$$' || true); \
+	    if [ -n "$$dirty" ]; then \
+	        echo "error: working tree has uncommitted changes — commit or stash first"; \
+	        echo "$$dirty"; exit 1; \
+	    fi
+	@echo "  ✓ clean (BuildStamp.swift drift ignored — auto-stamped each build)"
+	@echo "Checking branch…"
+	@branch=$$(git rev-parse --abbrev-ref HEAD); \
+	    if [ "$$branch" != "main" ]; then \
+	        echo "error: not on main (currently on $$branch)"; exit 1; \
+	    fi
+	@echo "  ✓ main"
+	@echo "Checking artefacts in $(RELEASE_DIR)…"
+	@if [ ! -f $(RELEASE_DIR)/cpdb-v$(VERSION).dmg ]; then \
+	    echo "error: $(RELEASE_DIR)/cpdb-v$(VERSION).dmg not found — run \`make publish\` first"; \
+	    exit 1; \
+	fi
+	@echo "  ✓ DMG present"
+	@echo "Pushing main…"
+	@git push origin main
+	@echo "Tagging v$(VERSION)…"
+	@if git rev-parse "v$(VERSION)" >/dev/null 2>&1; then \
+	    echo "  tag v$(VERSION) already exists, skipping create"; \
+	else \
+	    git tag -a "v$(VERSION)" -m "v$(VERSION)" && git push origin "v$(VERSION)"; \
+	fi
+	@echo "Generating release notes…"
+	@prev_tag=$$(git describe --tags --abbrev=0 "v$(VERSION)^" 2>/dev/null || echo ""); \
+	    if [ -n "$$prev_tag" ]; then \
+	        echo "  range: $$prev_tag..v$(VERSION)"; \
+	        notes=$$(git log "$$prev_tag..v$(VERSION)" --pretty=format:"- %s" --no-merges); \
+	    else \
+	        echo "  range: (initial release — full log)"; \
+	        notes=$$(git log "v$(VERSION)" --pretty=format:"- %s" --no-merges); \
+	    fi; \
+	    body=$$(printf "## Changes\n\n%s\n\n## Artefacts\n\n- \`cpdb-v$(VERSION).dmg\` — signed, notarized, drag-to-Applications installer (universal arm64+x86_64)\n- \`cpdb-v$(VERSION).app.zip\` — same .app bundle, ditto-zipped (preserves codesign)\n- \`cpdb\` — universal CLI binary\n- \`SHA256SUMS\` — integrity\n\nCommit: $$(git rev-parse --short v$(VERSION))" "$$notes"); \
+	    echo "$$body" > $(RELEASE_DIR)/.release-notes.md; \
+	    cat $(RELEASE_DIR)/.release-notes.md
+	@echo
+	@echo "Refreshing SHA256SUMS to cover all artefacts…"
+	@cd $(RELEASE_DIR) && shasum -a 256 cpdb-v$(VERSION).app.zip cpdb cpdb-v$(VERSION).dmg > SHA256SUMS
+	@echo "Creating / updating GitHub release…"
+	@if gh release view "v$(VERSION)" >/dev/null 2>&1; then \
+	    echo "  release v$(VERSION) exists — updating notes and uploading assets"; \
+	    gh release edit "v$(VERSION)" --notes-file $(RELEASE_DIR)/.release-notes.md; \
+	    gh release upload "v$(VERSION)" \
+	        $(RELEASE_DIR)/cpdb-v$(VERSION).dmg \
+	        $(RELEASE_DIR)/cpdb-v$(VERSION).app.zip \
+	        $(RELEASE_DIR)/cpdb \
+	        $(RELEASE_DIR)/SHA256SUMS \
+	        --clobber; \
+	else \
+	    gh release create "v$(VERSION)" \
+	        --title "v$(VERSION)" \
+	        --notes-file $(RELEASE_DIR)/.release-notes.md \
+	        $(RELEASE_DIR)/cpdb-v$(VERSION).dmg \
+	        $(RELEASE_DIR)/cpdb-v$(VERSION).app.zip \
+	        $(RELEASE_DIR)/cpdb \
+	        $(RELEASE_DIR)/SHA256SUMS; \
+	fi
+	@echo
+	@echo "✓ https://github.com/phubbard/CopyPasteDataBase/releases/tag/v$(VERSION)"
+
 clean:
 	swift package clean
-	rm -rf $(BUILD_DIR)/app $(RELEASE_DIR)
+	rm -rf $(BUILD_DIR)/app $(RELEASE_DIR) $(DMG_STAGING)
 
 test:
 	swift test

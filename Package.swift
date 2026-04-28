@@ -51,6 +51,7 @@ let package = Package(
             exclude: [
                 "Resources/Info.plist",
                 "Resources/cpdb.entitlements",
+                "Resources/cpdb-release.entitlements",
                 "Resources/Assets",
             ]
         ),

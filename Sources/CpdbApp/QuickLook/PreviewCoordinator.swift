@@ -18,7 +18,12 @@ import CpdbShared
 @MainActor
 final class PreviewCoordinator: NSObject,
     @preconcurrency QLPreviewPanelDataSource,
-    @preconcurrency QLPreviewPanelDelegate {
+    QLPreviewPanelDelegate {
+    // QLPreviewPanelDelegate carries no Sendable/concurrency
+    // annotations of its own, so `@preconcurrency` on the conformance
+    // is a no-op (compiler warns "has no effect"). Only
+    // QLPreviewPanelDataSource needs the relaxation to silence the
+    // strict-concurrency check on `numberOfPreviewItems(in:)`.
 
     static let shared = PreviewCoordinator()
 

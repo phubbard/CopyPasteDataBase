@@ -136,7 +136,7 @@ public struct EntryRepository {
     public func tombstone(id: Int64) throws {
         let now = Date().timeIntervalSince1970
         try store.dbQueue.write { db in
-            let affected = try db.execute(
+            try db.execute(
                 sql: """
                     UPDATE entries
                     SET deleted_at = ?
@@ -144,11 +144,10 @@ public struct EntryRepository {
                 """,
                 arguments: [now, id]
             )
-            // `db.execute` returns Void but we can check changes via
-            // another query. Skip if nothing actually changed.
-            let changes = db.changesCount
-            _ = affected
-            if changes > 0 {
+            // db.execute returns Void; row count comes from the
+            // separate changesCount property. Skip the FTS + push
+            // work when the UPDATE was a no-op (already tombstoned).
+            if db.changesCount > 0 {
                 // Remove from FTS so the deleted row stops showing
                 // up in search results. The entries row itself stays
                 // (with deleted_at set) until `cpdb gc` clears it.
