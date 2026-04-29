@@ -21,14 +21,15 @@ public sealed class EntryRepository
     private const string SelectEntryColumns = """
         SELECT e.id, e.kind, e.title, e.text_preview,
                e.created_at, e.captured_at, e.total_size,
-               a.bundle_id, a.name, p.thumb_small
+               a.bundle_id, a.name, p.thumb_small, e.pinned
         FROM entries e
         LEFT JOIN apps a ON a.id = e.source_app_id
         LEFT JOIN previews p ON p.entry_id = e.id
         """;
 
     /// <summary>
-    /// Newest live entries first. <paramref name="limit"/> caps the row count;
+    /// Newest live entries first, with pinned rows floated to the top per
+    /// docs/schema.md § Pinning. <paramref name="limit"/> caps the row count;
     /// <paramref name="kind"/> narrows to a single <c>entries.kind</c>.
     /// </summary>
     public IReadOnlyList<EntryRow> Recent(int limit = 100, string? kind = null)
@@ -37,7 +38,7 @@ public sealed class EntryRepository
 
             WHERE e.deleted_at IS NULL
               AND ($kind IS NULL OR e.kind = $kind)
-            ORDER BY e.created_at DESC
+            ORDER BY e.pinned DESC, e.created_at DESC
             LIMIT $limit
             """;
         return Query(sql, cmd =>
@@ -49,7 +50,8 @@ public sealed class EntryRepository
 
     /// <summary>
     /// FTS5 MATCH against the <c>entries_fts</c> shadow table, optionally
-    /// narrowed to a single <c>entries.kind</c>.
+    /// narrowed to a single <c>entries.kind</c>. Pinned rows float to the
+    /// top of the matching set.
     /// </summary>
     public IReadOnlyList<EntryRow> Search(string ftsQuery, int limit = 100, string? kind = null)
     {
@@ -58,7 +60,7 @@ public sealed class EntryRepository
             JOIN entries_fts f ON f.rowid = e.id
             WHERE entries_fts MATCH $q AND e.deleted_at IS NULL
               AND ($kind IS NULL OR e.kind = $kind)
-            ORDER BY e.created_at DESC
+            ORDER BY e.pinned DESC, e.created_at DESC
             LIMIT $limit
             """;
         return Query(sql, cmd =>
@@ -67,6 +69,21 @@ public sealed class EntryRepository
             cmd.Parameters.AddWithValue("$limit", limit);
             cmd.Parameters.AddWithValue("$kind", (object?)kind ?? DBNull.Value);
         });
+    }
+
+    /// <summary>
+    /// Toggle the <c>entries.pinned</c> bit for a single row. Per
+    /// docs/schema.md § Pinning the column is INTEGER 0/1; the on-disk
+    /// representation is just that single update — sort order and
+    /// eviction-skip semantics fall out of the existing queries.
+    /// </summary>
+    public void SetPinned(long entryId, bool pinned)
+    {
+        using var cmd = _db.CreateCommand();
+        cmd.CommandText = "UPDATE entries SET pinned = $p WHERE id = $id AND deleted_at IS NULL";
+        cmd.Parameters.AddWithValue("$p", pinned ? 1 : 0);
+        cmd.Parameters.AddWithValue("$id", entryId);
+        cmd.ExecuteNonQuery();
     }
 
     public IReadOnlyList<FlavorRow> Flavors(long entryId)
@@ -198,7 +215,8 @@ public sealed class EntryRepository
                 TotalSize: reader.GetInt64(6),
                 AppBundleId: reader.IsDBNull(7) ? null : reader.GetString(7),
                 AppName: reader.IsDBNull(8) ? null : reader.GetString(8),
-                ThumbSmall: reader.IsDBNull(9) ? null : (byte[])reader.GetValue(9)
+                ThumbSmall: reader.IsDBNull(9) ? null : (byte[])reader.GetValue(9),
+                Pinned: reader.GetInt64(10) != 0
             ));
         }
         return rows;
@@ -215,7 +233,8 @@ public readonly record struct EntryRow(
     long TotalSize,
     string? AppBundleId,
     string? AppName,
-    byte[]? ThumbSmall);
+    byte[]? ThumbSmall,
+    bool Pinned);
 
 public readonly record struct FlavorRow(
     long EntryId,

@@ -481,6 +481,26 @@ public sealed partial class MainWindow : Window
         }
     }
 
+    private void PinMenuItem_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement fe || fe.DataContext is not EntryViewModel vm) return;
+
+        // If the row is part of a multi-selection, toggle every selected
+        // row to the same target state (the inverse of the clicked row's
+        // current state) — same shape as multi-delete.
+        var newState = !vm.Pinned;
+        IReadOnlyList<EntryViewModel> targets =
+            EntryList.SelectedItems.Contains(vm) && EntryList.SelectedItems.Count > 1
+                ? EntryList.SelectedItems.OfType<EntryViewModel>().ToList()
+                : new[] { vm };
+
+        foreach (var t in targets) _host.Entries.SetPinned(t.EntryId, newState);
+        StatusText.Text = targets.Count == 1
+            ? $"{(newState ? "Pinned" : "Unpinned")} #{targets[0].EntryId}"
+            : $"{(newState ? "Pinned" : "Unpinned")} {targets.Count} entries";
+        Refresh();
+    }
+
     private void DeleteSelectedEntries()
     {
         var vms = EntryList.SelectedItems.OfType<EntryViewModel>().ToList();
@@ -537,6 +557,13 @@ public sealed class EntryViewModel
     public string Title { get; init; } = "";
     public string Subtitle { get; init; } = "";
     public ImageSource? Thumbnail { get; init; }
+    public bool Pinned { get; init; }
+
+    /// <summary>Visible when the entry is pinned — drives the row glyph.</summary>
+    public Visibility PinGlyphVisibility => Pinned ? Visibility.Visible : Visibility.Collapsed;
+
+    /// <summary>Label for the right-click toggle: "Pin" when unpinned, "Unpin" when pinned.</summary>
+    public string PinMenuLabel => Pinned ? "Unpin" : "Pin";
 
     public static EntryViewModel From(EntryRow row) => new()
     {
@@ -544,6 +571,7 @@ public sealed class EntryViewModel
         Title     = row.Title ?? KindLabel(row.Kind),
         Subtitle  = $"{row.AppName ?? "?"} · {FormatTime(row.CreatedAt)} · {row.Kind}",
         Thumbnail = ThumbnailFrom(row.ThumbSmall),
+        Pinned    = row.Pinned,
     };
 
     private static ImageSource? ThumbnailFrom(byte[]? bytes)

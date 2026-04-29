@@ -24,7 +24,7 @@ param(
     [string] $Version,
     [string] $Tag,
     [string] $Title,
-    [string[]] $Rids = @('win-arm64'),  # add 'win-x64' once you build it
+    [string[]] $Rids = @('win-arm64', 'win-x64'),  # ship both by default
     [switch] $Live,    # default is --draft
     [switch] $SkipBuild
 )

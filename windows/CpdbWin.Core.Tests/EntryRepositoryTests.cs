@@ -238,6 +238,81 @@ public class EntryRepositoryTests : IDisposable
     }
 
     [Fact]
+    public void Recent_NewEntries_DefaultUnpinned()
+    {
+        _ingestor.Ingest(TextSnapshot("plain"), null, _device);
+        var rows = _repo.Recent();
+        Assert.Single(rows);
+        Assert.False(rows[0].Pinned);
+    }
+
+    [Fact]
+    public void SetPinned_RoundTripsThroughEntryRow()
+    {
+        var id = _ingestor.Ingest(TextSnapshot("toggle me"), null, _device).EntryId;
+
+        _repo.SetPinned(id, true);
+        Assert.True(_repo.Recent().Single().Pinned);
+
+        _repo.SetPinned(id, false);
+        Assert.False(_repo.Recent().Single().Pinned);
+    }
+
+    [Fact]
+    public void Recent_PinnedRowsFloatToTop_PerSchemaContract()
+    {
+        // Ingest two unpinned rows (newest first), then a third older row
+        // and pin it. The pinned row must appear ahead of both newer
+        // unpinned rows.
+        _ingestor.Ingest(TextSnapshot("newer-unpinned"), null, _device,
+            DateTimeOffset.FromUnixTimeSeconds(1_700_000_500));
+        _ingestor.Ingest(TextSnapshot("middle-unpinned"), null, _device,
+            DateTimeOffset.FromUnixTimeSeconds(1_700_000_300));
+        var oldId = _ingestor.Ingest(TextSnapshot("oldest-pinned"), null, _device,
+            DateTimeOffset.FromUnixTimeSeconds(1_700_000_000)).EntryId;
+
+        _repo.SetPinned(oldId, true);
+
+        var rows = _repo.Recent();
+        Assert.Equal(3, rows.Count);
+        Assert.Equal("oldest-pinned",   rows[0].Title);
+        Assert.True(rows[0].Pinned);
+        Assert.Equal("newer-unpinned",  rows[1].Title);
+        Assert.Equal("middle-unpinned", rows[2].Title);
+    }
+
+    [Fact]
+    public void Search_PinnedRowsFloatToTop_WithinMatchingSet()
+    {
+        _ingestor.Ingest(TextSnapshot("apple newer"), null, _device,
+            DateTimeOffset.FromUnixTimeSeconds(1_700_000_500));
+        var pinned = _ingestor.Ingest(TextSnapshot("apple older"), null, _device,
+            DateTimeOffset.FromUnixTimeSeconds(1_700_000_000)).EntryId;
+        _ingestor.Ingest(TextSnapshot("banana newest"), null, _device,
+            DateTimeOffset.FromUnixTimeSeconds(1_700_000_700));
+
+        _repo.SetPinned(pinned, true);
+
+        var rows = _repo.Search("apple");
+        Assert.Equal(2, rows.Count);
+        Assert.Equal("apple older", rows[0].Title);
+        Assert.True(rows[0].Pinned);
+        Assert.Equal("apple newer", rows[1].Title);
+    }
+
+    [Fact]
+    public void SetPinned_DoesNotResurrectTombstonedEntry()
+    {
+        var id = _ingestor.Ingest(TextSnapshot("buried"), null, _device).EntryId;
+        _repo.Tombstone(id);
+        _repo.SetPinned(id, true);
+
+        // Tombstoned entries stay hidden — SetPinned's WHERE clause excludes
+        // deleted rows so a stale UI handle can't quietly resurrect one.
+        Assert.Empty(_repo.Recent());
+    }
+
+    [Fact]
     public void Search_FiltersByKindOnTopOfFts()
     {
         _ingestor.Ingest(TextSnapshot("the quick brown fox"), null, _device);

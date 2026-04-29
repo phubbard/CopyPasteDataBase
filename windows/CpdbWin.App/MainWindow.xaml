@@ -31,9 +31,14 @@
                       SelectionMode="Extended">
                 <ListView.ItemTemplate>
                     <DataTemplate x:DataType="local:EntryViewModel">
-                        <Grid ColumnDefinitions="48,*" ColumnSpacing="10" Margin="0,4">
+                        <Grid ColumnDefinitions="48,*,Auto" ColumnSpacing="10" Margin="0,4">
                             <Grid.ContextFlyout>
                                 <MenuFlyout>
+                                    <MenuFlyoutItem Text="{x:Bind PinMenuLabel}" Click="PinMenuItem_Click">
+                                        <MenuFlyoutItem.Icon>
+                                            <SymbolIcon Symbol="Pin"/>
+                                        </MenuFlyoutItem.Icon>
+                                    </MenuFlyoutItem>
                                     <MenuFlyoutItem Text="Delete" Click="DeleteMenuItem_Click">
                                         <MenuFlyoutItem.Icon>
                                             <SymbolIcon Symbol="Delete"/>
@@ -50,6 +55,12 @@
                                 <TextBlock Text="{x:Bind Title}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
                                 <TextBlock Text="{x:Bind Subtitle}" Opacity="0.6" FontSize="12" TextTrimming="CharacterEllipsis"/>
                             </StackPanel>
+                            <SymbolIcon Grid.Column="2"
+                                        Symbol="Pin"
+                                        Width="16"
+                                        Margin="0,0,4,0"
+                                        VerticalAlignment="Center"
+                                        Visibility="{x:Bind PinGlyphVisibility}"/>
                         </Grid>
                     </DataTemplate>
                 </ListView.ItemTemplate>
