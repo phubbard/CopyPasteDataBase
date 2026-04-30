@@ -10,6 +10,8 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+## [2.8.1] – 2026-04-30
+
 - **Quieter CloudKit push logs.** Multi-Mac install means three
   devices race to push the same content-addressed flavor records
   (`flavor-<sha256>-<…>`) in tandem. The race-loser's per-record
