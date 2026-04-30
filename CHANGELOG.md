@@ -10,6 +10,8 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+## [2.7.9] – 2026-04-30
+
 - **Ignore `com.apple.loginwindow` for capture.** When the screen
   unlocks, macOS sometimes re-emits the pasteboard with a slightly
   different flavor set (an extra `public.text` UTI on top of
