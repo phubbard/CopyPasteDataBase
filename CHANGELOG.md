@@ -10,6 +10,8 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+## [2.8.4] – 2026-04-30
+
 - **Unified "Permissions" section in Preferences.** Accessibility
   and Local Network now share a single section with consistent
   iconography: green ✓ when granted, orange ! when denied, neutral
