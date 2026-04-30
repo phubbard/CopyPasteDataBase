@@ -10,6 +10,8 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+## [2.7.4] – 2026-04-29
+
 - **Periodic-tick observability.** Every step of the periodic sync
   loop now emits a paired begin/end log line (pull begin/end, push
   begin/end, evict-if-due begin/end, backfill spawn, tick complete)
