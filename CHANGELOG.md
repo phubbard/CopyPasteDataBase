@@ -10,6 +10,8 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+## [2.7.12] – 2026-04-30
+
 - **Hover tooltips on every popup card.** Hovering an entry card
   now shows a multi-line tooltip with the entry's kind, source
   app + bundle id, originating device (your Mac name or another
