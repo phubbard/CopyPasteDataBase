@@ -10,6 +10,8 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+## [2.7.5] – 2026-04-29
+
 - **More backfill diagnostic logs.** v2.7.4 showed the periodic loop
   is healthy — every tick completes, and the detached backfill task
   is being spawned. But no `link-title backfill: …` lines appeared,
