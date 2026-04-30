@@ -10,6 +10,8 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+## [2.7.14] – 2026-04-30
+
 - **Bump-time kind reclassification.** When a duplicate capture
   bumps an existing row, the Ingestor now compares the new
   snapshot's kind against the stored kind and updates if they
