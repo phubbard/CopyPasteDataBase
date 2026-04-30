@@ -10,6 +10,8 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+## [2.7.10] – 2026-04-30
+
 - **Live updates: cards refresh in place when the background
   fills them in.** The popup already used GRDB ValueObservation
   while open, but the watched projection was just `(count,
