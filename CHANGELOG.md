@@ -10,6 +10,8 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+## [2.7.13] – 2026-04-30
+
 - **Two new thumbnail-fallback paths.** When a page's HTML head
   doesn't ship `og:image` / `twitter:image`, the link backfill
   now tries:
