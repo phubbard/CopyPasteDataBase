@@ -10,6 +10,25 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+- **Backfill actually runs again.** Root cause of v2.7.0–2.7.5
+  silence: the `linksNeedingMetadata(limit: 1)` probe used by the
+  daemon was returning the most recent unfetched row, but if that
+  row was a `mailto:` URL or other non-http(s) string captured as
+  `kind=link`, the swift post-filter dropped it. The probe saw an
+  empty array and bailed with "no candidates, idle", every cycle —
+  even though thousands of valid http(s) URLs sat behind it. Worse:
+  the same offending rows never got `link_fetched_at` stamped, so
+  they stayed at the top of `created_at DESC` forever, crowding out
+  real candidates. Two fixes:
+    - **SQL-side URL prefix filter.** `linksNeedingMetadata` now
+      includes `AND text_preview LIKE 'http%'` directly in the
+      query. Mailto/empty/garbage rows are skipped at query time;
+      they stay in the DB unfetched (no harm) but no longer block
+      the queue.
+    - **No more probe.** The daemon's backfill now goes straight to
+      `runOnce` (which returns an empty Report on idle ticks). The
+      probe was a micro-optimization that masked the bug above.
+
 ## [2.7.5] – 2026-04-29
 
 - **More backfill diagnostic logs.** v2.7.4 showed the periodic loop

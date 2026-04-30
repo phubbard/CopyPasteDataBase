@@ -354,20 +354,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Log.cli.info("link-title backfill: gate acquired")
         defer { Task { await backfillGate.release() } }
         let repo = EntryRepository(store: store)
-        // Quick bailout if there's nothing pending. Cheaper than
-        // spinning up the URLSession.
-        let probe: [EntryRepository.LinkBackfillRow]?
-        do {
-            probe = try repo.linksNeedingMetadata(limit: 1)
-        } catch {
-            Log.cli.error("link-title backfill: probe query failed: \(String(describing: error), privacy: .public)")
-            return
-        }
-        guard let probe = probe, !probe.isEmpty else {
-            Log.cli.info("link-title backfill: no candidates, idle")
-            return
-        }
-        Log.cli.info("link-title backfill: starting batch (limit=50, candidates>=1)")
+        // No probe — just run the batch. runOnce returns an empty
+        // Report when there are no candidates. The probe used to be
+        // an optimization but had a subtle bug: probing with limit=1
+        // could return a single mailto: or otherwise non-http URL
+        // (post-filtered out in compactMap), so we'd see "no
+        // candidates" and bail even when 3000 valid http URLs sat
+        // behind it in the queue.
+        Log.cli.info("link-title backfill: starting batch (limit=50)")
         let backfiller = LinkMetadataBackfiller(repository: repo)
         do {
             let report = try await backfiller.runOnce(limit: 50)

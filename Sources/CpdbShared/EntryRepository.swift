@@ -152,6 +152,14 @@ public struct EntryRepository {
             let whereClause = force
                 ? "kind = 'link' AND deleted_at IS NULL"
                 : "kind = 'link' AND deleted_at IS NULL AND link_fetched_at IS NULL"
+            // The URL-prefix check used to live in the post-filter
+            // below, but that meant rows like `mailto:foo@bar` would
+            // pass the SQL query, get dropped by the swift filter,
+            // and then sit at the top of `created_at DESC` forever
+            // because we never marked them fetched. By pushing the
+            // prefix filter into SQL we skip them at query time
+            // instead — they stay un-fetched in the DB but never
+            // crowd out real http(s) candidates from the batch.
             let rows = try Row.fetchAll(
                 db,
                 sql: """
@@ -159,7 +167,10 @@ public struct EntryRepository {
                     FROM entries
                     WHERE \(whereClause)
                       AND COALESCE(text_preview, title) IS NOT NULL
-                      AND COALESCE(text_preview, title) != ''
+                      AND (
+                          COALESCE(text_preview, title) LIKE 'http://%'
+                       OR COALESCE(text_preview, title) LIKE 'https://%'
+                      )
                     ORDER BY created_at DESC
                     LIMIT ?
                 """,
