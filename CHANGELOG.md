@@ -10,6 +10,20 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+- **Backfill no longer wedges the periodic loop.** v2.7.2's wall-clock
+  timeout couldn't actually unstick a hung URLSession because
+  `withThrowingTaskGroup` implicitly awaits all child tasks before
+  returning, even after `cancelAll()` — and macOS in Local Network
+  limbo ignores cancellation. So a single parked URL would hang the
+  whole CloudKit periodic loop too. Now the periodic loop fires the
+  backfill in a *detached* task and moves on; an actor-based reentry
+  guard skips the next tick if the previous batch is still in flight.
+  CloudKit pull/push and the link backfill are no longer coupled.
+- **Backfill always logs.** Previously the daemon only logged on
+  `attempted > 0`, which made it impossible to tell from logs alone
+  whether the loop had wedged or just had nothing to do. Every batch
+  now logs a `starting batch (limit=N)` line and an outcome line.
+
 ## [2.7.2] – 2026-04-29
 
 - **Single-instance guard.** A botched relaunch (e.g. `open -a cpdb`

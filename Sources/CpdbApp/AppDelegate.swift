@@ -276,7 +276,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // cycle refreshes the FTS index for any rows that
                 // got titles, so search picks them up almost
                 // immediately.
-                await Self.runLinkTitleBackfillIfDue(store: store)
+                // Fire-and-forget. The backfiller can hang on a
+                // single network call (macOS parking URLSession
+                // requests pending Local Network permission) and
+                // structured-cancellation can't always free it. We
+                // *cannot* let that wedge the periodic loop, which
+                // also drives CloudKit pull/push. The reentry guard
+                // inside `runLinkTitleBackfillIfDue` keeps multiple
+                // detached batches from piling up.
+                Task.detached { await Self.runLinkTitleBackfillIfDue(store: store) }
                 if shouldPause {
                     // Honour the user's safety-net interval pref on
                     // every cycle, so changes in Preferences take
@@ -308,21 +316,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     ///
     /// `nonisolated` for the same reason as `runTimeWindowEvictionIfDue`
     /// — the periodic-sync detached Task isn't on MainActor.
+    /// Reentry guard for the detached backfill task. URLSession in
+    /// Local Network limbo can hang forever ignoring cancellation, so
+    /// the periodic loop fires the backfill detached. This actor
+    /// stops a new batch from starting if the previous one is still
+    /// in flight (which, in the wedge case, means stuck).
+    private actor BackfillGate {
+        private var running = false
+        func tryAcquire() -> Bool {
+            if running { return false }
+            running = true
+            return true
+        }
+        func release() { running = false }
+    }
+    private static let backfillGate = BackfillGate()
+
     nonisolated private static func runLinkTitleBackfillIfDue(store: Store) async {
+        guard await backfillGate.tryAcquire() else {
+            // Previous batch still running — most likely wedged on a
+            // network call. Skip this tick rather than piling up.
+            Log.cli.info("link-title backfill: previous batch still in flight, skipping")
+            return
+        }
+        defer { Task { await backfillGate.release() } }
         let repo = EntryRepository(store: store)
         // Quick bailout if there's nothing pending. Cheaper than
         // spinning up the URLSession.
         guard let any = try? repo.linksNeedingMetadata(limit: 1), !any.isEmpty else {
             return
         }
+        Log.cli.info("link-title backfill: starting batch (limit=50)")
         let backfiller = LinkMetadataBackfiller(repository: repo)
         do {
             let report = try await backfiller.runOnce(limit: 50)
-            if report.attempted > 0 {
-                Log.cli.info(
-                    "link-title backfill: \(report.summary, privacy: .public)"
-                )
-            }
+            Log.cli.info(
+                "link-title backfill: \(report.summary, privacy: .public)"
+            )
         } catch {
             Log.cli.error(
                 "link-title backfill failed: \(String(describing: error), privacy: .public)"
