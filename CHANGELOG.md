@@ -10,6 +10,8 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+## [2.8.2] – 2026-04-30
+
 - **Exponential-backoff link retry + connectivity gate.** Pre-v9
   the link backfill retried transient-failure rows on *every*
   cycle (~96×/day, forever). Now:
