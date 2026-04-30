@@ -10,6 +10,8 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+## [2.8.0] – 2026-04-30
+
 Marker release consolidating the 2.7.x series. No new functionality
 beyond v2.7.14 — bumped to 2.8.0 to mark "link metadata enrichment"
 as a finished feature theme. Highlights from the underlying point
