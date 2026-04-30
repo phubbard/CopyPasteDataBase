@@ -10,6 +10,22 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+- **URL-shaped plain text now classifies as `kind=link`.** Pasteboard
+  writes that omit the `public.url` UTI (terminal `pbcopy`, paste-
+  into-input flows, some apps' "Copy" buttons) used to land as
+  `kind=text` even when the payload was a single http(s):// URL.
+  They now classify as link, so the link-title backfill picks them
+  up and the popup renders them with the link card layout.
+  Conservative heuristic: payload must be a single whitespace-
+  trimmed token starting with http(s)://, ≤2048 chars, with a
+  parseable host.
+- **Capture-wake gates on kind=link.** The ingestion notification
+  now carries the entry's kind in userInfo; AppDelegate's wake
+  observer skips non-link captures. Stops the wasteful pattern
+  where every text/image/file capture re-fired a 5-row link
+  backfill batch (which always hit the same rate-limited rows at
+  the top of the queue).
+
 ## [2.7.10] – 2026-04-30
 
 - **Live updates: cards refresh in place when the background

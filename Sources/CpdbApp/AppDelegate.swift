@@ -203,7 +203,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             forName: .cpdbLocalEntryIngested,
             object: nil,
             queue: .main
-        ) { [weak self] _ in
+        ) { [weak self] note in
             Task {
                 do {
                     let push = try await syncer.pushPendingChanges()
@@ -216,15 +216,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     Log.cli.error("cloudkit push (wake) failed: \(String(describing: error), privacy: .public)")
                 }
             }
-            // Immediate small-batch link backfill on capture. The
-            // periodic loop runs every 15 minutes; a URL copied
-            // right before opening the popup wouldn't have a title
-            // by then. A 5-row batch fired right after ingest covers
-            // the just-captured row plus any other recent un-fetched
-            // ones. The BackfillGate inside runLinkTitleBackfillIfDue
-            // skips when a previous batch is still in flight, so
-            // captures during a periodic batch don't pile up.
+            // Immediate small-batch link backfill — only when the
+            // ingested entry was actually a link. Non-link captures
+            // (text/image/file/color) used to pointlessly fire a
+            // batch that re-tried the same stuck-at-the-top URLs
+            // every time, hammering rate-limited hosts. The kind
+            // arrives in the notification's userInfo from the
+            // Ingestor's post site.
             guard let self, let store = self.store else { return }
+            let kindRaw = note.userInfo?["kind"] as? String
+            guard kindRaw == EntryKind.link.rawValue else { return }
             Task.detached { await Self.runLinkTitleBackfillImmediate(store: store) }
         }
 

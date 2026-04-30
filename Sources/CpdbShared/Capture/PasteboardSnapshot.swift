@@ -162,8 +162,33 @@ public struct PasteboardSnapshot: Sendable {
         if utis.contains("com.apple.cocoa.pasteboard.color") || utis.contains("public.color") {
             return .color
         }
+        // Plain text that *is* a URL — e.g. `pbcopy`-style writes,
+        // terminal copies, paste-into-an-input-field flows that
+        // strip the `public.url` UTI on the way through. Detect
+        // here so the downstream link-title backfill picks them up.
+        // Conservative: must be the *only* whitespace-trimmed token
+        // and start with http(s):// — that rules out "look at
+        // https://… for context" prose where the user copied an
+        // explanatory sentence, not a link.
+        if let text = plainText, looksLikeURL(text) { return .link }
         if plainText != nil { return .text }
         return .other
+    }
+
+    /// Heuristic: `s` is a single whitespace-stripped http(s):// URL
+    /// with no embedded whitespace and a length under 2048. Length
+    /// cap stops giant blobs that happen to start with "http://"
+    /// from being mis-classified.
+    private func looksLikeURL(_ s: String) -> Bool {
+        let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count <= 2048,
+              trimmed.hasPrefix("http://") || trimmed.hasPrefix("https://"),
+              !trimmed.contains(where: { $0.isWhitespace }),
+              URL(string: trimmed)?.host != nil
+        else {
+            return false
+        }
+        return true
     }
 
     /// True if any flavor is an image UTI (png/jpeg/tiff/heic/image) with at

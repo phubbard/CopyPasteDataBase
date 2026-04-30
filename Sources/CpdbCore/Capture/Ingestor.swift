@@ -41,7 +41,17 @@ public struct Ingestor {
         // guard coalesces simultaneous wakes.
         switch outcome {
         case .inserted, .bumped:
-            NotificationCenter.default.post(name: .cpdbLocalEntryIngested, object: nil)
+            // Pass the entry's kind through userInfo so observers
+            // can scope themselves. The CloudKit push observer
+            // doesn't care; the link-backfill capture-wake observer
+            // uses it to skip non-link captures (otherwise every
+            // text/file/image capture re-runs the same stuck-at-the-
+            // top-of-queue link batch and wastes network).
+            NotificationCenter.default.post(
+                name: .cpdbLocalEntryIngested,
+                object: nil,
+                userInfo: ["kind": snapshot.kind.rawValue]
+            )
         case .skipped:
             break
         }
