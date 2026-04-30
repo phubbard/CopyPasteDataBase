@@ -10,6 +10,14 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+- **Periodic-tick observability.** Every step of the periodic sync
+  loop now emits a paired begin/end log line (pull begin/end, push
+  begin/end, evict-if-due begin/end, backfill spawn, tick complete)
+  with a monotonic tick counter. Diagnostic-only — no behavior
+  change. Lets us pinpoint exactly where the loop stalls when
+  cloudkit pull/push hangs (which is what we hit in v2.7.3 even
+  after decoupling the link backfill).
+
 ## [2.7.3] – 2026-04-29
 
 - **Backfill no longer wedges the periodic loop.** v2.7.2's wall-clock

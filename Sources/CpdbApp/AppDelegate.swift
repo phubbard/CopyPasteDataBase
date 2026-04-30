@@ -238,10 +238,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // pushes (handled below) trigger a pull outside this loop, so
         // this timer is just a safety net against missed notifications.
         periodicSyncTask = Task.detached { [weak self] in
+            var tick: UInt64 = 0
             while !Task.isCancelled {
+                tick &+= 1
+                Log.cli.info("periodic tick \(tick, privacy: .public) start")
                 var shouldPause = true
                 do {
+                    Log.cli.info("periodic tick \(tick, privacy: .public): pull begin")
                     let pull = try await syncer.pullRemoteChanges()
+                    Log.cli.info("periodic tick \(tick, privacy: .public): pull end (inserted=\(pull.inserted) updated=\(pull.updated))")
                     if pull.inserted + pull.updated + pull.tombstoned > 0 {
                         Log.cli.info(
                             "cloudkit pull: inserted=\(pull.inserted) updated=\(pull.updated) tombstoned=\(pull.tombstoned) skipped=\(pull.skipped)"
@@ -251,7 +256,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     Log.cli.error("cloudkit pull failed: \(String(describing: error), privacy: .public)")
                 }
                 do {
+                    Log.cli.info("periodic tick \(tick, privacy: .public): push begin")
                     let push = try await syncer.pushPendingChanges()
+                    Log.cli.info("periodic tick \(tick, privacy: .public): push end (attempted=\(push.attempted))")
                     if push.attempted > 0 {
                         Log.cli.info(
                             "cloudkit push: attempted=\(push.attempted) saved=\(push.saved) failed=\(push.failed) remaining=\(push.remaining)"
@@ -268,7 +275,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // run it every loop iteration, but the eviction
                 // itself only fires once per 24h via the
                 // `timeWindowLastRunAt` gate inside the helper.
+                Log.cli.info("periodic tick \(tick, privacy: .public): evict-if-due begin")
                 Self.runTimeWindowEvictionIfDue(store: store)
+                Log.cli.info("periodic tick \(tick, privacy: .public): evict-if-due end")
                 // Link-title backfill tick. Capped at 50 entries
                 // per cycle so a fresh install with a thousand
                 // links spreads the work across many ticks rather
@@ -284,7 +293,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // also drives CloudKit pull/push. The reentry guard
                 // inside `runLinkTitleBackfillIfDue` keeps multiple
                 // detached batches from piling up.
+                Log.cli.info("periodic tick \(tick, privacy: .public): spawning detached backfill")
                 Task.detached { await Self.runLinkTitleBackfillIfDue(store: store) }
+                Log.cli.info("periodic tick \(tick, privacy: .public): tick complete (shouldPause=\(shouldPause, privacy: .public))")
                 if shouldPause {
                     // Honour the user's safety-net interval pref on
                     // every cycle, so changes in Preferences take
