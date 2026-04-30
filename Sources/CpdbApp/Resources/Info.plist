@@ -32,6 +32,8 @@
 	<string>cpdb needs Accessibility permission to paste the entry you pick into the app you were using.</string>
 	<key>NSAppleEventsUsageDescription</key>
 	<string>cpdb sends ⌘V to the frontmost app so it can paste the entry you selected.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>cpdb fetches page titles and preview images for URLs you've copied. Some of those pages live on your local or corporate network.</string>
 	<key>NSHumanReadableCopyright</key>
 	<string>© Paul Hubbard</string>
 	<key>NSSupportsAutomaticTermination</key>
