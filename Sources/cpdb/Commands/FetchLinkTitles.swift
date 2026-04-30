@@ -23,8 +23,11 @@ struct FetchLinkTitles: ParsableCommand {
     @Option(name: .long, help: "Maximum entries to process this run.")
     var limit: Int = 200
 
-    @Flag(name: .long, help: "Refetch entries that already have a fetched_at sentinel.")
+    @Flag(name: .long, help: "Refetch entries that already have a fetched_at sentinel (ALL of them).")
     var force: Bool = false
+
+    @Flag(name: .long, help: "Only retry entries that came back empty (failed/rate-limited/no-title) — leaves successful titles alone.")
+    var retryEmpty: Bool = false
 
     @Flag(name: .long, help: "Show what would be fetched without doing the work.")
     var dryRun: Bool = false
@@ -32,6 +35,17 @@ struct FetchLinkTitles: ParsableCommand {
     func run() throws {
         let store = try Store.open()
         let repo = EntryRepository(store: store)
+
+        // --retry-empty is a one-shot sentinel reset, not a runtime
+        // flag for the backfiller. Clear the failed rows' fetched_at,
+        // then run the normal (force=false) batch — they're now
+        // candidates again. Doesn't affect rows that have a
+        // non-empty link_title.
+        if retryEmpty {
+            let cleared = try repo.resetLinkFetchedAtForEmptyTitles()
+            print("retry-empty: cleared \(cleared) row(s) with empty link_title")
+        }
+
         let candidates = try repo.linksNeedingMetadata(limit: limit, force: force)
         print("\(candidates.count) link entries to process (force=\(force), limit=\(limit))")
         if dryRun || candidates.isEmpty {

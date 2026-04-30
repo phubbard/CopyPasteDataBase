@@ -294,6 +294,29 @@ public struct EntryRepository {
         }
     }
 
+    /// Targeted variant of `resetLinkFetchedAt`: only clears
+    /// sentinels for rows that came back empty (fetched_at IS NOT
+    /// NULL but link_title is null/empty). Use this to retry the
+    /// failed/rate-limited/genuinely-empty subset without re-hitting
+    /// the network for the thousands of links that already have
+    /// titles. Returns the number of rows cleared so the UI can show
+    /// a meaningful confirmation.
+    @discardableResult
+    public func resetLinkFetchedAtForEmptyTitles() throws -> Int {
+        try store.dbQueue.write { db in
+            try db.execute(
+                sql: """
+                    UPDATE entries
+                    SET link_fetched_at = NULL
+                    WHERE kind = 'link' AND deleted_at IS NULL
+                      AND link_fetched_at IS NOT NULL
+                      AND (link_title IS NULL OR link_title = '')
+                """
+            )
+            return db.changesCount
+        }
+    }
+
     /// Toggle (or explicitly set) the pinned state of a single
     /// entry. Pinned entries skip future eviction policies and float
     /// to the top of the popup. Idempotent — pinning an already-

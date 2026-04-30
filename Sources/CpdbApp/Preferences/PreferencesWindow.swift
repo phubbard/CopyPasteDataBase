@@ -389,8 +389,11 @@ private struct PreferencesView: View {
                 // changed titles since first capture).
                 HStack {
                     Button("Fetch link titles") { runLinkBackfill(force: false) }
+                        .help("Process links that have never been attempted (the normal background path, run on demand).")
+                    Button("Retry empties") { runLinkBackfillRetryEmpty() }
+                        .help("Re-run fetch on links that came back empty (failed, rate-limited, or genuinely had no title). Leaves successful titles alone — much friendlier than 'Refetch all'.")
                     Button("Refetch all") { runLinkBackfill(force: true) }
-                        .help("Clear the per-entry sentinel and re-run the fetch on every link, including ones already attempted.")
+                        .help("Clear the per-entry sentinel and re-run the fetch on every link, including ones already titled. Use sparingly — hammers YouTube's rate limit on a large library.")
                     Spacer()
                 }
                 if !linkBackfillStatus.isEmpty {
@@ -618,6 +621,32 @@ private struct PreferencesView: View {
                 let summary = report.attempted == 0
                     ? "Nothing to fetch."
                     : "Fetched \(report.successes) of \(report.attempted) (· \(report.emptyResults) blank · \(report.failures) failed)."
+                await MainActor.run { linkBackfillStatus = summary }
+            } catch {
+                await MainActor.run { linkBackfillStatus = "Failed: \(error)" }
+            }
+        }
+    }
+
+    /// Targeted retry for the "I bulk-backfilled, hit YouTube's rate
+    /// limit, now half my links are empty" scenario. Clears the
+    /// fetched_at sentinel ONLY on rows whose link_title is null/
+    /// empty — successful rows are untouched, so the network only
+    /// re-hits the URLs that didn't work last time.
+    private func runLinkBackfillRetryEmpty() {
+        linkBackfillStatus = "Retrying empties…"
+        Task.detached {
+            do {
+                let store = try Store.open()
+                let repo = EntryRepository(store: store)
+                let cleared = try repo.resetLinkFetchedAtForEmptyTitles()
+                if cleared == 0 {
+                    await MainActor.run { linkBackfillStatus = "Nothing to retry — all attempted links have titles." }
+                    return
+                }
+                let backfiller = LinkMetadataBackfiller(repository: repo)
+                let report = try await backfiller.runOnce(limit: 5000)
+                let summary = "Retried \(cleared): \(report.successes) succeeded · \(report.emptyResults) still blank · \(report.failures) failed."
                 await MainActor.run { linkBackfillStatus = summary }
             } catch {
                 await MainActor.run { linkBackfillStatus = "Failed: \(error)" }

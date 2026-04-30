@@ -10,6 +10,22 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+- **"Retry empties" — targeted link refetch.** Until now, the
+  Preferences "Refetch all" button and `cpdb fetch-link-titles
+  --force` cleared `link_fetched_at` on every link, which on a
+  3000-row library means hammering YouTube oEmbed (and tripping
+  its rate limit, which is the bug 2.7.7 worked around). New
+  surface lets you target only the failed/empty subset:
+    - Preferences → "Retry empties" button (alongside "Fetch link
+      titles" and "Refetch all"), with help-tag explanations of
+      when to use each.
+    - `cpdb fetch-link-titles --retry-empty` — clears
+      `link_fetched_at` only on rows whose `link_title` is
+      null/empty, then runs a normal batch. Reports how many were
+      cleared up front.
+    - New `EntryRepository.resetLinkFetchedAtForEmptyTitles()`
+      helper backs both UI surfaces.
+
 ## [2.7.7] – 2026-04-29
 
 - **Transient errors no longer mark a link "fetched".** YouTube's
