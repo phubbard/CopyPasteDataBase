@@ -10,6 +10,8 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+## [2.7.1] – 2026-04-29
+
 - **Link preview thumbnails (phase 2 of v2.7).** The metadata fetcher
   now also pulls a preview image — YouTube oEmbed `thumbnail_url`,
   HTML `og:image` / `og:image:secure_url` / `twitter:image` /
