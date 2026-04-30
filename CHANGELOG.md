@@ -10,6 +10,55 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+Marker release consolidating the 2.7.x series. No new functionality
+beyond v2.7.14 — bumped to 2.8.0 to mark "link metadata enrichment"
+as a finished feature theme. Highlights from the underlying point
+releases:
+
+- **Background-fetched link titles + thumbnails.** Captured URLs
+  grow a human-readable title and a preview image in the
+  background. YouTube uses oEmbed; everything else uses HTML
+  scrape (og:title / twitter:title / `<title>`,
+  og:image / twitter:image). Wikipedia REST API + favicon
+  discovery serve as additional thumbnail-fallback paths so the
+  long tail of "no OpenGraph" sites still gets *something*.
+  Indexed in FTS5 — search for "santa cruz vala" and the YouTube
+  URL you copied surfaces by video title.
+- **Live popup updates.** Cards refresh in place when the
+  background fills them in. GRDB ValueObservation tracks the
+  link-fetched-at sum and previews row count, so a fresh title or
+  thumbnail morphs the card from "URL only" → "title + thumbnail"
+  without dismiss + re-summon. Capture-wake link backfill makes
+  freshly-copied URLs enrich within ~1–3 seconds.
+- **Hover tooltips on every card.** Type, source app, originating
+  device (your Mac or another via CloudKit sync), and absolute
+  capture timestamp.
+- **Pasteboard-classification fixes.** URL-shaped plain text (the
+  `pbcopy` / paste-into-input-field shape) classifies as
+  `kind=link` so the backfill picks it up. Bumped duplicates
+  reclassify if the kind heuristic has changed since first
+  capture. New `cpdb reclassify-kinds` migration cleans up the
+  historical pile in one command.
+- **Multi-Mac dupe prevention.** `com.apple.loginwindow` joins the
+  always-ignore list — previously every screen-unlock event on
+  every Mac generated a phantom duplicate that propagated through
+  CloudKit. New `cpdb dedupe --links-all-time` collapses URL
+  duplicates regardless of capture-time gap, salvaging
+  link_titles from siblings before tombstoning.
+- **Reliability.** Backfill is decoupled from the periodic sync
+  loop (a wedged URL fetch can no longer stall CloudKit pull/push).
+  Transient errors (HTTP 403/429/5xx, network timeouts) leave
+  rows un-stamped so they retry on the next cycle. New "Retry
+  empties" button in Preferences targets only the failed/empty
+  subset, no more YouTube rate-limit hammering. Single-instance
+  guard at app launch stops the menu-bar-icon pileup. Local
+  Network preferences row + `NSLocalNetworkUsageDescription` for
+  the privacy prompt.
+- **Popup polish.** Standard close button on the panel.
+
+Underlying versions: 2.7.0 through 2.7.14. See those entries
+below for per-bug detail.
+
 ## [2.7.14] – 2026-04-30
 
 - **Bump-time kind reclassification.** When a duplicate capture
