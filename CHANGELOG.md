@@ -10,6 +10,8 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+## [2.7.6] – 2026-04-29
+
 - **Backfill actually runs again.** Root cause of v2.7.0–2.7.5
   silence: the `linksNeedingMetadata(limit: 1)` probe used by the
   daemon was returning the most recent unfetched row, but if that
