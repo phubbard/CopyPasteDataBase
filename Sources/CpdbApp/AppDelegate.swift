@@ -229,6 +229,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Task.detached { await Self.runLinkTitleBackfillImmediate(store: store) }
         }
 
+        // Touch the Reachability singleton so NWPathMonitor starts
+        // monitoring before the first periodic cycle fires.
+        _ = Reachability.shared
+        // When the OS reports we're back online (Wi-Fi reconnect,
+        // VPN handshake completed, captive portal cleared), fire a
+        // catch-up backfill batch immediately. Lets the queue drain
+        // without waiting for the next 15-min periodic tick.
+        NotificationCenter.default.addObserver(
+            forName: .cpdbReachabilityChanged,
+            object: nil,
+            queue: .main
+        ) { [weak self] note in
+            let online = (note.userInfo?["isOnline"] as? Bool) ?? false
+            guard online, let store = self?.store else { return }
+            Log.cli.info("link-title backfill: reachability online edge, firing catch-up")
+            Task.detached { await Self.runLinkTitleBackfillImmediate(store: store) }
+        }
+
         // Register for silent push + install the zone subscription so
         // the server wakes us when another device writes. APNs is
         // granted by our `com.apple.developer.aps-environment`

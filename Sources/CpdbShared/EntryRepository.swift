@@ -158,9 +158,27 @@ public struct EntryRepository {
     /// returns from being offline.
     public func linksNeedingMetadata(limit: Int = 200, force: Bool = false) throws -> [LinkBackfillRow] {
         try store.dbQueue.read { db in
-            let whereClause = force
-                ? "kind = 'link' AND deleted_at IS NULL"
-                : "kind = 'link' AND deleted_at IS NULL AND link_fetched_at IS NULL"
+            // The non-force WHERE clause has two extra terms beyond
+            // "never fetched":
+            //   - link_retry_after IS NULL OR link_retry_after < now
+            //     respects the v9 exponential-backoff schedule. Rows
+            //     in their cool-off period don't enter the queue.
+            //   - link_retry_count < maxRetries gives up on rows
+            //     that have failed too many times in a row, freeing
+            //     queue capacity for newer captures.
+            let now = Date().timeIntervalSince1970
+            let whereClause: String
+            var args: StatementArguments = []
+            if force {
+                whereClause = "kind = 'link' AND deleted_at IS NULL"
+            } else {
+                whereClause = """
+                    kind = 'link' AND deleted_at IS NULL AND link_fetched_at IS NULL
+                      AND (link_retry_after IS NULL OR link_retry_after < ?)
+                      AND link_retry_count < ?
+                """
+                args += [now, EntryRepository.linkBackfillMaxRetries]
+            }
             // The URL-prefix check used to live in the post-filter
             // below, but that meant rows like `mailto:foo@bar` would
             // pass the SQL query, get dropped by the swift filter,
@@ -183,7 +201,7 @@ public struct EntryRepository {
                     ORDER BY created_at DESC
                     LIMIT ?
                 """,
-                arguments: [limit]
+                arguments: args + [limit]
             )
             return rows.compactMap { row in
                 let id: Int64 = row["id"]
@@ -207,13 +225,27 @@ public struct EntryRepository {
     /// search picks up the new text immediately.
     /// Enqueues for CloudKit push so siblings learn the title and
     /// don't re-fetch.
+    /// Maximum consecutive transient-failure attempts before the
+    /// backfill gives up on a row and stamps it
+    /// fetched-with-empty. After this many tries, the row falls out
+    /// of the retry queue; the user can still resurrect it with the
+    /// "Retry empties" button or `cpdb fetch-link-titles --retry-empty`.
+    public static let linkBackfillMaxRetries: Int = 6
+
     public func setLinkMetadata(entryId: Int64, title: String?) throws {
         let now = Date().timeIntervalSince1970
         try store.dbQueue.write { db in
+            // Resetting retry_count + retry_after is part of the
+            // "settled" semantics: a successful fetch (or a permanent
+            // failure that calls this with title=nil) clears the
+            // backoff state so the row is in a consistent terminal
+            // state. Future user-driven retries (clear link_fetched_at)
+            // start the count fresh.
             try db.execute(
                 sql: """
                     UPDATE entries
-                    SET link_title = ?, link_fetched_at = ?
+                    SET link_title = ?, link_fetched_at = ?,
+                        link_retry_count = 0, link_retry_after = NULL
                     WHERE id = ? AND deleted_at IS NULL
                 """,
                 arguments: [title, now, entryId]
@@ -261,6 +293,36 @@ public struct EntryRepository {
     ///
     /// Idempotent: re-running with the same entry id replaces the
     /// existing previews row.
+    /// Record a transient failure for a link backfill attempt.
+    /// Increments `link_retry_count` and schedules
+    /// `link_retry_after` according to an exponential-backoff
+    /// curve (1 min, 2, 4, 8, 16, 32 — capped at 60 min).
+    /// `link_fetched_at` stays NULL so the row remains a candidate;
+    /// the WHERE clause in `linksNeedingMetadata` enforces both the
+    /// retry-after gate and the max-retries cap.
+    ///
+    /// Returns the new retry_count so the caller can log progress.
+    @discardableResult
+    public func recordLinkFetchTransientFailure(entryId: Int64) throws -> Int {
+        let now = Date().timeIntervalSince1970
+        return try store.dbQueue.write { db in
+            try db.execute(
+                sql: """
+                    UPDATE entries
+                    SET link_retry_count = link_retry_count + 1,
+                        link_retry_after = ? + (60.0 * MIN(60, 1 << link_retry_count))
+                    WHERE id = ? AND deleted_at IS NULL
+                """,
+                arguments: [now, entryId]
+            )
+            return try Int.fetchOne(
+                db,
+                sql: "SELECT link_retry_count FROM entries WHERE id = ?",
+                arguments: [entryId]
+            ) ?? 0
+        }
+    }
+
     public func setLinkPreviewThumbnails(
         entryId: Int64,
         small: Data?,
@@ -293,10 +355,15 @@ public struct EntryRepository {
     /// avoids a temporary "blank cards" period during the retry.
     public func resetLinkFetchedAt() throws {
         try store.dbQueue.write { db in
+            // Also reset the retry state. A user-driven "refetch"
+            // means "try again from scratch" — preserving a stale
+            // retry_count would mean an old hammered URL gets
+            // queued, fails, and gives up immediately.
             try db.execute(
                 sql: """
                     UPDATE entries
-                    SET link_fetched_at = NULL
+                    SET link_fetched_at = NULL,
+                        link_retry_count = 0, link_retry_after = NULL
                     WHERE kind = 'link' AND deleted_at IS NULL
                 """
             )
@@ -316,7 +383,8 @@ public struct EntryRepository {
             try db.execute(
                 sql: """
                     UPDATE entries
-                    SET link_fetched_at = NULL
+                    SET link_fetched_at = NULL,
+                        link_retry_count = 0, link_retry_after = NULL
                     WHERE kind = 'link' AND deleted_at IS NULL
                       AND link_fetched_at IS NOT NULL
                       AND (link_title IS NULL OR link_title = '')

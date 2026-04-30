@@ -10,6 +10,36 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+- **Exponential-backoff link retry + connectivity gate.** Pre-v9
+  the link backfill retried transient-failure rows on *every*
+  cycle (~96×/day, forever). Now:
+    - **Schema v9** adds `link_retry_count` and `link_retry_after`
+      to `entries`.
+    - On a transient failure (HTTP 403/429/5xx, network blip), the
+      row's count increments and `link_retry_after = now + 60 ·
+      min(60, 2^count)` seconds — schedule is 1, 2, 4, 8, 16, 32,
+      then capped at 60 minutes.
+    - `linksNeedingMetadata` honours both `link_retry_after` and a
+      max-attempts cap of `EntryRepository.linkBackfillMaxRetries`
+      (6) — beyond that the row drops out of the queue. "Retry
+      empties" + `cpdb fetch-link-titles --retry-empty` and the
+      "Refetch all" button reset the retry state cleanly so a
+      user-driven retry starts fresh.
+    - Successful fetches and permanent failures clear the retry
+      state, so a row that finally succeeded doesn't carry stale
+      backoff into a future re-fetch.
+- **Reachability monitor.** New `Reachability` actor wraps
+  `NWPathMonitor` and exposes `isOnline` plus a
+  `cpdbReachabilityChanged` notification. The link backfill
+  short-circuits to a no-op when the OS reports no internet —
+  rows aren't penalized for being offline. AppDelegate observes
+  the offline→online edge and fires an immediate catch-up batch,
+  so a Mac coming back from sleep / airplane mode / Wi-Fi
+  reconnect resumes work without waiting for the 15-minute timer.
+- **6 new tests** cover the backoff math (1·2^count minutes,
+  60-minute cap), success-clears-state, and the
+  retry_after / max_retries gates in `linksNeedingMetadata`.
+
 ## [2.8.1] – 2026-04-30
 
 - **Quieter CloudKit push logs.** Multi-Mac install means three

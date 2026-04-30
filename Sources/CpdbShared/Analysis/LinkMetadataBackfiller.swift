@@ -64,6 +64,17 @@ public struct LinkMetadataBackfiller {
         force: Bool = false,
         progress: (@Sendable (Int, Int, EntryRepository.LinkBackfillRow, LinkMetadataFetcher.Result?, Error?) -> Void)? = nil
     ) async throws -> Report {
+        // Skip the entire batch if the OS reports no internet. We
+        // don't want to burn retry-count budget on rows that are
+        // otherwise fine — every fetch would time out, every row
+        // would have its retry_count incremented, and the user would
+        // come back online to find half their queue has given up.
+        // Reachability.shared starts in an optimistic "online"
+        // state, so the first batch after launch isn't accidentally
+        // blocked while NWPathMonitor's first callback lands.
+        guard Reachability.shared.isOnline else {
+            return Report()
+        }
         let candidates = try repository.linksNeedingMetadata(limit: limit, force: force)
         guard !candidates.isEmpty else { return Report() }
 
@@ -128,20 +139,26 @@ public struct LinkMetadataBackfiller {
                             }
                             return Outcome(row: row, result: result, error: nil, position: position)
                         } catch {
-                            // Transient errors (HTTP 403/429/5xx,
-                            // network timeouts) are likely to clear
-                            // up on retry, so we leave the row
-                            // un-stamped and a future cycle will
-                            // pick it up again. Permanent failures
-                            // (decode errors, invalid URL) get
-                            // stamped to keep them out of the queue.
-                            // YouTube oEmbed in particular returns
-                            // 403 once we trip its rate limit, then
-                            // recovers an hour later — without this
-                            // distinction those rows would never
-                            // get retried.
+                            // Transient vs permanent failure
+                            // classification (FetchError.isTransient).
+                            //
+                            // Permanent (decode error, invalid URL):
+                            //   → setLinkMetadata stamps fetched_at
+                            //     with title=nil, leaves the queue.
+                            //
+                            // Transient (HTTP 403/429/5xx, network):
+                            //   → recordLinkFetchTransientFailure
+                            //     bumps retry_count and schedules the
+                            //     next attempt via exponential
+                            //     backoff (1·2^n minutes capped at
+                            //     60 min). After max retries the
+                            //     EntryRepository's WHERE clause
+                            //     drops the row from the candidate
+                            //     set; resurrect via "Retry empties".
                             let transient = (error as? LinkMetadataFetcher.FetchError)?.isTransient ?? false
-                            if !transient {
+                            if transient {
+                                try? repository.recordLinkFetchTransientFailure(entryId: row.entryId)
+                            } else {
                                 try? repository.setLinkMetadata(entryId: row.entryId, title: nil)
                             }
                             return Outcome(row: row, result: nil, error: error, position: position)

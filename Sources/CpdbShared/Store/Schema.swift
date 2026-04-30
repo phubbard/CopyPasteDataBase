@@ -380,5 +380,31 @@ enum Schema {
                 )
             }
         }
+
+        migrator.registerMigration("v9_link_retry_backoff") { db in
+            // Exponential-backoff retry state for the link-metadata
+            // fetcher. Pre-v9, transient failures (HTTP 403 / 429 /
+            // 5xx, network blips) left link_fetched_at NULL so the
+            // row was retried on every periodic cycle (~96×/day,
+            // forever). That hammered rate-limited services like
+            // YouTube oEmbed and made noisy log churn.
+            //
+            //   link_retry_count    — number of transient failures
+            //                         observed since the last
+            //                         success. Reset to 0 on
+            //                         success or permanent failure.
+            //   link_retry_after    — earliest epoch second at which
+            //                         this row should be retried. NULL
+            //                         when never attempted, or when
+            //                         the row is settled (fetched or
+            //                         given up).
+            //
+            // The backoff schedule lives in
+            // LinkMetadataBackfiller.backoffSeconds(for:) — currently
+            // 1·2^count minutes capped at 60 minutes, with a hard
+            // give-up at LinkMetadataBackfiller.maxRetries (6).
+            try db.execute(sql: "ALTER TABLE entries ADD COLUMN link_retry_count INTEGER NOT NULL DEFAULT 0;")
+            try db.execute(sql: "ALTER TABLE entries ADD COLUMN link_retry_after REAL;")
+        }
     }
 }
