@@ -10,6 +10,8 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+## [2.7.8] – 2026-04-30
+
 - **"Retry empties" — targeted link refetch.** Until now, the
   Preferences "Refetch all" button and `cpdb fetch-link-titles
   --force` cleared `link_fetched_at` on every link, which on a
