@@ -478,6 +478,117 @@ Implementation contract for porters who want feature parity:
 - Snapshots live next to (not inside) the live directory so the
   fixture machinery never collides with itself.
 
+## Link metadata enrichment (v8 + v9)
+
+Captured `kind=link` entries grow a human-readable title and a preview
+image asynchronously, so search can find a YouTube URL by its video
+title and the popup card can show a thumbnail. The columns + behaviour
+are contracts; the fetcher implementation is per-platform.
+
+### Schema
+
+`entries` gains four columns total across two migrations:
+
+| Column | Type | Migration | Meaning |
+|---|---|---|---|
+| `link_title` | TEXT? | v8 | Human-readable title from oEmbed / og:title / `<title>`. NULL when never tried OR fetched-but-page-had-no-title |
+| `link_fetched_at` | REAL? | v8 | Unix timestamp of last attempt. NULL = never tried; non-NULL = attempt completed (success OR permanent failure). The retry queue skips non-NULL rows |
+| `link_retry_count` | INTEGER NOT NULL DEFAULT 0 | v9 | Consecutive transient failures. Reset to 0 on success or permanent failure |
+| `link_retry_after` | REAL? | v9 | Earliest epoch second to retry. NULL = ready now (or settled); non-NULL = backoff window |
+
+`entries_fts` virtual table also gains a `link_title` column; v8
+migration drops + rebuilds with the new column appended and re-indexes
+every live row.
+
+### Fetcher behaviour contract
+
+> **Contract — link backfill scheduling**
+>
+> A row is in the candidate queue iff:
+> ```
+> kind = 'link' AND deleted_at IS NULL
+>   AND link_fetched_at IS NULL
+>   AND (link_retry_after IS NULL OR link_retry_after < now)
+>   AND link_retry_count < MAX_RETRIES
+>   AND text_preview LIKE 'http%'  -- mailto:, magnet:, etc. excluded at SQL
+> ```
+>
+> Order: `created_at DESC` (newest first — a freshly-copied URL gets
+> enriched before old backlog).
+>
+> `MAX_RETRIES = 6` on macOS. Beyond the cap a row falls out of the
+> queue. The user can resurrect via "Retry empties" (clears retry
+> state for rows whose `link_title` is null/empty).
+
+> **Contract — fetcher resolution chain (per URL)**
+>
+> 1. **YouTube** (host matches `youtube.com` / `youtu.be` /
+>    `m.youtube.com` / `www.youtube.com`): hit the public oEmbed
+>    endpoint `https://www.youtube.com/oembed?url=<url>&format=json`.
+>    Use `title` and `thumbnail_url` fields.
+> 2. **Generic HTML scrape** (everything else): GET the URL with a
+>    browser-shaped User-Agent. Extract title in this priority:
+>    `<meta property="og:title" content="…">` →
+>    `<meta name="twitter:title" content="…">` →
+>    `<title>…</title>`. Extract thumbnail in priority:
+>    `og:image` / `og:image:secure_url` / `og:image:url` →
+>    `twitter:image` / `twitter:image:src`.
+> 3. **Wikipedia REST API fallback** (only when host matches
+>    `*.wikipedia.org` AND step 2 produced no thumbnail URL): GET
+>    `https://<host>/api/rest_v1/page/summary/<title>`, use
+>    `thumbnail.source` then `originalimage.source`.
+> 4. **Favicon fallback** (when no thumbnail yet): scan HTML head
+>    for `<link rel="apple-touch-icon" href="…">` (preferred —
+>    typically 180×180 PNG), then `<link rel="icon">` /
+>    `rel="shortcut icon">`. Resolve relative hrefs against the page
+>    URL. If still none, conventional `<scheme>://<host>/favicon.ico`.
+
+> **Contract — outcome dispatch**
+>
+> | Outcome | `link_title` | `link_fetched_at` | `link_retry_count` | `link_retry_after` |
+> |---|---|---|---|---|
+> | Fetched a non-empty title | the title | now | 0 | NULL |
+> | Fetched, page had no title | NULL | now | 0 | NULL |
+> | Permanent failure (decode error, invalid URL, oversized body) | NULL | now | 0 | NULL |
+> | Transient failure (HTTP 403/408/425/429/5xx, network timeout, network unreachable) | unchanged | unchanged (NULL) | += 1 | now + 60·min(60, 2^count) seconds |
+
+> **Contract — connectivity gate**
+>
+> The backfill MUST short-circuit (no fetches, no retry-count bumps)
+> when the OS reports no internet. macOS uses `NWPathMonitor`;
+> Windows should use `NetworkInformation.GetInternetConnectionProfile()`
+> from `Windows.Networking.Connectivity` or the equivalent .NET
+> `NetworkInterface.GetIsNetworkAvailable()`. The offline→online
+> edge SHOULD trigger an immediate catch-up batch.
+
+> **Contract — capture-wake immediate enrichment**
+>
+> When a new `kind=link` entry is captured locally, the daemon
+> SHOULD fire a small (e.g. 5-row) backfill batch immediately
+> rather than wait for the periodic cycle. Reentry guard: skip if
+> a previous batch is still in flight. Combined with the
+> `created_at DESC` ordering, this means freshly-copied URLs
+> typically render with title + thumbnail within 1–3 seconds.
+
+> **Contract — kind reclassification on bump**
+>
+> When a content_hash dedup *bumps* an existing entry's
+> `created_at`, the ingestor MUST compare the new snapshot's
+> classified kind against the stored kind and update if they
+> differ. This catches the case where the kind heuristic evolves
+> after a row was first captured (e.g. the macOS v2.7.11 rule
+> "URL-shaped plain text → kind=link"). On a text→link transition,
+> ALSO null `link_fetched_at` so the next backfill cycle picks the
+> row up.
+
+### Preview thumbnails
+
+Thumbnail bytes for link entries land in the same `previews` table
+as image-kind thumbnails (small ≈ 256 px JPEG, large ≈ 640 px JPEG).
+Thumbnailer downscales raw bytes ≤ 4 MB; oversized / non-image
+content-types are rejected. The card renderer queries
+`previews.thumb_small` / `thumb_large` regardless of entry kind.
+
 ## Schema evolution policy
 
 - **Never edit a shipped migration.** Add a new one.
@@ -505,3 +616,9 @@ When bringing up cpdb-win with this schema:
       `devices` with a stable machine GUID.
 - [ ] Leave `cloudkit_*` and `pinboards` tables empty but present —
       future sync / import paths assume they exist.
+- [ ] Implement link metadata enrichment per the § Link metadata
+      enrichment contract: schema columns, fetcher resolution
+      chain, exponential backoff, connectivity gate, capture-wake
+      immediate enrichment, kind reclassification on bump.
+- [ ] Hover tooltips on cards exposing source app, originating
+      device, and absolute capture timestamp (use WinUI `ToolTip`).

@@ -47,6 +47,35 @@ Legend:
 | Push-to-device (`ActionRequest`) | ✅ v2.5 (consume) | ✅ v2.5 (send) | — | iOS → Mac paste flow |
 | Cross-platform sync substrate | ⏳ planned | ⏳ planned | ⏳ planned | brainstorm in earlier session — Cloudflare Worker + HMAC; not yet started |
 
+## Link metadata enrichment (v2.7 → v2.8 series)
+
+| Feature | macOS | iOS | Windows | Contract / notes |
+|---|---|---|---|---|
+| `entries.link_title` + `link_fetched_at` columns | ✅ v2.7.0 | ✅ v2.7.0 | ⏳ | schema v8; FTS5 also gains a `link_title` indexed column |
+| `entries.link_retry_count` + `link_retry_after` columns | ✅ v2.8.2 | ✅ v2.8.2 | ⏳ | schema v9; semantics in `docs/schema.md` § Link metadata retry |
+| YouTube oEmbed title fetch | ✅ v2.7.0 | — | ⏳ | iOS reads via CloudKit; doesn't fetch. Windows: hit `https://www.youtube.com/oembed?url=…&format=json`. Standalone in v1, no sync |
+| Generic HTML title scrape (og:title → twitter:title → `<title>`) | ✅ v2.7.0 | — | ⏳ | regex-based, see `Sources/CpdbShared/Analysis/LinkMetadataFetcher.swift` |
+| Preview thumbnails: og:image / twitter:image | ✅ v2.7.1 | ✅ v2.7.1 (read) | ⏳ | downloaded via fetcher, downscaled by `Thumbnailer`, written to `previews` table |
+| Wikipedia REST API thumbnail fallback | ✅ v2.7.13 | — | ⏳ | hits `/api/rest_v1/page/summary/<title>` for `*.wikipedia.org` URLs lacking og:image |
+| Favicon thumbnail fallback (apple-touch-icon → icon → `/favicon.ico`) | ✅ v2.7.13 | — | ⏳ | last-resort thumb when nothing else works |
+| URL-shaped plain text → kind=link classification | ✅ v2.7.11 | ✅ v2.7.11 | ⏳ | covers `pbcopy`-style writes that omit `public.url`. Heuristic in `PasteboardSnapshot.kind` |
+| Reclassify-on-bump (kind drift after heuristic update) | ✅ v2.7.14 | — | ⏳ | when content_hash dedup bumps an existing row, compare new vs stored kind and update |
+| `cpdb reclassify-kinds` migration | ✅ v2.7.14 | — | ⏳ | one-shot retroactive cleanup |
+| Capture-wake immediate enrichment | ✅ v2.7.10 | — | ⏳ | fire 5-row backfill on every link capture. Mac uses notification observer |
+| Live popup card updates while backfill runs | ✅ v2.7.10 | ✅ v2.5 (live updates) | ⏳ | GRDB ValueObservation tracks `SUM(link_fetched_at)` + `previews` count |
+| Capture-wake gates on kind=link | ✅ v2.7.11 | — | ⏳ | text/image/file captures don't pointlessly fire link backfill |
+| Transient error classification | ✅ v2.7.7 | — | ⏳ | HTTP 403/429/5xx + network errors are transient; don't stamp `link_fetched_at` |
+| Exponential backoff (1·2^count min, cap 60 min) | ✅ v2.8.2 | — | ⏳ | contract: `docs/schema.md` § Link metadata retry. 6-attempt cap |
+| Reachability gate before fetches | ✅ v2.8.2 | — | ⏳ | mac: `NWPathMonitor`. Windows: `NetworkInformation.GetInternetConnectionProfile()` or `Microsoft.Windows.Net.Connectivity` |
+| Online-edge catch-up wake | ✅ v2.8.2 | — | ⏳ | network transitions offline→online → fire backfill batch |
+| "Retry empties" targeted refetch | ✅ v2.7.8 | — | ⏳ | only clears sentinels for rows whose `link_title` is null/empty |
+| Hover tooltips on cards (source app, device, timestamp) | ✅ v2.7.12 | — | ⏳ | uses Cocoa `.help()`; Windows: WinUI `ToolTip` |
+| Multi-mac dupe prevention (loginwindow blocklist) | ✅ v2.7.9 | — | — | Apple-specific source-app phantom |
+| `cpdb dedupe --links-all-time` (cross-time link collapse) | ✅ v2.7.9 | — | ⏳ | salvages `link_title` from siblings before tombstoning |
+| Permissions UI (Accessibility + Local Network status) | ✅ v2.8.4 | — | — | Windows uses MSIX capability manifest, no runtime equivalent |
+| CloudKit push-batch recordID dedup | ✅ v2.8.3 | — | — | sync-only fix; Windows v1 is standalone |
+| Quieter CloudKit push logs (concurrency-race noise filter) | ✅ v2.8.1 | — | — | sync-only |
+
 ## Storage management (v2.6 series)
 
 | Feature | macOS | iOS | Windows | Contract / notes |
