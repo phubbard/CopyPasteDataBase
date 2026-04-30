@@ -10,6 +10,8 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+## [2.7.2] – 2026-04-29
+
 - **Single-instance guard.** A botched relaunch (e.g. `open -a cpdb`
   on top of a still-running copy) used to leave multiple cpdb glyphs
   in the menu bar with no way to tell them apart. The app now
