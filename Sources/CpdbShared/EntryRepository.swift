@@ -232,6 +232,40 @@ public struct EntryRepository {
         }
     }
 
+    /// Persist preview thumbnails for a link entry. Stored in the
+    /// same `previews` table the image-kind path uses, so the UI
+    /// rendering layer doesn't need a separate code path —
+    /// LinkCard just queries `previews.thumb_small/thumb_large`
+    /// like ImageCard does, and CloudKit syncs the bytes via the
+    /// existing thumbSmall/thumbLarge CKAsset fields.
+    ///
+    /// Idempotent: re-running with the same entry id replaces the
+    /// existing previews row.
+    public func setLinkPreviewThumbnails(
+        entryId: Int64,
+        small: Data?,
+        large: Data?
+    ) throws {
+        try store.dbQueue.write { db in
+            try db.execute(
+                sql: """
+                    INSERT INTO previews (entry_id, thumb_small, thumb_large)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT (entry_id) DO UPDATE SET
+                        thumb_small = excluded.thumb_small,
+                        thumb_large = excluded.thumb_large
+                """,
+                arguments: [entryId, small, large]
+            )
+            // The link_title push enqueue (if present) already covers
+            // CloudKit propagation — the syncer reads thumbnail bytes
+            // from the previews table when building the entry record.
+            // Re-enqueueing here would be redundant, but cheap; do it
+            // so a thumbnail-only update (no title fetch) still pushes.
+            try PushQueue.enqueue(entryId: entryId, in: db, now: Date().timeIntervalSince1970)
+        }
+    }
+
     /// Wipe link_fetched_at sentinels so the next backfill retries
     /// every link. Used by the Preferences "Refetch link titles"
     /// button. Doesn't touch existing link_title values — those

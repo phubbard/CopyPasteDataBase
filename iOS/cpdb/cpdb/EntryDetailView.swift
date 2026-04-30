@@ -192,6 +192,17 @@ struct EntryDetailView: View {
         let urlString: String? = overrideURL?.absoluteString ?? l.linkURL
         if let url = url, let urlString = urlString {
             VStack(alignment: .leading, spacing: 10) {
+                // v2.7.1: preview thumbnail (og:image / oEmbed
+                // thumbnail_url). Sourced from `previews.thumb_large`
+                // which Mac populated during the link-metadata
+                // backfill and CloudKit synced down.
+                if let data = l.thumbLarge, let uiImage = UIImage(data: data) {
+                    Image(uiImage: uiImage)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(maxWidth: .infinity)
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                }
                 // Fetched page / video title above the URL when
                 // available (v2.7+). Synced from a Mac that ran the
                 // backfill — iOS doesn't fetch on its own.

@@ -108,6 +108,77 @@ struct LinkMetadataFetcherTests {
         #expect(!LinkMetadataFetcher.isYouTubeURL(URL(string: "https://notyoutube.com")!))
     }
 
+    @Test("og:image is extracted alongside og:title")
+    func ogImageExtracted() {
+        let html = """
+        <html><head>
+        <meta property="og:title" content="Article Title">
+        <meta property="og:image" content="https://cdn.example.com/hero.jpg">
+        </head></html>
+        """
+        let result = LinkMetadataFetcher.parseHTMLTitle(data(html))
+        #expect(result.title == "Article Title")
+        #expect(result.thumbnailURL?.absoluteString == "https://cdn.example.com/hero.jpg")
+    }
+
+    @Test("og:image:secure_url is accepted as og:image fallback")
+    func ogImageSecureUrl() {
+        let html = """
+        <html><head>
+        <meta property="og:title" content="Article">
+        <meta property="og:image:secure_url" content="https://cdn.example.com/hero.png">
+        </head></html>
+        """
+        let result = LinkMetadataFetcher.parseHTMLTitle(data(html))
+        #expect(result.thumbnailURL?.absoluteString == "https://cdn.example.com/hero.png")
+    }
+
+    @Test("twitter:image used when no og:image")
+    func twitterImageFallback() {
+        let html = """
+        <html><head>
+        <title>Plain Title</title>
+        <meta name="twitter:image" content="https://cdn.example.com/twitter.jpg">
+        </head></html>
+        """
+        let result = LinkMetadataFetcher.parseHTMLTitle(data(html))
+        #expect(result.thumbnailURL?.absoluteString == "https://cdn.example.com/twitter.jpg")
+    }
+
+    @Test("page with title but no image: thumbnailURL nil")
+    func titleNoImage() {
+        let html = """
+        <html><head><title>Just a title</title></head></html>
+        """
+        let result = LinkMetadataFetcher.parseHTMLTitle(data(html))
+        #expect(result.title == "Just a title")
+        #expect(result.thumbnailURL == nil)
+    }
+
+    @Test("page with image but no title: thumbnailURL set, title nil")
+    func imageNoTitle() {
+        let html = """
+        <html><head>
+        <meta property="og:image" content="https://cdn.example.com/x.jpg">
+        </head></html>
+        """
+        let result = LinkMetadataFetcher.parseHTMLTitle(data(html))
+        #expect(result.title == nil)
+        #expect(result.thumbnailURL?.absoluteString == "https://cdn.example.com/x.jpg")
+    }
+
+    @Test("non-http(s) image URLs (data:, javascript:) are rejected")
+    func rejectNonHttpImages() {
+        let html = """
+        <html><head>
+        <title>x</title>
+        <meta property="og:image" content="data:image/svg+xml;base64,PHN2Zw==">
+        </head></html>
+        """
+        let result = LinkMetadataFetcher.parseHTMLTitle(data(html))
+        #expect(result.thumbnailURL == nil)
+    }
+
     @Test("HTML entity decoder: common entities")
     func entityDecoder() {
         let cases: [(String, String)] = [

@@ -85,6 +85,26 @@ public struct LinkMetadataBackfiller {
                         do {
                             let result = try await fetcher.fetch(urlString: row.url)
                             try repository.setLinkMetadata(entryId: row.entryId, title: result.title)
+                            // Phase 2: opportunistically download the
+                            // thumbnail bytes (og:image / oEmbed
+                            // thumbnail_url), generate small + large
+                            // JPEGs, and write to the `previews`
+                            // table so LinkCard can render them.
+                            // Best-effort — failures are silent:
+                            // there's no separate sentinel, the
+                            // user can hit "Refetch all" to retry.
+                            if let thumbURL = result.thumbnailURL {
+                                if let bytes = await fetcher.fetchThumbnailBytes(url: thumbURL) {
+                                    let thumbs = Thumbnailer.generate(from: bytes)
+                                    if thumbs.small != nil || thumbs.large != nil {
+                                        try? repository.setLinkPreviewThumbnails(
+                                            entryId: row.entryId,
+                                            small: thumbs.small,
+                                            large: thumbs.large
+                                        )
+                                    }
+                                }
+                            }
                             return Outcome(row: row, result: result, error: nil, position: position)
                         } catch {
                             // Stamp the failure so we don't retry

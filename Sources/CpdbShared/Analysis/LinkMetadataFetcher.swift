@@ -28,12 +28,13 @@ public actor LinkMetadataFetcher {
 
     public struct Result: Sendable, Equatable {
         public var title: String?
+        public var thumbnailURL: URL?
         public var source: Source
 
         public enum Source: String, Sendable, Equatable {
             case youtubeOEmbed
-            case htmlOpenGraph    // og:title
-            case htmlTwitterCard  // twitter:title
+            case htmlOpenGraph    // og:title (and/or og:image)
+            case htmlTwitterCard  // twitter:title (and/or twitter:image)
             case htmlTitleTag     // <title>
             case none             // page returned but no title found
         }
@@ -121,15 +122,61 @@ public actor LinkMetadataFetcher {
         if let http = response as? HTTPURLResponse, http.statusCode != 200 {
             throw FetchError.httpError(http.statusCode)
         }
-        struct OEmbed: Decodable { let title: String? }
+        // oEmbed schema: title is the headline string; thumbnail_url
+        // points at the canonical YouTube thumbnail (typically the
+        // hqdefault.jpg). Both are optional in the spec but YouTube
+        // populates both for valid videos.
+        struct OEmbed: Decodable {
+            let title: String?
+            let thumbnail_url: String?
+        }
         do {
             let decoded = try JSONDecoder().decode(OEmbed.self, from: data)
             return Result(
                 title: decoded.title?.trimmingCharacters(in: .whitespacesAndNewlines),
+                thumbnailURL: decoded.thumbnail_url.flatMap { URL(string: $0) },
                 source: decoded.title == nil ? .none : .youtubeOEmbed
             )
         } catch {
             throw FetchError.decodeFailure("oembed json: \(error)")
+        }
+    }
+
+    // MARK: - Thumbnail bytes
+
+    /// Cap on raw thumbnail bytes we'll download. Anything bigger
+    /// is almost certainly a hero image we'd downscale anyway —
+    /// bail before paying the bandwidth.
+    private static let maxThumbnailBytes = 4 * 1024 * 1024  // 4 MB
+
+    /// Download the bytes for a thumbnail URL surfaced by
+    /// `parseHTMLTitle` or `fetchYouTube`. Returns nil instead of
+    /// throwing on reasonable failures (404, connection refused,
+    /// not-an-image content type) — callers treat thumbnail
+    /// fetches as best-effort enrichment, not critical-path.
+    public func fetchThumbnailBytes(url: URL) async -> Data? {
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 10
+        // Hint: we want an image. Some CDNs honour Accept and serve
+        // a smaller variant.
+        request.setValue("image/jpeg, image/png, image/webp, image/*;q=0.8", forHTTPHeaderField: "Accept")
+        do {
+            let (data, response) = try await session.data(for: request)
+            if let http = response as? HTTPURLResponse {
+                if http.statusCode != 200 { return nil }
+                // Sanity-check Content-Type — some sites return an
+                // HTML error page with 200; we don't want to feed
+                // that to the thumbnailer.
+                if let contentType = http.value(forHTTPHeaderField: "Content-Type")?.lowercased(),
+                   !contentType.hasPrefix("image/")
+                {
+                    return nil
+                }
+            }
+            if data.count > Self.maxThumbnailBytes { return nil }
+            return data
+        } catch {
+            return nil
         }
     }
 
@@ -148,12 +195,12 @@ public actor LinkMetadataFetcher {
         return Self.parseHTMLTitle(data)
     }
 
-    /// HTML title extraction. Naive regex — fast, fragile against
-    /// pages that use complex meta tag attributes (`property` and
-    /// `content` swapped, multi-line attributes, escaped quotes
-    /// inside content). Catches the ~95% case; the 5% unusual cases
-    /// just yield nil titles and the caller marks them fetched-but-
-    /// empty so we don't retry.
+    /// HTML title + thumbnail extraction. Pulls `og:title` /
+    /// `twitter:title` / `<title>` for the title, and `og:image` /
+    /// `twitter:image` for the preview thumbnail URL — independently,
+    /// so a page with og:title but no og:image (or vice versa)
+    /// still yields whatever's available. Naive regex — fast,
+    /// fragile against unusual HTML, but catches the ~95% case.
     static func parseHTMLTitle(_ data: Data) -> Result {
         // Decoders: try UTF-8 first; fall back to Latin-1 so we
         // never fail to read SOMETHING. Bonus regression-safety
@@ -162,16 +209,39 @@ public actor LinkMetadataFetcher {
             if let utf8 = String(data: data, encoding: .utf8) { return utf8 }
             return String(data: data, encoding: .isoLatin1) ?? ""
         }()
-        if let title = matchMetaContent(in: html, namePattern: #"property\s*=\s*["']og:title["']"#) {
-            return Result(title: decodeHTMLEntities(title), source: .htmlOpenGraph)
+        // Title resolution.
+        var title: String?
+        var source: Result.Source = .none
+        if let raw = matchMetaContent(in: html, namePattern: #"property\s*=\s*["']og:title["']"#) {
+            title = decodeHTMLEntities(raw)
+            source = .htmlOpenGraph
+        } else if let raw = matchMetaContent(in: html, namePattern: #"name\s*=\s*["']twitter:title["']"#) {
+            title = decodeHTMLEntities(raw)
+            source = .htmlTwitterCard
+        } else if let raw = matchTitleTag(in: html) {
+            title = decodeHTMLEntities(raw)
+            source = .htmlTitleTag
         }
-        if let title = matchMetaContent(in: html, namePattern: #"name\s*=\s*["']twitter:title["']"#) {
-            return Result(title: decodeHTMLEntities(title), source: .htmlTwitterCard)
+        // Thumbnail resolution. og:image first, twitter:image as
+        // fallback. Some pages declare og:image:secure_url or
+        // og:image:url instead of bare og:image — match all three.
+        var thumbnailURL: URL?
+        for pattern in [
+            #"property\s*=\s*["']og:image["']"#,
+            #"property\s*=\s*["']og:image:secure_url["']"#,
+            #"property\s*=\s*["']og:image:url["']"#,
+            #"name\s*=\s*["']twitter:image["']"#,
+            #"name\s*=\s*["']twitter:image:src["']"#,
+        ] {
+            if let raw = matchMetaContent(in: html, namePattern: pattern),
+               let url = URL(string: raw.trimmingCharacters(in: .whitespacesAndNewlines)),
+               url.scheme?.lowercased() == "http" || url.scheme?.lowercased() == "https"
+            {
+                thumbnailURL = url
+                break
+            }
         }
-        if let title = matchTitleTag(in: html) {
-            return Result(title: decodeHTMLEntities(title), source: .htmlTitleTag)
-        }
-        return Result(title: nil, source: .none)
+        return Result(title: title, thumbnailURL: thumbnailURL, source: source)
     }
 
     /// Find a `<meta {namePattern} content="…">` value. Tolerates

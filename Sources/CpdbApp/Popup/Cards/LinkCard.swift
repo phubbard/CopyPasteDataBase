@@ -1,4 +1,6 @@
 import SwiftUI
+import AppKit
+import GRDB
 import CpdbCore
 import CpdbShared
 
@@ -12,6 +14,19 @@ struct LinkCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
+            // v2.7.1: background-fetched preview thumbnail (og:image
+            // / oEmbed thumbnail_url). When present, the visual
+            // anchor goes on top, then title + URL beneath. Bounded
+            // height so a tall image doesn't push the title off the
+            // card.
+            if let thumb = loadThumbnail() {
+                Image(nsImage: thumb)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(maxWidth: .infinity, maxHeight: 120)
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                    .clipped()
+            }
             // Background-fetched page / video title (v2.7+). When
             // present, it's the most useful piece of information on
             // the card — promote it to the top in primary weight.
@@ -76,5 +91,29 @@ struct LinkCard: View {
             return row.entry.title ?? urlString
         }
         return host
+    }
+
+    /// Pulls the link-preview thumbnail bytes from the `previews`
+    /// table (same table image entries use). v2.7.1's background
+    /// link-metadata fetcher writes them after grabbing og:image /
+    /// oEmbed thumbnail_url. Returns nil when no preview was
+    /// fetched — the caller falls back to the kind glyph.
+    ///
+    /// Synchronous for the same reason as ImageCard.loadThumbnail:
+    /// thumbs are small and the row count on screen is bounded.
+    private func loadThumbnail() -> NSImage? {
+        guard let id = row.entry.id else { return nil }
+        guard let store = try? Store.open() else { return nil }
+        let data: Data? = (try? store.dbQueue.read { db in
+            try Row.fetchOne(
+                db,
+                sql: "SELECT thumb_large, thumb_small FROM previews WHERE entry_id = ?",
+                arguments: [id]
+            ).flatMap { row in
+                row["thumb_large"] as Data? ?? row["thumb_small"] as Data?
+            }
+        }) ?? nil
+        guard let data else { return nil }
+        return NSImage(data: data)
     }
 }

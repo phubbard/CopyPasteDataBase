@@ -10,6 +10,26 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+- **Link preview thumbnails (phase 2 of v2.7).** The metadata fetcher
+  now also pulls a preview image — YouTube oEmbed `thumbnail_url`,
+  HTML `og:image` / `og:image:secure_url` / `twitter:image` /
+  `twitter:image:src` (in priority order). Image bytes go through
+  the existing `Thumbnailer` (256 / 640 px JPEGs) and land in the
+  same `previews` table image-kind entries already use, so:
+    - Mac LinkCard renders the thumbnail at the top of the card,
+      bounded to 120 pt so the title still has room.
+    - iOS EntryDetailView shows the thumbnail above the link title.
+    - CloudKit sync of thumbnails is free — the existing
+      `thumbSmall` / `thumbLarge` CKAsset fields on the Entry record
+      already cover this.
+- Image download discipline: 10 s timeout, 4 MB body cap, content-
+  type sanity check (must start with `image/`). Failures are
+  silent, no per-entry sentinel — the user can hit "Refetch all"
+  in Preferences to retry.
+- 6 new fetcher tests exercise the og:image priority chain,
+  twitter:image fallback, mixed-attribute pages, and rejection of
+  non-http(s) image URLs (data:, javascript:).
+
 ## [2.7.0] – 2026-04-29
 
 - **Background-fetched link titles.** Captured URLs now grow a
