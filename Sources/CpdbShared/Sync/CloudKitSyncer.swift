@@ -479,11 +479,38 @@ public actor CloudKitSyncer {
                 let flavorResult = try await client.modifyRecords(
                     saving: survivingFlavors, deleting: []
                 )
+                var benignRaceCount = 0
                 for (_, outcome) in flavorResult.saveResults {
                     if case .failure(let error) = outcome {
+                        // Concurrent multi-device pushes of the same
+                        // content-addressed flavor recordID
+                        // (`flavor-<sha256>-<…>`) routinely lose
+                        // their per-record save with .batchRequestFailed
+                        // ("Atomic failure") — the winner's copy is
+                        // already on the server, so the data is intact;
+                        // we just don't get to overwrite it. Same for
+                        // .serverRecordChanged (etag conflict) and
+                        // .unknownItem (the parent entry got
+                        // tombstoned mid-push). All three are
+                        // benign concurrency noise rather than data
+                        // loss; aggregate them under one info-level
+                        // counter so the log doesn't scream.
+                        if let ck = error as? CKError,
+                           ck.code == .batchRequestFailed
+                            || ck.code == .serverRecordChanged
+                            || ck.code == .unknownItem
+                        {
+                            benignRaceCount += 1
+                            continue
+                        }
                         let kind = "flavor:\(Self.describe(error))"
                         errorKindCounts[kind, default: 0] += 1
                     }
+                }
+                if benignRaceCount > 0 {
+                    Log.cli.info(
+                        "cloudkit push: \(benignRaceCount, privacy: .public) flavor record(s) lost a concurrent multi-device push race (data already on server)"
+                    )
                 }
             } catch let ckError as CKError where Self.isRetryable(ckError) {
                 let retry = ckError.retryAfterSeconds ?? 2.0

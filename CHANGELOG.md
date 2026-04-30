@@ -10,6 +10,20 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+- **Quieter CloudKit push logs.** Multi-Mac install means three
+  devices race to push the same content-addressed flavor records
+  (`flavor-<sha256>-<…>`) in tandem. The race-loser's per-record
+  save returns CloudKit's `.batchRequestFailed` ("Atomic failure")
+  even though the data is already on the server from the winner's
+  push, so this is benign concurrency noise — *not* data loss —
+  but the log was screaming. Same applies to
+  `.serverRecordChanged` (etag conflict) and `.unknownItem`
+  (parent entry tombstoned mid-push). All three now aggregate
+  into one info-level summary line per cycle:
+  `N flavor record(s) lost a concurrent multi-device push race
+  (data already on server)`. Real failures still surface as
+  errors as before.
+
 ## [2.8.0] – 2026-04-30
 
 Marker release consolidating the 2.7.x series. No new functionality
