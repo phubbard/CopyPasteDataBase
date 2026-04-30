@@ -63,6 +63,7 @@ private struct PreferencesView: View {
     @State private var timeWindowEnabled: Bool = EvictionPrefs.timeWindowEnabled
     @State private var timeWindowDays: Int = EvictionPrefs.timeWindowDays
     @State private var evictionStatus: String = ""
+    @State private var linkBackfillStatus: String = ""
 
     // Image analysis prefs — loaded once on appear, written back when
     // individual controls are edited.
@@ -363,6 +364,28 @@ private struct PreferencesView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+
+                Divider()
+
+                // Link-title backfill controls. The daemon runs
+                // small batches automatically — this button is for
+                // users who want to force a sweep (e.g. after being
+                // offline) or refetch everything (URLs whose pages
+                // changed titles since first capture).
+                HStack {
+                    Button("Fetch link titles") { runLinkBackfill(force: false) }
+                    Button("Refetch all") { runLinkBackfill(force: true) }
+                        .help("Clear the per-entry sentinel and re-run the fetch on every link, including ones already attempted.")
+                    Spacer()
+                }
+                if !linkBackfillStatus.isEmpty {
+                    Text(linkBackfillStatus)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Text("Background-fetches page or video titles for captured URLs so search finds links by their content.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
@@ -557,6 +580,32 @@ private struct PreferencesView: View {
                 await MainActor.run {
                     evictionStatus = "Failed: \(error)"
                 }
+            }
+        }
+    }
+
+    /// Manually run a link-title backfill from Preferences. Same
+    /// runOnce path the daemon uses, but with a much larger batch
+    /// (5000) so a one-shot user-initiated run sweeps the whole
+    /// pending set. `force` clears the fetched_at sentinels first
+    /// so even already-attempted links retry.
+    private func runLinkBackfill(force: Bool) {
+        linkBackfillStatus = force ? "Refetching…" : "Fetching…"
+        Task.detached {
+            do {
+                let store = try Store.open()
+                let repo = EntryRepository(store: store)
+                if force {
+                    try repo.resetLinkFetchedAt()
+                }
+                let backfiller = LinkMetadataBackfiller(repository: repo)
+                let report = try await backfiller.runOnce(limit: 5000, force: force)
+                let summary = report.attempted == 0
+                    ? "Nothing to fetch."
+                    : "Fetched \(report.successes) of \(report.attempted) (· \(report.emptyResults) blank · \(report.failures) failed)."
+                await MainActor.run { linkBackfillStatus = summary }
+            } catch {
+                await MainActor.run { linkBackfillStatus = "Failed: \(error)" }
             }
         }
     }

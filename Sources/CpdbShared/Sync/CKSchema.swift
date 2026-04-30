@@ -59,6 +59,13 @@ public enum CKSchema {
         // they may still hold) so eviction is per-device but
         // tombstone-like across the fleet.
         public static let bodyEvictedAt      = "bodyEvictedAt"    // Double?
+        // v2.7: background-fetched link metadata for kind=link
+        // entries. linkTitle is the page / video title; linkFetchedAt
+        // is the sentinel ("any device has tried"). Both round-trip
+        // so once one device fetches, siblings get the title for
+        // free.
+        public static let linkTitle          = "linkTitle"        // String?
+        public static let linkFetchedAt      = "linkFetchedAt"    // Double?
     }
 
     public enum FlavorField {

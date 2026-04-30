@@ -26,7 +26,8 @@ public enum FtsIndex {
         text: String?,
         appName: String?,
         ocrText: String? = nil,
-        imageTags: String? = nil
+        imageTags: String? = nil,
+        linkTitle: String? = nil
     ) throws {
         try db.execute(
             sql: "DELETE FROM entries_fts WHERE rowid = ?",
@@ -34,8 +35,8 @@ public enum FtsIndex {
         )
         try db.execute(
             sql: """
-                INSERT INTO entries_fts(rowid, title, text, app_name, ocr_text, image_tags)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO entries_fts(rowid, title, text, app_name, ocr_text, image_tags, link_title)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             arguments: [
                 entryId,
@@ -44,6 +45,7 @@ public enum FtsIndex {
                 appName ?? "",
                 ocrText ?? "",
                 imageTags ?? "",
+                linkTitle ?? "",
             ]
         )
     }
@@ -110,6 +112,10 @@ public enum FtsIndex {
         if scope.text { cols.append("text") }
         if scope.ocr  { cols.append("ocr_text") }
         if scope.tags { cols.append("image_tags") }
+        // link_title is always in scope — it's only populated for
+        // kind=.link entries and is generally signal, not noise (a
+        // page title is more like the entry's title than its body).
+        cols.append("link_title")
         let scoped = "{" + cols.joined(separator: " ") + "} : " + tokens
 
         // Sentinel markers for the per-column highlight() calls — NUL and

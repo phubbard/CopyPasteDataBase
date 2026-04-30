@@ -257,6 +257,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // itself only fires once per 24h via the
                 // `timeWindowLastRunAt` gate inside the helper.
                 Self.runTimeWindowEvictionIfDue(store: store)
+                // Link-title backfill tick. Capped at 50 entries
+                // per cycle so a fresh install with a thousand
+                // links spreads the work across many ticks rather
+                // than hammering the network for an hour. Each
+                // cycle refreshes the FTS index for any rows that
+                // got titles, so search picks them up almost
+                // immediately.
+                await Self.runLinkTitleBackfillIfDue(store: store)
                 if shouldPause {
                     // Honour the user's safety-net interval pref on
                     // every cycle, so changes in Preferences take
@@ -281,6 +289,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// without an actor hop. The eviction internals are thread-safe
     /// (GRDB serialises via dbQueue + UserDefaults is its own
     /// thread-safe API).
+    /// Background fetch a small batch of link titles. Cheap when
+    /// nothing's pending. Runs every periodic-loop cycle so a
+    /// fresh-installed Mac with thousands of links progresses on
+    /// the timer rather than blasting the network all at once.
+    ///
+    /// `nonisolated` for the same reason as `runTimeWindowEvictionIfDue`
+    /// — the periodic-sync detached Task isn't on MainActor.
+    nonisolated private static func runLinkTitleBackfillIfDue(store: Store) async {
+        let repo = EntryRepository(store: store)
+        // Quick bailout if there's nothing pending. Cheaper than
+        // spinning up the URLSession.
+        guard let any = try? repo.linksNeedingMetadata(limit: 1), !any.isEmpty else {
+            return
+        }
+        let backfiller = LinkMetadataBackfiller(repository: repo)
+        do {
+            let report = try await backfiller.runOnce(limit: 50)
+            if report.attempted > 0 {
+                Log.cli.info(
+                    "link-title backfill: \(report.summary, privacy: .public)"
+                )
+            }
+        } catch {
+            Log.cli.error(
+                "link-title backfill failed: \(String(describing: error), privacy: .public)"
+            )
+        }
+    }
+
     nonisolated private static func runTimeWindowEvictionIfDue(store: Store) {
         guard EvictionPrefs.timeWindowEnabled else { return }
         let dayInSeconds: TimeInterval = 24 * 3600

@@ -131,6 +131,124 @@ public struct EntryRepository {
         }
     }
 
+    /// One row from the link-metadata backfill query: just enough
+    /// to drive a fetch (the URL string + the local id we need to
+    /// write back to).
+    public struct LinkBackfillRow: Sendable {
+        public let entryId: Int64
+        public let url: String
+    }
+
+    /// Live link-kind entries that haven't had their metadata
+    /// fetched yet (or that the user explicitly wants retried).
+    /// Used by the daemon's periodic backfill task and the
+    /// `cpdb fetch-link-titles` CLI.
+    ///
+    /// `force = true` includes already-fetched rows — used by the
+    /// "Refetch link titles" Preferences button after a user
+    /// returns from being offline.
+    public func linksNeedingMetadata(limit: Int = 200, force: Bool = false) throws -> [LinkBackfillRow] {
+        try store.dbQueue.read { db in
+            let whereClause = force
+                ? "kind = 'link' AND deleted_at IS NULL"
+                : "kind = 'link' AND deleted_at IS NULL AND link_fetched_at IS NULL"
+            let rows = try Row.fetchAll(
+                db,
+                sql: """
+                    SELECT id, COALESCE(text_preview, title) AS url
+                    FROM entries
+                    WHERE \(whereClause)
+                      AND COALESCE(text_preview, title) IS NOT NULL
+                      AND COALESCE(text_preview, title) != ''
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                """,
+                arguments: [limit]
+            )
+            return rows.compactMap { row in
+                let id: Int64 = row["id"]
+                let raw: String? = row["url"]
+                guard let raw = raw,
+                      let url = URL(string: raw.trimmingCharacters(in: .whitespacesAndNewlines)),
+                      let scheme = url.scheme?.lowercased(),
+                      scheme == "http" || scheme == "https"
+                else {
+                    return nil
+                }
+                return LinkBackfillRow(entryId: id, url: url.absoluteString)
+            }
+        }
+    }
+
+    /// Persist a fetched (or attempted-and-failed) link title.
+    /// Always sets `link_fetched_at = now()` so the row stops
+    /// showing up in future `linksNeedingMetadata` queries — even
+    /// when the title is nil. The companion FTS row is updated so
+    /// search picks up the new text immediately.
+    /// Enqueues for CloudKit push so siblings learn the title and
+    /// don't re-fetch.
+    public func setLinkMetadata(entryId: Int64, title: String?) throws {
+        let now = Date().timeIntervalSince1970
+        try store.dbQueue.write { db in
+            try db.execute(
+                sql: """
+                    UPDATE entries
+                    SET link_title = ?, link_fetched_at = ?
+                    WHERE id = ? AND deleted_at IS NULL
+                """,
+                arguments: [title, now, entryId]
+            )
+            // Re-index FTS so the new title is searchable. Pull
+            // current scalar columns rather than risk a stale read.
+            if let row = try Row.fetchOne(
+                db,
+                sql: """
+                    SELECT title, text_preview, ocr_text, image_tags
+                    FROM entries WHERE id = ?
+                """,
+                arguments: [entryId]
+            ) {
+                let appName: String? = try Row.fetchOne(
+                    db,
+                    sql: """
+                        SELECT a.name FROM entries e
+                        LEFT JOIN apps a ON a.id = e.source_app_id
+                        WHERE e.id = ?
+                    """,
+                    arguments: [entryId]
+                )?["name"] as String?
+                try FtsIndex.indexEntry(
+                    db: db,
+                    entryId: entryId,
+                    title: row["title"] as String?,
+                    text: row["text_preview"] as String?,
+                    appName: appName,
+                    ocrText: row["ocr_text"] as String?,
+                    imageTags: row["image_tags"] as String?,
+                    linkTitle: title
+                )
+            }
+            try PushQueue.enqueue(entryId: entryId, in: db, now: now)
+        }
+    }
+
+    /// Wipe link_fetched_at sentinels so the next backfill retries
+    /// every link. Used by the Preferences "Refetch link titles"
+    /// button. Doesn't touch existing link_title values — those
+    /// stay until overwritten by the next successful fetch, which
+    /// avoids a temporary "blank cards" period during the retry.
+    public func resetLinkFetchedAt() throws {
+        try store.dbQueue.write { db in
+            try db.execute(
+                sql: """
+                    UPDATE entries
+                    SET link_fetched_at = NULL
+                    WHERE kind = 'link' AND deleted_at IS NULL
+                """
+            )
+        }
+    }
+
     /// Toggle (or explicitly set) the pinned state of a single
     /// entry. Pinned entries skip future eviction policies and float
     /// to the top of the popup. Idempotent — pinning an already-

@@ -318,5 +318,67 @@ enum Schema {
                 ADD COLUMN body_evicted_at REAL;
             """)
         }
+
+        migrator.registerMigration("v8_link_metadata") { db in
+            // Background-fetched metadata for kind=link entries.
+            // YouTube URLs hit the public oEmbed endpoint;
+            // everything else gets an HTML scrape for og:title /
+            // <title>. Text goes into FTS5 alongside the existing
+            // text/ocr_text/image_tags columns so it's searchable.
+            //
+            //   link_title         — the human-readable title.
+            //                        NULL when never tried OR fetch
+            //                        succeeded but page had no
+            //                        title.
+            //   link_fetched_at    — sentinel for "did we already
+            //                        try?". NULL = never tried;
+            //                        non-NULL = at least one
+            //                        attempt completed (success or
+            //                        failure). The backfill query
+            //                        skips non-NULL rows.
+            try db.execute(sql: "ALTER TABLE entries ADD COLUMN link_title TEXT;")
+            try db.execute(sql: "ALTER TABLE entries ADD COLUMN link_fetched_at REAL;")
+
+            // FTS5 doesn't support ALTER. Drop + recreate the
+            // virtual table with the new column appended, then
+            // reindex every live row. Same dance as v2's
+            // ocr_text/image_tags addition.
+            try db.execute(sql: "DROP TABLE entries_fts;")
+            try db.execute(sql: """
+                CREATE VIRTUAL TABLE entries_fts USING fts5(
+                    title,
+                    text,
+                    app_name,
+                    ocr_text,
+                    image_tags,
+                    link_title,
+                    tokenize='porter unicode61 remove_diacritics 2'
+                );
+            """)
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT e.id, e.title, e.text_preview, a.name AS app_name,
+                       e.ocr_text, e.image_tags, e.link_title
+                FROM entries e
+                LEFT JOIN apps a ON a.id = e.source_app_id
+                WHERE e.deleted_at IS NULL
+            """)
+            for row in rows {
+                try db.execute(
+                    sql: """
+                        INSERT INTO entries_fts(rowid, title, text, app_name, ocr_text, image_tags, link_title)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    arguments: [
+                        row["id"] as Int64,
+                        (row["title"] as String?) ?? "",
+                        (row["text_preview"] as String?) ?? "",
+                        (row["app_name"] as String?) ?? "",
+                        (row["ocr_text"] as String?) ?? "",
+                        (row["image_tags"] as String?) ?? "",
+                        (row["link_title"] as String?) ?? "",
+                    ]
+                )
+            }
+        }
     }
 }

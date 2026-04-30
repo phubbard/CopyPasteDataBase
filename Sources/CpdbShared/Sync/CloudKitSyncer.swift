@@ -1066,13 +1066,25 @@ public actor CloudKitSyncer {
             // straightforward "last writer wins" assignment is
             // correct for both directions.
             existing.bodyEvictedAt = d.bodyEvictedAt
+            // Link metadata: prefer remote when remote has fetched
+            // and we haven't, so the "any device fetches → all
+            // devices benefit" pattern works. If both have fetched,
+            // last-writer-wins (the remote update arrives because
+            // its timestamp is more recent).
+            if d.linkFetchedAt != nil {
+                existing.linkTitle     = d.linkTitle
+                existing.linkFetchedAt = d.linkFetchedAt
+            }
             try existing.update(db)
             try FtsIndex.indexEntry(
                 db: db,
                 entryId: existing.id!,
                 title: existing.title,
                 text: existing.textPreview,
-                appName: d.source.appName
+                appName: d.source.appName,
+                ocrText: existing.ocrText,
+                imageTags: existing.imageTags,
+                linkTitle: existing.linkTitle
             )
             try applyThumbnails(d, entryId: existing.id!, in: db)
             return .updated
@@ -1147,7 +1159,9 @@ public actor CloudKitSyncer {
                 imageTags: d.imageTags,
                 analyzedAt: d.analyzedAt,
                 pinned: d.pinned,
-                bodyEvictedAt: d.bodyEvictedAt
+                bodyEvictedAt: d.bodyEvictedAt,
+                linkTitle: d.linkTitle,
+                linkFetchedAt: d.linkFetchedAt
             )
             try entry.insert(db)
             try FtsIndex.indexEntry(
@@ -1155,7 +1169,10 @@ public actor CloudKitSyncer {
                 entryId: entry.id!,
                 title: entry.title,
                 text: entry.textPreview,
-                appName: d.source.appName
+                appName: d.source.appName,
+                ocrText: entry.ocrText,
+                imageTags: entry.imageTags,
+                linkTitle: entry.linkTitle
             )
             try applyThumbnails(d, entryId: entry.id!, in: db)
             Log.cli.info(

@@ -84,6 +84,8 @@ public enum EntryRecordMapper {
         // missing-or-nil and treat it as unpinned, the safe default.
         record[CKSchema.EntryField.pinned] = (entry.pinned ? 1 : 0) as NSNumber
         record[CKSchema.EntryField.bodyEvictedAt] = entry.bodyEvictedAt.map { $0 as NSNumber }
+        record[CKSchema.EntryField.linkTitle]     = entry.linkTitle as NSString?
+        record[CKSchema.EntryField.linkFetchedAt] = entry.linkFetchedAt.map { $0 as NSNumber }
     }
 
     /// Attach thumbnail `CKAsset`s to the record. Pass nil URLs to clear
@@ -131,6 +133,13 @@ public enum EntryRecordMapper {
         /// bodies are still on the originating device, or for
         /// pre-v2.6.2 records.
         public var bodyEvictedAt: Double?
+        /// Background-fetched link title (v2.7+). Nil when never
+        /// fetched OR fetched but page had no title.
+        public var linkTitle: String?
+        /// Sentinel for "did any device successfully attempt this
+        /// fetch?" (v2.7+). Nil = no device has tried; non-nil =
+        /// at least one device completed an attempt.
+        public var linkFetchedAt: Double?
     }
 
     public enum DecodeError: Error, CustomStringConvertible {
@@ -196,7 +205,9 @@ public enum EntryRecordMapper {
             thumbSmallURL: smallAsset?.fileURL,
             thumbLargeURL: largeAsset?.fileURL,
             pinned: ((record[CKSchema.EntryField.pinned] as? NSNumber)?.int64Value ?? 0) == 1,
-            bodyEvictedAt: (record[CKSchema.EntryField.bodyEvictedAt] as? NSNumber)?.doubleValue
+            bodyEvictedAt: (record[CKSchema.EntryField.bodyEvictedAt] as? NSNumber)?.doubleValue,
+            linkTitle:      record[CKSchema.EntryField.linkTitle] as? String,
+            linkFetchedAt: (record[CKSchema.EntryField.linkFetchedAt] as? NSNumber)?.doubleValue
         )
     }
 

@@ -192,6 +192,16 @@ struct EntryDetailView: View {
         let urlString: String? = overrideURL?.absoluteString ?? l.linkURL
         if let url = url, let urlString = urlString {
             VStack(alignment: .leading, spacing: 10) {
+                // Fetched page / video title above the URL when
+                // available (v2.7+). Synced from a Mac that ran the
+                // backfill — iOS doesn't fetch on its own.
+                if let linkTitle = l.entry.linkTitle, !linkTitle.isEmpty {
+                    Text(linkTitle)
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(.primary)
+                        .multilineTextAlignment(.leading)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
                 Link(destination: url) {
                     HStack(alignment: .top, spacing: 8) {
                         Image(systemName: "safari")
@@ -215,7 +225,8 @@ struct EntryDetailView: View {
                 if let preview = l.entry.textPreview,
                    !preview.isEmpty,
                    preview != urlString,
-                   preview.trimmingCharacters(in: .whitespacesAndNewlines) != urlString
+                   preview.trimmingCharacters(in: .whitespacesAndNewlines) != urlString,
+                   preview != l.entry.linkTitle
                 {
                     Text(preview)
                         .font(.system(size: 13))

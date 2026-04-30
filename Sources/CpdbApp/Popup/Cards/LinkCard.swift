@@ -12,14 +12,32 @@ struct LinkCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            // Full URL, top, fully dark, monospaced for readability.
-            // No truncation — wrap it so long paths stay visible.
-            Text(urlString)
-                .font(.system(size: 12, design: .monospaced))
-                .foregroundStyle(.primary)
-                .multilineTextAlignment(.leading)
-                .lineLimit(nil)
-                .fixedSize(horizontal: false, vertical: true)
+            // Background-fetched page / video title (v2.7+). When
+            // present, it's the most useful piece of information on
+            // the card — promote it to the top in primary weight.
+            // The URL still shows below for orientation but in
+            // monospaced secondary for de-emphasis.
+            if let linkTitle = row.entry.linkTitle, !linkTitle.isEmpty {
+                Text(linkTitle)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(3)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(urlString)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .truncationMode(.middle)
+            } else {
+                // No fetched title — fall back to the original
+                // layout: URL top, host below.
+                Text(urlString)
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundStyle(.primary)
+                    .multilineTextAlignment(.leading)
+                    .lineLimit(nil)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
 
             HStack(spacing: 6) {
                 Image(systemName: "link")
@@ -31,7 +49,11 @@ struct LinkCard: View {
                     .lineLimit(1)
             }
 
-            if let title = row.entry.title, !title.isEmpty, title != urlString {
+            if let title = row.entry.title,
+               !title.isEmpty,
+               title != urlString,
+               title != row.entry.linkTitle
+            {
                 Text(title)
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)

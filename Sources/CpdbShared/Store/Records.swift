@@ -37,6 +37,15 @@ public struct Entry: Codable, FetchableRecord, MutablePersistableRecord, Hashabl
     /// Survives CloudKit round-trip so other devices know not to
     /// resurrect the body bytes.
     public var bodyEvictedAt: Double?
+    /// Page / video title fetched in the background for kind=.link
+    /// entries. YouTube URLs hit oEmbed; everything else gets an
+    /// HTML scrape (og:title → <title>). NULL when never fetched OR
+    /// fetched but page had no title. Indexed by FTS5.
+    public var linkTitle: String?
+    /// Sentinel for the link-title backfill: NULL = haven't tried;
+    /// non-NULL = at least one fetch attempt completed (success or
+    /// failure). The backfill query skips non-NULL rows by default.
+    public var linkFetchedAt: Double?
 
     public static let databaseTableName = "entries"
 
@@ -58,6 +67,8 @@ public struct Entry: Codable, FetchableRecord, MutablePersistableRecord, Hashabl
         case analyzedAt      = "analyzed_at"
         case pinned
         case bodyEvictedAt   = "body_evicted_at"
+        case linkTitle       = "link_title"
+        case linkFetchedAt   = "link_fetched_at"
     }
 
     public mutating func didInsert(_ inserted: InsertionSuccess) {
@@ -81,7 +92,9 @@ public struct Entry: Codable, FetchableRecord, MutablePersistableRecord, Hashabl
         imageTags: String? = nil,
         analyzedAt: Double? = nil,
         pinned: Bool = false,
-        bodyEvictedAt: Double? = nil
+        bodyEvictedAt: Double? = nil,
+        linkTitle: String? = nil,
+        linkFetchedAt: Double? = nil
     ) {
         self.id = id
         self.uuid = uuid
@@ -100,6 +113,8 @@ public struct Entry: Codable, FetchableRecord, MutablePersistableRecord, Hashabl
         self.analyzedAt = analyzedAt
         self.pinned = pinned
         self.bodyEvictedAt = bodyEvictedAt
+        self.linkTitle = linkTitle
+        self.linkFetchedAt = linkFetchedAt
     }
 }
 

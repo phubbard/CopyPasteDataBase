@@ -69,14 +69,17 @@ struct DatabaseMigrationTests {
         }
     }
 
-    @Test("v2 rebuilds entries_fts with 5 columns")
-    func v2FtsHasFiveColumns() throws {
+    @Test("entries_fts has the v8 column layout (title + 5 content cols + link_title)")
+    func ftsLatestColumnLayout() throws {
         let store = try Store.inMemory()
         try store.dbQueue.read { db in
-            // fts5 virtual tables expose columns via normal pragma
+            // fts5 virtual tables expose columns via normal pragma.
+            // v2 brought the table to 5 cols (added ocr_text +
+            // image_tags); v8 added link_title for fetched page
+            // titles. Update this list when the schema grows.
             let cols = try Row.fetchAll(db, sql: "PRAGMA table_info(entries_fts)")
                 .map { $0["name"] as String }
-            #expect(cols == ["title", "text", "app_name", "ocr_text", "image_tags"])
+            #expect(cols == ["title", "text", "app_name", "ocr_text", "image_tags", "link_title"])
         }
     }
 

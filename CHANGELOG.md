@@ -10,6 +10,35 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+- **Background-fetched link titles.** Captured URLs now grow a
+  searchable human-readable title in the background. YouTube URLs
+  hit the public oEmbed endpoint (clean JSON, no API key). Other
+  pages get an HTML scrape with priority `og:title` →
+  `twitter:title` → `<title>`. Titles land in the new
+  `entries.link_title` column and the FTS5 index, so a search for
+  "santa cruz vala" surfaces a copied YouTube URL by its video
+  title even if you don't remember the URL itself.
+- Real-world result on a 3.3k-link library: ~73% of links got a
+  title, ~5% returned no extractable title (graceful no-op),
+  remainder failed (mostly internal corp URLs). Failures are
+  marked fetched-but-empty so we don't retry forever; the
+  Preferences "Refetch all" button clears the sentinels for users
+  who want to retry after going back online.
+- Mac LinkCard now leads with the fetched title (semibold) and
+  shows the URL in a secondary monospaced row beneath. iOS
+  EntryDetailView mirrors the layout. Cards without a title fall
+  back to the original URL-on-top layout.
+- Daemon runs a small backfill batch (50 entries) every periodic
+  cycle, so a fresh installation doesn't hammer the network all
+  at once.
+- New `cpdb fetch-link-titles [--limit N] [--force] [--dry-run]`
+  CLI for manual sweeps and scripted runs. CloudKit round-trips
+  `link_title` + `link_fetched_at` so once any device fetches, the
+  title syncs to the rest of the fleet for free.
+- Schema migration v8: `entries.link_title` (TEXT?) +
+  `entries.link_fetched_at` (REAL?) and a v2-style FTS5 rebuild
+  that adds `link_title` to the indexed column set.
+
 ## [2.6.4] – 2026-04-27
 
 - **Cross-platform parity contracts.** `docs/schema.md` extended with
