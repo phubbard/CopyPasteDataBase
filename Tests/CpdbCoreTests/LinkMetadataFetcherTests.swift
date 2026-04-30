@@ -179,6 +179,79 @@ struct LinkMetadataFetcherTests {
         #expect(result.thumbnailURL == nil)
     }
 
+    @Test("Wikipedia host detection")
+    func wikipediaHostDetection() {
+        #expect(LinkMetadataFetcher.isWikipediaHost("en.wikipedia.org"))
+        #expect(LinkMetadataFetcher.isWikipediaHost("de.wikipedia.org"))
+        #expect(LinkMetadataFetcher.isWikipediaHost("WIKIPEDIA.ORG"))
+        #expect(LinkMetadataFetcher.isWikipediaHost("wikipedia.org"))
+        // Not Wikipedia
+        #expect(!LinkMetadataFetcher.isWikipediaHost("notwikipedia.org"))
+        #expect(!LinkMetadataFetcher.isWikipediaHost("wikipedia.org.evil.example"))
+        #expect(!LinkMetadataFetcher.isWikipediaHost(nil))
+    }
+
+    @Test("Favicon: apple-touch-icon preferred over plain icon")
+    func faviconAppleTouchPreferred() {
+        let html = """
+        <html><head>
+        <link rel="icon" href="/favicon.ico">
+        <link rel="apple-touch-icon" href="/touch-icon-180.png">
+        </head></html>
+        """
+        let url = LinkMetadataFetcher.faviconURL(
+            html: html.data(using: .utf8)!,
+            pageURL: URL(string: "https://example.com/page")!
+        )
+        #expect(url?.absoluteString == "https://example.com/touch-icon-180.png")
+    }
+
+    @Test("Favicon: <link rel='icon'> resolved against page URL")
+    func faviconLinkRelResolved() {
+        let html = """
+        <html><head><link rel="icon" href="/static/icon.png"></head></html>
+        """
+        let url = LinkMetadataFetcher.faviconURL(
+            html: html.data(using: .utf8)!,
+            pageURL: URL(string: "https://example.com/some/page")!
+        )
+        #expect(url?.absoluteString == "https://example.com/static/icon.png")
+    }
+
+    @Test("Favicon: falls back to /favicon.ico when no <link> declared")
+    func faviconConventionalFallback() {
+        let html = "<html><head></head><body></body></html>"
+        let url = LinkMetadataFetcher.faviconURL(
+            html: html.data(using: .utf8)!,
+            pageURL: URL(string: "https://example.com/long/path/here")!
+        )
+        #expect(url?.absoluteString == "https://example.com/favicon.ico")
+    }
+
+    @Test("Favicon: 'shortcut icon' rel value also recognised")
+    func faviconShortcutIconRel() {
+        let html = """
+        <html><head><link rel="shortcut icon" href="/favicon.png"></head></html>
+        """
+        let url = LinkMetadataFetcher.faviconURL(
+            html: html.data(using: .utf8)!,
+            pageURL: URL(string: "https://example.com/")!
+        )
+        #expect(url?.absoluteString == "https://example.com/favicon.png")
+    }
+
+    @Test("Favicon: absolute URL in href used directly")
+    func faviconAbsoluteHref() {
+        let html = """
+        <html><head><link rel="apple-touch-icon" href="https://cdn.example.net/icon.png"></head></html>
+        """
+        let url = LinkMetadataFetcher.faviconURL(
+            html: html.data(using: .utf8)!,
+            pageURL: URL(string: "https://example.com/")!
+        )
+        #expect(url?.absoluteString == "https://cdn.example.net/icon.png")
+    }
+
     @Test("HTML entity decoder: common entities")
     func entityDecoder() {
         let cases: [(String, String)] = [

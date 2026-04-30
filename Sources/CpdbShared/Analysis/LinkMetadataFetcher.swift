@@ -209,12 +209,152 @@ public actor LinkMetadataFetcher {
         if let http = response as? HTTPURLResponse, http.statusCode != 200 {
             throw FetchError.httpError(http.statusCode)
         }
-        if data.count > Self.maxBodyBytes {
-            // We only need the <head>; truncate.
-            let head = data.prefix(Self.maxBodyBytes)
-            return Self.parseHTMLTitle(Data(head))
+        let body: Data = data.count > Self.maxBodyBytes ? Data(data.prefix(Self.maxBodyBytes)) : data
+        var result = Self.parseHTMLTitle(body)
+
+        // Thumbnail fallback chain when og:image / twitter:image
+        // didn't surface a usable URL. Order is biased toward
+        // visual fidelity:
+        //   1. Wikipedia REST API summary endpoint — pulls the
+        //      article's lead image when present (much better than
+        //      a 16x16 favicon for *.wikipedia.org).
+        //   2. Page-declared favicon (`<link rel="icon">`) or the
+        //      conventional `/favicon.ico` location. Always at
+        //      least *something* — a tiny site icon is better than
+        //      a gray box on a long-tail domain.
+        if result.thumbnailURL == nil, Self.isWikipediaHost(url.host) {
+            if let thumb = await fetchWikipediaSummaryThumbnail(pageURL: url) {
+                result.thumbnailURL = thumb
+            }
         }
-        return Self.parseHTMLTitle(data)
+        if result.thumbnailURL == nil {
+            result.thumbnailURL = Self.faviconURL(html: body, pageURL: url)
+        }
+        return result
+    }
+
+    // MARK: - Wikipedia REST API thumbnail fallback
+
+    static func isWikipediaHost(_ host: String?) -> Bool {
+        guard let host = host?.lowercased() else { return false }
+        // Match en.wikipedia.org, de.wikipedia.org, etc.
+        return host == "wikipedia.org" || host.hasSuffix(".wikipedia.org")
+    }
+
+    /// Hit the Wikipedia REST API's page-summary endpoint for the
+    /// given article URL and return the thumbnail's `source` field
+    /// (an https URL pointing at upload.wikimedia.org). Returns nil
+    /// on any error or when the article has no thumbnail (text-only
+    /// articles like "Clipboard (computing)" legitimately have
+    /// neither og:image nor a REST-API thumbnail).
+    private func fetchWikipediaSummaryThumbnail(pageURL: URL) async -> URL? {
+        // Article title is the last path component after `/wiki/`.
+        // Wikipedia article paths look like /wiki/Title_With_Underscores
+        // or /wiki/Title_With_(parens). Keep the underscores + parens
+        // — the REST API expects the same canonical form.
+        let path = pageURL.path
+        guard let range = path.range(of: "/wiki/"),
+              range.upperBound < path.endIndex
+        else { return nil }
+        let title = String(path[range.upperBound...])
+        guard !title.isEmpty,
+              let host = pageURL.host
+        else { return nil }
+        // Build the API URL. Use addingPercentEncoding so accented
+        // characters (Wikipedia titles can contain them) survive.
+        guard let encoded = title.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
+              let api = URL(string: "https://\(host)/api/rest_v1/page/summary/\(encoded)")
+        else { return nil }
+        struct Summary: Decodable {
+            struct Thumb: Decodable { let source: String? }
+            let thumbnail: Thumb?
+            let originalimage: Thumb?
+        }
+        do {
+            let (data, response) = try await session.data(from: api)
+            if let http = response as? HTTPURLResponse, http.statusCode != 200 { return nil }
+            let summary = try JSONDecoder().decode(Summary.self, from: data)
+            // Prefer thumbnail (Wikipedia downscales for us). Fall
+            // through to originalimage if only the original is set,
+            // since fetchThumbnailBytes will refuse anything > 4 MB
+            // and the Thumbnailer downscales further.
+            if let s = summary.thumbnail?.source, let url = URL(string: s) { return url }
+            if let s = summary.originalimage?.source, let url = URL(string: s) { return url }
+            return nil
+        } catch {
+            return nil
+        }
+    }
+
+    // MARK: - Favicon fallback
+
+    /// Resolve a favicon URL for a page. Tries (in order):
+    ///   1. `<link rel="icon" href="…">` declared in the HTML head
+    ///   2. `<link rel="shortcut icon" href="…">`
+    ///   3. `<link rel="apple-touch-icon" href="…">` (often
+    ///      higher-resolution than favicon.ico — better visual)
+    ///   4. The conventional `https://<host>/favicon.ico` location.
+    /// Returns the resolved absolute URL. Doesn't HEAD-test it —
+    /// the caller (`fetchThumbnailBytes`) will discover 404s and
+    /// non-image content types and silently skip.
+    ///
+    /// We bias toward apple-touch-icon over favicon.ico because
+    /// apple-touch-icon is typically 180×180 PNG (visually decent in
+    /// our card preview) whereas favicon.ico is often 16×16 (looks
+    /// muddy when scaled up).
+    static func faviconURL(html: Data, pageURL: URL) -> URL? {
+        let body: String = {
+            if let utf8 = String(data: html, encoding: .utf8) { return utf8 }
+            return String(data: html, encoding: .isoLatin1) ?? ""
+        }()
+        // Order of preference: apple-touch-icon (large) → icon → shortcut icon.
+        let relPatterns = [
+            #"rel\s*=\s*["']apple-touch-icon(?:[^"']*)?["']"#,
+            #"rel\s*=\s*["'](?:shortcut\s+)?icon["']"#,
+        ]
+        for relPattern in relPatterns {
+            if let href = matchLinkHref(in: body, relPattern: relPattern),
+               let resolved = URL(string: href, relativeTo: pageURL)?.absoluteURL,
+               resolved.scheme?.lowercased() == "http" || resolved.scheme?.lowercased() == "https"
+            {
+                return resolved
+            }
+        }
+        // Conventional fallback. Always try this — most sites have a
+        // favicon at /favicon.ico even if the HTML doesn't declare
+        // one.
+        if let host = pageURL.host,
+           let scheme = pageURL.scheme?.lowercased(),
+           scheme == "http" || scheme == "https"
+        {
+            return URL(string: "\(scheme)://\(host)/favicon.ico")
+        }
+        return nil
+    }
+
+    /// Find a `<link rel="…" href="…">` whose rel matches `relPattern`.
+    /// Tolerates the attributes appearing in either order, just like
+    /// `matchMetaContent`. Returns the raw href value (may be relative
+    /// — caller resolves against the page URL).
+    private static func matchLinkHref(in html: String, relPattern: String) -> String? {
+        let patterns = [
+            #"<link\s[^>]*"# + relPattern + #"[^>]*href\s*=\s*["']([^"']*)["'][^>]*>"#,
+            #"<link\s[^>]*href\s*=\s*["']([^"']*)["'][^>]*"# + relPattern + #"[^>]*>"#,
+        ]
+        for pattern in patterns {
+            guard let regex = try? NSRegularExpression(
+                pattern: pattern, options: [.caseInsensitive, .dotMatchesLineSeparators]
+            ) else { continue }
+            let range = NSRange(html.startIndex..., in: html)
+            if let match = regex.firstMatch(in: html, options: [], range: range),
+               match.numberOfRanges >= 2,
+               let r = Range(match.range(at: 1), in: html)
+            {
+                let href = String(html[r]).trimmingCharacters(in: .whitespacesAndNewlines)
+                if !href.isEmpty { return href }
+            }
+        }
+        return nil
     }
 
     /// HTML title + thumbnail extraction. Pulls `og:title` /

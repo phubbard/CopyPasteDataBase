@@ -10,6 +10,27 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+- **Two new thumbnail-fallback paths.** When a page's HTML head
+  doesn't ship `og:image` / `twitter:image`, the link backfill
+  now tries:
+    1. **Wikipedia REST API** (`*.wikipedia.org` only). Hits
+       `/api/rest_v1/page/summary/<title>` and uses the response's
+       `thumbnail.source` (or `originalimage.source` as a backup).
+       Many Wikipedia articles ship a lead image in the API
+       response that isn't reflected in the page's og: meta tags
+       — this fallback surfaces it.
+    2. **Favicon discovery.** Looks for `<link rel="apple-touch-
+       icon">` first (typically 180×180 PNG, decent at card size),
+       then `<link rel="icon">` / `rel="shortcut icon"`, finally
+       falls through to the conventional `<scheme>://<host>/
+       favicon.ico`. Resolves relative hrefs against the page URL.
+       The `fetchThumbnailBytes` step still gates on Content-Type
+       starts-with-`image/` so 404 HTML pages don't sneak through.
+  Net effect: significantly fewer "URL only" cards in the popup
+  for sites that have *some* visual identity but missed the
+  OpenGraph standard. 6 new fetcher tests cover the favicon
+  precedence rules and Wikipedia host detection.
+
 ## [2.7.12] – 2026-04-30
 
 - **Hover tooltips on every popup card.** Hovering an entry card
