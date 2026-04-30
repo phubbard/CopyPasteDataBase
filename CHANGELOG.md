@@ -10,6 +10,8 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+## [2.7.3] – 2026-04-29
+
 - **Backfill no longer wedges the periodic loop.** v2.7.2's wall-clock
   timeout couldn't actually unstick a hung URLSession because
   `withThrowingTaskGroup` implicitly awaits all child tasks before
