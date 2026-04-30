@@ -10,6 +10,24 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+- **Unified "Permissions" section in Preferences.** Accessibility
+  and Local Network now share a single section with consistent
+  iconography: green ✓ when granted, orange ! when denied, neutral
+  hourglass while a probe is in flight. Each row shows the same
+  three-element layout (status + label, deny-state help blurb,
+  "Open System Settings…" / "Re-check" buttons).
+- **Live permission status detection.** Local Network grant state
+  used to be invisible (no public API). New `LocalNetwork.probe()`
+  spawns a one-shot `NWBrowser` against `_bonjour._tcp` with peer-
+  to-peer enabled — `.ready` ⇒ granted, `.failed` ⇒ denied, 1.5s
+  timeout ⇒ unknown. The Preferences window starts a 5-second
+  poller while it's open: every tick re-checks Accessibility
+  (synchronous, instant) and re-runs the Local Network probe (only
+  when the last result wasn't already granted). When you flip the
+  toggle in System Settings, the green checkmark appears within
+  ~5s without any clicks back in cpdb. Poller stops automatically
+  on window dismiss.
+
 ## [2.8.3] – 2026-04-30
 
 - **Push-batch recordID dedup.** Fixes `CKError 12 "You can't save

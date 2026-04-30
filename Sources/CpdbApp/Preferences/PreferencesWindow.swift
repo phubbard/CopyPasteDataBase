@@ -55,6 +55,15 @@ final class PreferencesWindowController {
 
 private struct PreferencesView: View {
     @State private var accessibilityGranted = Accessibility.isTrusted()
+    /// Tri-state from the NWBrowser probe; defaults to .unknown so
+    /// the row renders a neutral spinner-ish indicator until the
+    /// first probe lands (typically <2s after the window opens).
+    @State private var localNetworkStatus: LocalNetwork.Status = .unknown
+    /// 5-second timer that re-runs the Accessibility check and
+    /// (when not yet granted) the Local Network probe while the
+    /// Preferences window is on screen. Cancelled in onDisappear so
+    /// it doesn't burn CPU when the window is hidden.
+    @State private var permissionPollerTask: Task<Void, Never>? = nil
     @State private var launchAtLoginEnabled = SMAppService.mainApp.status == .enabled
     @State private var dbPath = Paths.databaseURL.path
     @State private var dbSize = "—"
@@ -274,43 +283,25 @@ private struct PreferencesView: View {
                 }
             }
 
-            Section("Accessibility") {
-                HStack {
-                    Image(systemName: accessibilityGranted ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
-                        .foregroundStyle(accessibilityGranted ? .green : .orange)
-                    Text(accessibilityGranted
-                         ? "Granted — ⌘V pasting works"
-                         : "Not granted — cpdb can't press ⌘V for you")
-                        .font(.system(size: 13))
-                }
-                if !accessibilityGranted {
-                    Text("Open System Settings → Privacy & Security → Accessibility, find cpdb in the list, and turn it on. Then relaunch cpdb.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    HStack {
-                        Button("Open System Settings…") {
-                            Accessibility.openSystemSettings()
-                        }
-                        Button("Re-check") {
-                            accessibilityGranted = Accessibility.isTrusted()
-                        }
-                    }
-                }
-            }
-
-            Section("Local Network") {
-                HStack {
-                    Image(systemName: "info.circle")
-                        .foregroundStyle(.secondary)
-                    Text("cpdb fetches page titles and preview images for URLs you copy.")
-                        .font(.system(size: 13))
-                }
-                Text("If a URL lives on your local network or corporate VPN (a private IP address), macOS will ask permission the first time. Without it, link-title backfill silently stalls on those URLs.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Button("Open System Settings…") {
-                    LocalNetwork.openSystemSettings()
-                }
+            Section("Permissions") {
+                permissionRow(
+                    granted: accessibilityGranted,
+                    grantedLabel: "Accessibility — ⌘V pasting works",
+                    deniedLabel: "Accessibility — cpdb can't press ⌘V for you",
+                    deniedHelp: "Open System Settings → Privacy & Security → Accessibility, find cpdb in the list, and turn it on. Then relaunch cpdb.",
+                    openSettings: Accessibility.openSystemSettings,
+                    recheck: { accessibilityGranted = Accessibility.isTrusted() }
+                )
+                permissionRow(
+                    granted: localNetworkStatus == .granted,
+                    indeterminate: localNetworkStatus == .unknown,
+                    grantedLabel: "Local Network — link-title fetch covers private IPs",
+                    deniedLabel: "Local Network — link fetches stall on private IPs",
+                    indeterminateLabel: "Local Network — checking…",
+                    deniedHelp: "Open System Settings → Privacy & Security → Local Network, find cpdb in the list, and turn it on. Pages on your corporate VPN or intranet (private IP addresses) need this for title + preview fetch.",
+                    openSettings: LocalNetwork.openSystemSettings,
+                    recheck: { Task { await refreshLocalNetwork() } }
+                )
             }
 
             Section("Storage") {
@@ -411,12 +402,93 @@ private struct PreferencesView: View {
         .onAppear {
             refreshStats()
             startSyncPolling()
+            startPermissionPoller()
         }
         .onDisappear {
             stopSyncPolling()
+            permissionPollerTask?.cancel()
+            permissionPollerTask = nil
         }
         .task {
             await refreshICloudAccount()
+        }
+    }
+
+    /// Reusable row for the "Permissions" section. Renders a green
+    /// checkmark / orange exclamation / neutral hourglass next to a
+    /// state-appropriate label, plus a help blurb + "Open System
+    /// Settings…" + "Re-check" buttons when not granted.
+    @ViewBuilder
+    private func permissionRow(
+        granted: Bool,
+        indeterminate: Bool = false,
+        grantedLabel: String,
+        deniedLabel: String,
+        indeterminateLabel: String? = nil,
+        deniedHelp: String,
+        openSettings: @escaping () -> Void,
+        recheck: @escaping () -> Void
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                if indeterminate {
+                    Image(systemName: "hourglass.circle")
+                        .foregroundStyle(.secondary)
+                    Text(indeterminateLabel ?? deniedLabel)
+                        .font(.system(size: 13))
+                } else {
+                    Image(systemName: granted ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+                        .foregroundStyle(granted ? .green : .orange)
+                    Text(granted ? grantedLabel : deniedLabel)
+                        .font(.system(size: 13))
+                }
+            }
+            if !granted && !indeterminate {
+                Text(deniedHelp)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                HStack {
+                    Button("Open System Settings…", action: openSettings)
+                    Button("Re-check", action: recheck)
+                }
+            }
+        }
+    }
+
+    /// Refresh the Local Network status with a fresh `NWBrowser`
+    /// probe. Cheap (one-shot, ≤1.5s timeout) but we still gate
+    /// behind the poller's not-granted check so we don't churn on
+    /// happy systems.
+    private func refreshLocalNetwork() async {
+        let status = await LocalNetwork.probe()
+        await MainActor.run { localNetworkStatus = status }
+    }
+
+    /// 5-second poller that re-runs both permission checks while
+    /// the Preferences window is open. Skips the cheap re-checks
+    /// when both permissions are already granted (don't burn CPU
+    /// for nothing). The Accessibility re-check is synchronous +
+    /// instant; the Local Network probe takes ≤1.5s but only fires
+    /// when the previous result wasn't `.granted`. Net effect: when
+    /// the user grants a permission in System Settings while this
+    /// window is open, the green checkmark appears within ~5s
+    /// without any user action.
+    private func startPermissionPoller() {
+        permissionPollerTask?.cancel()
+        // Kick off an immediate Local Network probe so the row
+        // doesn't sit at "checking…" for 5s before the first poll
+        // tick.
+        Task { await refreshLocalNetwork() }
+        permissionPollerTask = Task { @MainActor in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
+                if Task.isCancelled { break }
+                let acc = Accessibility.isTrusted()
+                if acc != accessibilityGranted { accessibilityGranted = acc }
+                if localNetworkStatus != .granted {
+                    await refreshLocalNetwork()
+                }
+            }
         }
     }
 
