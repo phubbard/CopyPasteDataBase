@@ -298,6 +298,21 @@ private struct PreferencesView: View {
                 }
             }
 
+            Section("Local Network") {
+                HStack {
+                    Image(systemName: "info.circle")
+                        .foregroundStyle(.secondary)
+                    Text("cpdb fetches page titles and preview images for URLs you copy.")
+                        .font(.system(size: 13))
+                }
+                Text("If a URL lives on your local network or corporate VPN (a private IP address), macOS will ask permission the first time. Without it, link-title backfill silently stalls on those URLs.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Button("Open System Settings…") {
+                    LocalNetwork.openSystemSettings()
+                }
+            }
+
             Section("Storage") {
                 LabeledContent("Database", value: dbPath)
                     .lineLimit(1)

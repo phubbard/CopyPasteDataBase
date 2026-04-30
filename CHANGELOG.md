@@ -10,6 +10,30 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+- **Single-instance guard.** A botched relaunch (e.g. `open -a cpdb`
+  on top of a still-running copy) used to leave multiple cpdb glyphs
+  in the menu bar with no way to tell them apart. The app now
+  terminates any other process sharing its bundle id at launch
+  (polite quit, then force after 0.6 s) before installing its status
+  item. The `DaemonLock` still arbitrates the writer role, but the
+  GUI shell is now strictly single-instance.
+- **Local Network preferences row.** New section in the Preferences
+  window explains why cpdb sometimes needs Local Network permission
+  (URLs on a corporate VPN / intranet resolve to private IPs) and
+  links to the Privacy & Security pane. macOS doesn't expose an API
+  to query the grant state, so we don't auto-detect — just provide
+  the deep link. `NSLocalNetworkUsageDescription` is set so the
+  prompt itself uses friendly copy.
+- **Popup window has a close button.** `NSPanel`'s `.closable` style
+  flag added — useful when your hand's already on the trackpad. ⌘W
+  and Escape still work too.
+- **Backfiller can't wedge on a hung URL.** Each `LinkMetadataFetcher`
+  call is now wrapped in a 20 s wall-clock race, so a single URL
+  parked indefinitely (most often macOS holding it pending the
+  Local Network prompt) no longer stalls the periodic-sync loop.
+  Timeouts count as failures and stamp `link_fetched_at` like any
+  other failure.
+
 ## [2.7.1] – 2026-04-29
 
 - **Link preview thumbnails (phase 2 of v2.7).** The metadata fetcher

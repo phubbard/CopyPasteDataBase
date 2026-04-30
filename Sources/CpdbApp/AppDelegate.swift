@@ -25,6 +25,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         Log.cli.info("cpdb.app starting (pid \(ProcessInfo.processInfo.processIdentifier, privacy: .public))")
 
+        // Single-instance guard. The status item is sticky — every
+        // running copy of cpdb.app installs its own menu-bar icon, and
+        // a botched relaunch (deploy.sh's `open -a` on top of a still-
+        // running 19:52 copy, or repeated Xcode runs) leaves multiple
+        // glyphs in the bar with no obvious way to tell them apart.
+        // Belt-and-braces with the DaemonLock (which only protects the
+        // capture writer, not the GUI shell): if any other process
+        // shares our bundle id, terminate it (graceful first, force
+        // after a beat) before we proceed. The lock then arbitrates
+        // who owns the writer role as usual.
+        terminateOtherInstances()
+
         // Subscribe to frontmost-app activations BEFORE we start the
         // PasteboardWatcher, so the 5 s sliding window is already
         // populated when the first clipboard event fires.
@@ -414,5 +426,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func refreshFirstRunBadge() {
         let hasHotkey = KeyboardShortcuts.getShortcut(for: .summonPopup) != nil
         statusItem?.setNeedsAttention(!hasHotkey)
+    }
+
+    /// Kill any other running cpdb.app processes before we install our
+    /// status item. Each running copy puts its own glyph in the menu
+    /// bar, so a botched relaunch (deploy.sh's `open -a` over a still-
+    /// alive instance, or repeated Xcode launches) accumulates icons
+    /// quickly. We try a polite SIGTERM first, then escalate.
+    ///
+    /// Skips processes that share our PID (us) and any with a
+    /// different bundle id. If nothing else is running, returns
+    /// instantly.
+    private func terminateOtherInstances() {
+        let myPid = ProcessInfo.processInfo.processIdentifier
+        guard let myBundle = Bundle.main.bundleIdentifier else { return }
+        let others = NSRunningApplication.runningApplications(withBundleIdentifier: myBundle)
+            .filter { $0.processIdentifier != myPid }
+        guard !others.isEmpty else { return }
+        Log.cli.info(
+            "terminating \(others.count, privacy: .public) older cpdb instance(s) before installing status item"
+        )
+        for app in others {
+            // Polite quit first — applicationWillTerminate runs, the
+            // syncer flushes, the daemon lock drops cleanly.
+            _ = app.terminate()
+        }
+        // Block briefly so the menu-bar icons are gone before we
+        // install ours. 0.6 s is generous; AppKit terminations
+        // usually finish in <100 ms.
+        let deadline = Date().addingTimeInterval(0.6)
+        while Date() < deadline {
+            let stillAlive = NSRunningApplication
+                .runningApplications(withBundleIdentifier: myBundle)
+                .contains { $0.processIdentifier != myPid }
+            if !stillAlive { break }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        }
+        // Anything still hanging gets the hammer.
+        let stragglers = NSRunningApplication.runningApplications(withBundleIdentifier: myBundle)
+            .filter { $0.processIdentifier != myPid }
+        for app in stragglers {
+            _ = app.forceTerminate()
+        }
     }
 }

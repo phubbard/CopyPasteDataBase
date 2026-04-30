@@ -83,7 +83,19 @@ public struct LinkMetadataBackfiller {
                     let position = index + 1
                     group.addTask {
                         do {
-                            let result = try await fetcher.fetch(urlString: row.url)
+                            // Wall-clock timeout per fetch. URLSession's
+                            // own timeouts only apply once a request
+                            // *starts*; macOS can park requests to
+                            // RFC1918 hosts indefinitely waiting on the
+                            // Local Network privacy prompt, which would
+                            // otherwise wedge the entire periodic-sync
+                            // loop. 20 s is generous for a real page
+                            // load but short enough that a hung URL
+                            // doesn't stop progress on the rest of the
+                            // batch.
+                            let result = try await Self.withTimeout(seconds: 20) {
+                                try await fetcher.fetch(urlString: row.url)
+                            }
                             try repository.setLinkMetadata(entryId: row.entryId, title: result.title)
                             // Phase 2: opportunistically download the
                             // thumbnail bytes (og:image / oEmbed
@@ -94,7 +106,16 @@ public struct LinkMetadataBackfiller {
                             // there's no separate sentinel, the
                             // user can hit "Refetch all" to retry.
                             if let thumbURL = result.thumbnailURL {
-                                if let bytes = await fetcher.fetchThumbnailBytes(url: thumbURL) {
+                                // `withTimeout` returns the inner
+                                // result type. Inner is already
+                                // optional (`Data?`). On timeout
+                                // `try?` collapses to `nil`, which
+                                // matches the "fetch silently failed"
+                                // semantics already in place.
+                                let fetched: Data? = (try? await Self.withTimeout(seconds: 20) {
+                                    await fetcher.fetchThumbnailBytes(url: thumbURL)
+                                }) ?? nil
+                                if let bytes = fetched {
                                     let thumbs = Thumbnailer.generate(from: bytes)
                                     if thumbs.small != nil || thumbs.large != nil {
                                         try? repository.setLinkPreviewThumbnails(
@@ -133,6 +154,41 @@ public struct LinkMetadataBackfiller {
                 }
             }
             return report
+        }
+    }
+
+    /// Race `operation` against a `Task.sleep(seconds)` deadline.
+    /// Whichever finishes first wins; the loser is cancelled.
+    /// Throws `TimeoutError` if the sleep wins. Used to bound
+    /// individual fetches so a single hung URL — usually macOS
+    /// holding a request pending Local Network permission — can't
+    /// stall the periodic-sync loop forever.
+    public struct TimeoutError: Error, CustomStringConvertible, Sendable {
+        public let seconds: Double
+        public var description: String { "operation timed out after \(seconds)s" }
+    }
+
+    static func withTimeout<T: Sendable>(
+        seconds: Double,
+        operation: @escaping @Sendable () async throws -> T
+    ) async throws -> T {
+        try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask {
+                try await operation()
+            }
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                throw TimeoutError(seconds: seconds)
+            }
+            // First to finish wins. Cancelling the group stops the
+            // other branch (sleep responds to cancellation; URLSession
+            // tasks check cancellation between bytes, which is good
+            // enough for our purposes).
+            defer { group.cancelAll() }
+            guard let value = try await group.next() else {
+                throw TimeoutError(seconds: seconds)
+            }
+            return value
         }
     }
 

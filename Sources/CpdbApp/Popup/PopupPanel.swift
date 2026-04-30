@@ -19,6 +19,7 @@ final class PopupPanel: NSPanel {
             styleMask: [
                 .nonactivatingPanel,
                 .titled,
+                .closable,
                 .fullSizeContentView,
                 .resizable,
             ],

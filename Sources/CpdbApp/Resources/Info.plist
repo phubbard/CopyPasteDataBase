@@ -21,9 +21,9 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>2.7.1</string>
+	<string>2.7.2</string>
 	<key>CFBundleVersion</key>
-	<string>2.7.1</string>
+	<string>2.7.2</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>14.0</string>
 	<key>LSUIElement</key>
@@ -32,10 +32,10 @@
 	<string>cpdb needs Accessibility permission to paste the entry you pick into the app you were using.</string>
 	<key>NSAppleEventsUsageDescription</key>
 	<string>cpdb sends ⌘V to the frontmost app so it can paste the entry you selected.</string>
-	<key>NSLocalNetworkUsageDescription</key>
-	<string>cpdb fetches page titles and preview images for URLs you've copied. Some of those pages live on your local or corporate network.</string>
 	<key>NSHumanReadableCopyright</key>
 	<string>© Paul Hubbard</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>cpdb fetches page titles and preview images for URLs you've copied. Some of those pages live on your local or corporate network.</string>
 	<key>NSSupportsAutomaticTermination</key>
 	<false/>
 	<key>NSSupportsSuddenTermination</key>
