@@ -10,6 +10,8 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+## [2.7.7] – 2026-04-29
+
 - **Transient errors no longer mark a link "fetched".** YouTube's
   oEmbed endpoint returns HTTP 403 once you trip its rate limit
   (which a 1000-entry bulk backfill does easily), then recovers an
