@@ -271,6 +271,45 @@ public actor CloudKitSyncer {
                 EntryRecordMapper.setThumbnails(on: record, smallURL: smallURL, largeURL: largeURL)
             }
 
+            // Push-batch recordID dedup. Two local entries can map
+            // to the same content-addressed recordID — most often a
+            // live entry + a tombstoned-by-`cpdb dedupe` sibling
+            // sharing content_hash, both queued for push. CloudKit
+            // rejects the whole batch with "Invalid Arguments: You
+            // can't save the same record twice" if we send both, so
+            // we collapse here. Prefer the live row when one is
+            // live and one is tombstoned: the live row's state is
+            // what the server should reflect, and we drop the
+            // tombstoned sibling's queue row in the same write so
+            // it doesn't keep crashing future batches.
+            if let priorEntryId = recordIDToEntryId[recordID] {
+                let isPriorLive = (try? await isEntryLive(entryId: priorEntryId)) ?? true
+                let isCurrentLive = bundle.entry.deletedAt == nil
+                if isPriorLive && !isCurrentLive {
+                    // Keep prior, drop current.
+                    try await store.dbQueue.write { db in
+                        try PushQueue.remove(entryId: pendingRow.entryId, in: db)
+                    }
+                    continue
+                } else if !isPriorLive && isCurrentLive {
+                    // Replace prior with current.
+                    if let idx = entryRecords.firstIndex(where: { $0.recordID == recordID }) {
+                        entryRecords.remove(at: idx)
+                    }
+                    try await store.dbQueue.write { db in
+                        try PushQueue.remove(entryId: priorEntryId, in: db)
+                    }
+                    recordIDToEntryId[recordID] = pendingRow.entryId
+                } else {
+                    // Both live or both tombstoned — keep first,
+                    // drop the rest from the queue (they're
+                    // logically the same record from CloudKit's POV).
+                    try await store.dbQueue.write { db in
+                        try PushQueue.remove(entryId: pendingRow.entryId, in: db)
+                    }
+                    continue
+                }
+            }
             entryRecords.append(record)
             recordIDToEntryId[recordID] = pendingRow.entryId
 
@@ -549,6 +588,19 @@ public actor CloudKitSyncer {
         var entry: Entry
         var source: EntryRecordMapper.SourceInfo
         var preview: PreviewRecord?
+    }
+
+    /// True when the named entry is live (deleted_at IS NULL).
+    /// Used by the push-batch recordID dedup path to choose between
+    /// a live and tombstoned row sharing the same content_hash.
+    private func isEntryLive(entryId: Int64) async throws -> Bool {
+        try await store.dbQueue.read { db in
+            try Bool.fetchOne(
+                db,
+                sql: "SELECT deleted_at IS NULL FROM entries WHERE id = ?",
+                arguments: [entryId]
+            ) ?? false
+        }
     }
 
     private func loadEntryBundle(entryId: Int64) async throws -> EntryBundle? {

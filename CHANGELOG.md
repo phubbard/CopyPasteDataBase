@@ -10,6 +10,19 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+- **Push-batch recordID dedup.** Fixes `CKError 12 "You can't save
+  the same record twice"` that started showing up after running
+  `cpdb dedupe --links-all-time`. Two local entries can map to the
+  same content-addressed CloudKit recordID (`entry-<sha256>`) when
+  one is live and one is tombstoned-by-dedupe — both end up in the
+  push queue, both serialize to the same recordID in one
+  `modifyRecords` call, CloudKit rejects the entire batch. The
+  push-build loop now collapses duplicates by recordID at queue-
+  drain time: if one is live and one is tombstoned, prefer the
+  live row (it's the canonical state for that recordID); the
+  loser's queue row is removed in the same write so future batches
+  don't keep crashing on it.
+
 ## [2.8.2] – 2026-04-30
 
 - **Exponential-backoff link retry + connectivity gate.** Pre-v9
