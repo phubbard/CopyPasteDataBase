@@ -37,6 +37,18 @@ public partial class App : Application
         _settingsPath = Path.Combine(Host.Paths.Root, "settings.json");
         _settings = UserSettings.Load(_settingsPath);
 
+        // First-run default: enable autostart so the app comes back up after
+        // a reboot without the user having to remember the tray-menu toggle.
+        // Idempotent — once we've initialized once, the user's later choice
+        // (off, in particular) sticks. The flag lives in settings.json next
+        // to the rest of the prefs.
+        if (!_settings.AutoLaunchInitialized)
+        {
+            AutoLaunch.SetEnabled(true);
+            _settings.AutoLaunchInitialized = true;
+            _settings.Save(_settingsPath);
+        }
+
         _mainWindow = new MainWindow(Host);
         _mainWindow.Activate();
 
