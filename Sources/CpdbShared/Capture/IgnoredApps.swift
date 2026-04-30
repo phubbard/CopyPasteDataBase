@@ -22,6 +22,15 @@ public enum IgnoredApps {
     public static let defaultBundleIds: Set<String> = [
         "com.apple.Passwords",      // Apple's standalone Passwords app (macOS 15+)
         "com.apple.keychainaccess", // Keychain Access
+        // loginwindow is the foreground "app" while the screen is
+        // locked or during fast-user-switching. When the user
+        // unlocks, macOS often re-emits the pasteboard with a
+        // slightly different flavor set (an extra public.text on
+        // top of public.utf8-plain-text, in our observation),
+        // which trips a content_hash mismatch and creates a
+        // phantom duplicate of whatever was on the pasteboard
+        // before lock. Always ignore.
+        "com.apple.loginwindow",
     ]
 
     public static let userDefaultsKey = "cpdb.capture.ignoredBundleIds"

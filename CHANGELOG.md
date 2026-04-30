@@ -10,6 +10,25 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+- **Ignore `com.apple.loginwindow` for capture.** When the screen
+  unlocks, macOS sometimes re-emits the pasteboard with a slightly
+  different flavor set (an extra `public.text` UTI on top of
+  `public.utf8-plain-text` we'd already captured). Same data, but
+  the content_hash differs because it's computed across the full
+  flavor set — so it slips past dedup as a "new" entry. With
+  multiple Macs all running cpdb + CloudKit sync, every Mac's
+  unlock event creates its own phantom dupe and the dupes propagate
+  to every device. Now `loginwindow` joins Passwords and Keychain
+  Access in the always-ignore list at the source.
+- **`cpdb dedupe --links-all-time`.** The existing `cpdb dedupe`
+  uses a 5-second window — useful for the Xcode-debug-console
+  near-dupe pattern but useless for loginwindow phantoms that
+  appear hours or days apart on different Macs. New flag drops the
+  time bucket for `kind=link` rows: same trimmed text_preview
+  anywhere in history collapses to one entry. Other kinds still
+  respect the window. Also salvages `link_title` from siblings
+  before tombstoning so the dedup doesn't lose backfill work.
+
 ## [2.7.8] – 2026-04-30
 
 - **"Retry empties" — targeted link refetch.** Until now, the

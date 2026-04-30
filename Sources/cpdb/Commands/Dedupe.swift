@@ -26,8 +26,11 @@ struct Dedupe: ParsableCommand {
         abstract: "Merge near-duplicate entries captured within a short window."
     )
 
-    @Option(name: .long, help: "Seconds between captures to be considered duplicates.")
+    @Option(name: .long, help: "Seconds between captures to be considered duplicates (text/image/etc).")
     var window: Double = 5.0
+
+    @Flag(name: .long, help: "For kind=link, dedupe across all time (ignores --window). The URL itself is the identity, so multi-day phantom captures (loginwindow on screen unlock, multi-Mac sync drift) collapse to one row.")
+    var linksAllTime: Bool = false
 
     @Flag(name: .long, help: "Show what would be tombstoned but don't write.")
     var dryRun: Bool = false
@@ -40,13 +43,22 @@ struct Dedupe: ParsableCommand {
             // Find groups where COUNT(*) > 1, same kind + trimmed text,
             // landing within the rolling window. We bucket by floor(time/window)
             // — coarse but cheap and good enough for cleanup.
+            //
+            // When --links-all-time is set, kind=link rows skip the
+            // time bucket entirely — group key is just (kind='link',
+            // trimmed text_preview). Other kinds still respect the
+            // window (you don't want 'OK' you typed 6 months apart
+            // collapsed into one entry).
+            let bucketExpr = linksAllTime
+                ? "CASE WHEN kind = 'link' THEN 0 ELSE CAST(created_at / ? AS INTEGER) END"
+                : "CAST(created_at / ? AS INTEGER)"
             let rows = try Row.fetchAll(
                 db,
                 sql: """
                     SELECT
                         kind,
                         TRIM(COALESCE(text_preview, '')) AS t,
-                        CAST(created_at / ? AS INTEGER) AS bucket,
+                        \(bucketExpr) AS bucket,
                         GROUP_CONCAT(id, ',') AS ids,
                         COUNT(*) AS n
                     FROM entries
@@ -88,6 +100,36 @@ struct Dedupe: ParsableCommand {
         }
 
         try store.dbQueue.write { db in
+            // Before tombstoning, salvage link_title from siblings.
+            // If the kept row has no link_title but one of its
+            // about-to-be-tombstoned dupes does, copy the title onto
+            // the kept row so the deduplication doesn't lose the
+            // backfill work. Same for link_fetched_at.
+            for ids in groups {
+                let sorted = ids.sorted()
+                guard let keep = sorted.first else { continue }
+                let drops = Array(sorted.dropFirst())
+                let kept = try Row.fetchOne(db,
+                    sql: "SELECT kind, link_title, link_fetched_at FROM entries WHERE id = ?",
+                    arguments: [keep])
+                guard kept?["kind"] as String? == "link" else { continue }
+                let keptTitle = kept?["link_title"] as String?
+                if keptTitle?.isEmpty != false {
+                    if let donor = try Row.fetchOne(db,
+                        sql: """
+                            SELECT link_title, link_fetched_at FROM entries
+                            WHERE id IN (\(drops.map { "\($0)" }.joined(separator: ",")))
+                              AND link_title IS NOT NULL AND link_title != ''
+                            ORDER BY link_fetched_at DESC LIMIT 1
+                        """) {
+                        try db.execute(
+                            sql: "UPDATE entries SET link_title = ?, link_fetched_at = COALESCE(link_fetched_at, ?) WHERE id = ?",
+                            arguments: [donor["link_title"] as String?, donor["link_fetched_at"] as Double?, keep]
+                        )
+                        try PushQueue.enqueue(entryId: keep, in: db, now: now)
+                    }
+                }
+            }
             for id in toTombstone {
                 try db.execute(
                     sql: "UPDATE entries SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL",
