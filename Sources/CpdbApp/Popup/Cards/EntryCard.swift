@@ -46,6 +46,51 @@ struct EntryCard: View {
             }
         }
         .shadow(color: .black.opacity(isSelected ? 0.22 : 0.10), radius: isSelected ? 10 : 4, y: 2)
+        .help(tooltip)
+    }
+
+    /// Multi-line tooltip surfaced via SwiftUI's `.help(...)` modifier.
+    /// macOS renders this as a system tooltip after a hover delay.
+    /// Four lines: kind, source app (with bundle id when available),
+    /// originating device, absolute timestamp. Falls back gracefully
+    /// when fields are missing — older entries imported before
+    /// devices/apps existed have only timestamps.
+    private var tooltip: String {
+        var lines: [String] = []
+        lines.append("Type: \(prettyKind)")
+        if let appName = row.appName, !appName.isEmpty {
+            if let bid = row.appBundleId, !bid.isEmpty, bid != appName {
+                lines.append("From: \(appName) (\(bid))")
+            } else {
+                lines.append("From: \(appName)")
+            }
+        }
+        if let dev = row.deviceName, !dev.isEmpty {
+            lines.append("Device: \(dev)")
+        }
+        let captured = Date(timeIntervalSince1970: row.entry.capturedAt)
+        let f = DateFormatter()
+        f.dateStyle = .medium
+        f.timeStyle = .medium
+        lines.append("Captured: \(f.string(from: captured))")
+        if abs(row.entry.createdAt - row.entry.capturedAt) > 1 {
+            // Distinct created vs captured (eg. CloudKit pull preserves
+            // captured_at from the original device, created_at is local
+            // ingest time). Surface both so the user can see the lag.
+            lines.append("Imported: \(f.string(from: Date(timeIntervalSince1970: row.entry.createdAt)))")
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    private var prettyKind: String {
+        switch row.entry.kind {
+        case .text: return "Text"
+        case .link: return "Link"
+        case .image: return "Image"
+        case .file: return "File"
+        case .color: return "Color"
+        case .other: return "Other"
+        }
     }
 
     /// Tiny corner chip that surfaces WHY this card showed up in search

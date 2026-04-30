@@ -10,6 +10,18 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+- **Hover tooltips on every popup card.** Hovering an entry card
+  now shows a multi-line tooltip with the entry's kind, source
+  app + bundle id, originating device (your Mac name or another
+  Mac that synced the entry via CloudKit), and the absolute
+  capture timestamp. When `created_at` and `captured_at` differ
+  by more than a second (CloudKit-pulled entries preserve the
+  source device's capture time but get a new local ingest time),
+  the tooltip surfaces both. `EntryRow` gained a `deviceName`
+  field via a JOIN against the `devices` table — used by the
+  tooltip today, available for any future surface that wants per-
+  device attribution (browse window filters, sync diagnostics).
+
 ## [2.7.11] – 2026-04-30
 
 - **URL-shaped plain text now classifies as `kind=link`.** Pasteboard

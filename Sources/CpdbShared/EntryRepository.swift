@@ -17,6 +17,7 @@ public struct EntryRepository {
         public var entry: Entry
         public var appName: String?
         public var appBundleId: String?
+        public var deviceName: String?
     }
 
     /// N most recent live entries, most recent first. Optionally filtered
@@ -32,9 +33,10 @@ public struct EntryRepository {
     ) throws -> [EntryRow] {
         try store.dbQueue.read { db in
             var sql = """
-                SELECT e.*, a.name AS app_name_, a.bundle_id AS app_bundle_id_
+                SELECT e.*, a.name AS app_name_, a.bundle_id AS app_bundle_id_, d.name AS device_name_
                 FROM entries e
                 LEFT JOIN apps a ON a.id = e.source_app_id
+                LEFT JOIN devices d ON d.id = e.source_device_id
                 WHERE e.deleted_at IS NULL
             """
             var args: StatementArguments = []
@@ -59,7 +61,8 @@ public struct EntryRepository {
                 return EntryRow(
                     entry: entry,
                     appName: row["app_name_"],
-                    appBundleId: row["app_bundle_id_"]
+                    appBundleId: row["app_bundle_id_"],
+                    deviceName: row["device_name_"]
                 )
             }
         }
@@ -95,9 +98,10 @@ public struct EntryRepository {
                 guard let row = try Row.fetchOne(
                     db,
                     sql: """
-                        SELECT e.*, a.name AS app_name_, a.bundle_id AS app_bundle_id_
+                        SELECT e.*, a.name AS app_name_, a.bundle_id AS app_bundle_id_, d.name AS device_name_
                         FROM entries e
                         LEFT JOIN apps a ON a.id = e.source_app_id
+                        LEFT JOIN devices d ON d.id = e.source_device_id
                         WHERE e.id = ? AND e.deleted_at IS NULL
                     """,
                     arguments: [hit.entryId]
@@ -114,7 +118,12 @@ public struct EntryRepository {
                     continue
                 }
                 results.append(SearchHit(
-                    row: EntryRow(entry: entry, appName: row["app_name_"], appBundleId: row["app_bundle_id_"]),
+                    row: EntryRow(
+                        entry: entry,
+                        appName: row["app_name_"],
+                        appBundleId: row["app_bundle_id_"],
+                        deviceName: row["device_name_"]
+                    ),
                     snippet: hit.snippet,
                     source: hit.source
                 ))
