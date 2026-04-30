@@ -10,6 +10,24 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+- **Bump-time kind reclassification.** When a duplicate capture
+  bumps an existing row, the Ingestor now compares the new
+  snapshot's kind against the stored kind and updates if they
+  differ. Catches the case where v2.7.11's "URL-shaped plain text
+  → kind=link" rule shipped *after* a row was first captured as
+  text — re-copying the same URL would just bump created_at,
+  leaving the row stuck as kind=text and never enriching it.
+  When the transition is text→link, `link_fetched_at` is also
+  cleared so the next backfill cycle picks the row up.
+- **`cpdb reclassify-kinds` migration.** One-shot CLI to retrofit
+  the same fix across history without needing to re-copy each
+  URL by hand. Scans every `kind=text` row whose `text_preview`
+  is a single http(s):// URL (same heuristic as the runtime
+  classifier) and switches it to `kind=link`, clearing
+  `link_fetched_at`. Idempotent. Pushes the kind change through
+  CloudKit so other devices update too. Use `--dry-run` to
+  preview.
+
 ## [2.7.13] – 2026-04-30
 
 - **Two new thumbnail-fallback paths.** When a page's HTML head

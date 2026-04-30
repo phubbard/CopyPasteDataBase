@@ -90,10 +90,32 @@ public struct Ingestor {
                 arguments: [hash]
             ) {
                 let now = snapshot.capturedAt.timeIntervalSince1970
-                try db.execute(
-                    sql: "UPDATE entries SET created_at = ? WHERE id = ?",
-                    arguments: [now, existingId]
+                // Reclassify on bump if the new snapshot's kind
+                // differs from the stored one. The classification
+                // heuristic in PasteboardSnapshot evolves (v2.7.11
+                // added "URL-shaped plain text → kind=link"); rows
+                // captured before the new rule shipped would
+                // otherwise stay misclassified forever even when
+                // re-captured. When kind transitions to .link, also
+                // clear link_fetched_at so the backfill picks the
+                // row up.
+                let newKind = snapshot.kind.rawValue
+                let storedKind = try String.fetchOne(
+                    db,
+                    sql: "SELECT kind FROM entries WHERE id = ?",
+                    arguments: [existingId]
                 )
+                if storedKind != newKind {
+                    try db.execute(
+                        sql: "UPDATE entries SET created_at = ?, kind = ?, link_fetched_at = CASE WHEN ? = 'link' THEN NULL ELSE link_fetched_at END WHERE id = ?",
+                        arguments: [now, newKind, newKind, existingId]
+                    )
+                } else {
+                    try db.execute(
+                        sql: "UPDATE entries SET created_at = ? WHERE id = ?",
+                        arguments: [now, existingId]
+                    )
+                }
                 // Bumped created_at is a visible change — other devices
                 // should see it float back to the top of their list.
                 try PushQueue.enqueue(entryId: existingId, in: db, now: now)

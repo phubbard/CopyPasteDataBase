@@ -35,6 +35,7 @@ struct CpdbCommand: ParsableCommand {
             Evict.self,
             Fixture.self,
             FetchLinkTitles.self,
+            ReclassifyKinds.self,
         ],
         defaultSubcommand: ListCommand.self
     )
