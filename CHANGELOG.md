@@ -10,6 +10,25 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+- **Live updates: cards refresh in place when the background
+  fills them in.** The popup already used GRDB ValueObservation
+  while open, but the watched projection was just `(count,
+  maxCreatedAt)` — which doesn't change when an existing row gets
+  a new `link_title` or a fresh thumbnail. The projection now
+  also tracks `SUM(link_fetched_at)` and the previews row count,
+  so a link backfill or a thumbnail download fires the
+  observation and the card morphs from "URL only" → "title +
+  thumbnail" without dismiss + re-summon. With debounce already
+  at 120 ms, a burst of CloudKit-pulled rows still only triggers
+  one refresh.
+- **Capture-wake link backfill.** The 15-minute periodic loop is
+  too lazy for "I just copied this URL → open the popup → see
+  the title." Now every local capture also fires a 5-row backfill
+  immediately (gated by the existing BackfillGate so it doesn't
+  pile on top of an in-flight periodic batch). Combined with the
+  ValueObservation fix above, a fresh YouTube copy renders as a
+  URL card → title + thumbnail card within ~1–3 seconds.
+
 ## [2.7.9] – 2026-04-30
 
 - **Ignore `com.apple.loginwindow` for capture.** When the screen

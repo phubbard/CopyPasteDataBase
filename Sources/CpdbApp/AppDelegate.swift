@@ -203,7 +203,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             forName: .cpdbLocalEntryIngested,
             object: nil,
             queue: .main
-        ) { _ in
+        ) { [weak self] _ in
             Task {
                 do {
                     let push = try await syncer.pushPendingChanges()
@@ -216,6 +216,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     Log.cli.error("cloudkit push (wake) failed: \(String(describing: error), privacy: .public)")
                 }
             }
+            // Immediate small-batch link backfill on capture. The
+            // periodic loop runs every 15 minutes; a URL copied
+            // right before opening the popup wouldn't have a title
+            // by then. A 5-row batch fired right after ingest covers
+            // the just-captured row plus any other recent un-fetched
+            // ones. The BackfillGate inside runLinkTitleBackfillIfDue
+            // skips when a previous batch is still in flight, so
+            // captures during a periodic batch don't pile up.
+            guard let self, let store = self.store else { return }
+            Task.detached { await Self.runLinkTitleBackfillImmediate(store: store) }
         }
 
         // Register for silent push + install the zone subscription so
@@ -371,6 +381,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } catch {
             Log.cli.error(
                 "link-title backfill failed: \(String(describing: error), privacy: .public)"
+            )
+        }
+    }
+
+    /// Tiny-batch link backfill fired right after a capture, so a
+    /// freshly-copied URL has its title (and thumbnail) materialise
+    /// in the popup within seconds instead of waiting up to 15
+    /// minutes for the periodic loop. Limit=5 keeps the network hit
+    /// modest and biased toward "the row I just captured" since the
+    /// backfill SQL is ORDER BY created_at DESC.
+    ///
+    /// Shares the BackfillGate with the periodic path so a capture
+    /// during an in-flight periodic batch is a no-op (the periodic
+    /// run will pick the new row up since it's now top-of-queue).
+    nonisolated private static func runLinkTitleBackfillImmediate(store: Store) async {
+        guard await backfillGate.tryAcquire() else { return }
+        defer { Task { await backfillGate.release() } }
+        let repo = EntryRepository(store: store)
+        let backfiller = LinkMetadataBackfiller(repository: repo)
+        do {
+            let report = try await backfiller.runOnce(limit: 5)
+            if report.attempted > 0 {
+                Log.cli.info(
+                    "link-title backfill (capture-wake): \(report.summary, privacy: .public)"
+                )
+            }
+        } catch {
+            Log.cli.error(
+                "link-title backfill (capture-wake) failed: \(String(describing: error), privacy: .public)"
             )
         }
     }

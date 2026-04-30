@@ -173,14 +173,32 @@ final class PopupState {
     /// so we don't miss remote updates either.
     func startLiveUpdates() {
         guard liveObservation == nil else { return }
-        // Cheap projection: any edit to `entries` causes GRDB to re-
-        // evaluate this, yielding a new (count, maxCreatedAt) tuple.
-        // That's enough signal — we don't actually need the values,
-        // just the change notification.
+        // Projection that changes when anything user-visible changes:
+        //   - row count (insert / tombstone)
+        //   - max created_at (insert)
+        //   - sum of link_fetched_at across links (background link
+        //     backfill stamps this on every UPDATE — so a fresh title
+        //     coming in causes the sum to change)
+        //   - preview row count (thumbnail writes — link backfill
+        //     phase 2, image-kind imports, oEmbed thumb downloads)
+        //   - max captured_at (covers in-place bumps from re-capture)
+        // GRDB ValueObservation auto-tracks every table read inside
+        // the closure, so adding a SELECT against `previews` here is
+        // also what subscribes us to that table — no manual wiring
+        // needed.
         let observation = ValueObservation.tracking { db in
             let count = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM entries WHERE deleted_at IS NULL") ?? 0
             let maxCreated = try Double.fetchOne(db, sql: "SELECT MAX(created_at) FROM entries WHERE deleted_at IS NULL") ?? 0
-            return LiveSignal(count: count, maxCreated: maxCreated)
+            let maxCaptured = try Double.fetchOne(db, sql: "SELECT MAX(captured_at) FROM entries WHERE deleted_at IS NULL") ?? 0
+            let linkProgress = try Double.fetchOne(db, sql: "SELECT COALESCE(SUM(link_fetched_at), 0) FROM entries WHERE kind = 'link' AND deleted_at IS NULL") ?? 0
+            let previewCount = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM previews") ?? 0
+            return LiveSignal(
+                count: count,
+                maxCreated: maxCreated,
+                maxCaptured: maxCaptured,
+                linkProgress: linkProgress,
+                previewCount: previewCount
+            )
         }
         liveObservation = observation.start(
             in: store.dbQueue,
@@ -225,6 +243,9 @@ final class PopupState {
     private struct LiveSignal: Equatable {
         let count: Int
         let maxCreated: Double
+        let maxCaptured: Double
+        let linkProgress: Double
+        let previewCount: Int
     }
 
     // MARK: - Scope persistence
