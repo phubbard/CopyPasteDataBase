@@ -344,20 +344,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private static let backfillGate = BackfillGate()
 
     nonisolated private static func runLinkTitleBackfillIfDue(store: Store) async {
+        Log.cli.info("link-title backfill: enter (acquiring gate)")
         guard await backfillGate.tryAcquire() else {
             // Previous batch still running — most likely wedged on a
             // network call. Skip this tick rather than piling up.
             Log.cli.info("link-title backfill: previous batch still in flight, skipping")
             return
         }
+        Log.cli.info("link-title backfill: gate acquired")
         defer { Task { await backfillGate.release() } }
         let repo = EntryRepository(store: store)
         // Quick bailout if there's nothing pending. Cheaper than
         // spinning up the URLSession.
-        guard let any = try? repo.linksNeedingMetadata(limit: 1), !any.isEmpty else {
+        let probe: [EntryRepository.LinkBackfillRow]?
+        do {
+            probe = try repo.linksNeedingMetadata(limit: 1)
+        } catch {
+            Log.cli.error("link-title backfill: probe query failed: \(String(describing: error), privacy: .public)")
             return
         }
-        Log.cli.info("link-title backfill: starting batch (limit=50)")
+        guard let probe = probe, !probe.isEmpty else {
+            Log.cli.info("link-title backfill: no candidates, idle")
+            return
+        }
+        Log.cli.info("link-title backfill: starting batch (limit=50, candidates>=1)")
         let backfiller = LinkMetadataBackfiller(repository: repo)
         do {
             let report = try await backfiller.runOnce(limit: 50)

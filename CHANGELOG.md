@@ -10,6 +10,13 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+- **More backfill diagnostic logs.** v2.7.4 showed the periodic loop
+  is healthy — every tick completes, and the detached backfill task
+  is being spawned. But no `link-title backfill: …` lines appeared,
+  meaning the task itself bails out silently. v2.7.5 logs at every
+  branch (gate acquire, probe query, candidate count) so we can see
+  exactly which guard is firing. Diagnostic-only.
+
 ## [2.7.4] – 2026-04-29
 
 - **Periodic-tick observability.** Every step of the periodic sync
