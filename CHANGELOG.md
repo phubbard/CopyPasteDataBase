@@ -10,6 +10,8 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+## [2.7.0] – 2026-04-29
+
 - **Background-fetched link titles.** Captured URLs now grow a
   searchable human-readable title in the background. YouTube URLs
   hit the public oEmbed endpoint (clean JSON, no API key). Other
