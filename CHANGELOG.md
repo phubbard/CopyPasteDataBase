@@ -10,6 +10,8 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+## [2.8.3] – 2026-04-30
+
 - **Push-batch recordID dedup.** Fixes `CKError 12 "You can't save
   the same record twice"` that started showing up after running
   `cpdb dedupe --links-all-time`. Two local entries can map to the
