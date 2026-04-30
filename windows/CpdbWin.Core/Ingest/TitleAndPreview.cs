@@ -11,13 +11,33 @@ namespace CpdbWin.Core.Ingest;
 /// <item>title: first non-empty line of plain text, trimmed, ≤ 200 chars;
 ///       else public.file-url's filename; else null.</item>
 /// <item>text_preview: full plain text truncated to 2048 chars; else null.
-///       Never falls back to file URLs.</item>
+///       Never falls back to file URLs (filesystem paths, not content).</item>
 /// </list>
+///
+/// <para>
+/// URL-only fallback: when a copy ships <c>public.url</c> /
+/// <c>org.chromium.source-url</c> / <c>public.url-name</c> but no separate
+/// plain-text flavor (image-with-source-URL from Chromium browsers; iOS
+/// share sheet → Copy bridged via Universal Clipboard; Edge / Brave / Arc
+/// image copies), surface the URL string itself as <c>text_preview</c>.
+/// Without this fallback the entry would land with <c>text_preview=NULL</c>,
+/// which means the link-metadata backfill query (<c>WHERE text_preview LIKE
+/// 'http%'</c>) misses it and the LinkCard renders empty. Mirrors the
+/// equivalent <c>plainText</c> fallback chain in Mac
+/// <c>PasteboardSnapshot.swift</c>.
+/// </para>
 /// </summary>
 public static class TitleAndPreview
 {
     public const int TitleMax = 200;
     public const int PreviewMax = 2048;
+
+    /// <summary>UTIs that carry a web URL as their payload bytes.</summary>
+    private static readonly string[] WebUrlUtis =
+    {
+        "public.url",
+        "org.chromium.source-url",
+    };
 
     public static (string? Title, string? TextPreview) Derive(IReadOnlyList<CanonicalHash.Flavor> flavors)
     {
@@ -31,11 +51,35 @@ public static class TitleAndPreview
             }
         }
 
+        // URL-shaped fallbacks for entries that ship without a plain-text
+        // flavor (see XML doc for context).
+        if (plain is null)
+        {
+            plain = StringFromUtis(flavors, WebUrlUtis)
+                ?? StringFromUtis(flavors, new[] { "public.url-name" });
+        }
+
         var title = TitleFromPlain(plain) ?? TitleFromFileUrl(flavors);
         var preview = plain is null ? null
             : (plain.Length > PreviewMax ? plain[..PreviewMax] : plain);
 
         return (title, preview);
+    }
+
+    private static string? StringFromUtis(
+        IReadOnlyList<CanonicalHash.Flavor> flavors,
+        string[] utis)
+    {
+        foreach (var uti in utis)
+        {
+            foreach (var f in flavors)
+            {
+                if (f.Uti != uti) continue;
+                var s = Encoding.UTF8.GetString(f.Data.Span).Trim();
+                if (!string.IsNullOrEmpty(s)) return s;
+            }
+        }
+        return null;
     }
 
     private static string? TitleFromPlain(string? plain)

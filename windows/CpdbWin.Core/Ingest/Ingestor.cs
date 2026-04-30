@@ -231,11 +231,13 @@ public sealed class Ingestor
     {
         using var cmd = _db.CreateCommand();
         cmd.Transaction = tx;
-        // OCR/tags stay empty in v1. Empty strings (not NULL) so FTS5 indexes
-        // them as zero-length tokens, matching how CpdbCore writes the row.
+        // OCR/tags/link_title start empty. Empty strings (not NULL) so FTS5
+        // indexes them as zero-length tokens, matching how CpdbCore writes
+        // the row. link_title gets populated later by the metadata backfiller
+        // via EntryRepository.SettleLink.
         cmd.CommandText = """
-            INSERT INTO entries_fts(rowid, title, text, app_name, ocr_text, image_tags)
-            VALUES($id, $title, $text, $app, '', '')
+            INSERT INTO entries_fts(rowid, title, text, app_name, ocr_text, image_tags, link_title)
+            VALUES($id, $title, $text, $app, '', '', '')
             """;
         cmd.Parameters.AddWithValue("$id", entryId);
         cmd.Parameters.AddWithValue("$title", title ?? "");

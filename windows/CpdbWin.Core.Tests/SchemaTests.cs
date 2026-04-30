@@ -115,6 +115,65 @@ public class SchemaTests
     }
 
     [Fact]
+    public void Entries_HasV7V8V9Columns()
+    {
+        // The union DDL bakes Mac schema versions v7..v9 into a fresh DB:
+        //   v7: body_evicted_at (reserved column for parity; eviction not
+        //       yet implemented on Windows — see docs/parity.md § Storage
+        //       management).
+        //   v8: link_title + link_fetched_at — populated by the link-metadata
+        //       backfiller.
+        //   v9: link_retry_count + link_retry_after — exponential-backoff
+        //       retry state. NOT NULL DEFAULT 0 on link_retry_count means
+        //       fresh inserts get 0 without the ingestor having to mention
+        //       the column.
+        using var conn = new SqliteConnection("Data Source=:memory:");
+        conn.Open();
+        Schema.Initialize(conn);
+
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "PRAGMA table_info(entries)";
+        var found = new HashSet<string>();
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read())
+        {
+            // PRAGMA table_info columns: cid, name, type, notnull, dflt_value, pk
+            found.Add(reader.GetString(1));
+        }
+        Assert.Contains("body_evicted_at", found);
+        Assert.Contains("link_title", found);
+        Assert.Contains("link_fetched_at", found);
+        Assert.Contains("link_retry_count", found);
+        Assert.Contains("link_retry_after", found);
+    }
+
+    [Fact]
+    public void EntriesFts_HasLinkTitleColumn()
+    {
+        // FTS5 indexes link_title alongside title/text/app_name/ocr_text/
+        // image_tags so a fetched page title is searchable. Mac sourced this
+        // shape in v8_link_metadata; we bake it in directly.
+        using var conn = new SqliteConnection("Data Source=:memory:");
+        conn.Open();
+        Schema.Initialize(conn);
+
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT sql FROM sqlite_master WHERE name='entries_fts'";
+        var sql = cmd.ExecuteScalar() as string ?? "";
+        Assert.Contains("link_title", sql);
+    }
+
+    [Fact]
+    public void AppliedMigrationNames_IncludeV7V8V9()
+    {
+        // Sanity check: the seed list still names v7..v9 so a Mac install
+        // opening this DB skips re-running them.
+        Assert.Contains("v7_body_evicted",        Schema.AppliedMigrationNames);
+        Assert.Contains("v8_link_metadata",       Schema.AppliedMigrationNames);
+        Assert.Contains("v9_link_retry_backoff",  Schema.AppliedMigrationNames);
+    }
+
+    [Fact]
     public void LiveContentHashUniqueness_AllowsTombstonedDuplicate()
     {
         using var conn = new SqliteConnection("Data Source=:memory:");

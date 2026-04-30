@@ -51,8 +51,8 @@ Legend:
 
 | Feature | macOS | iOS | Windows | Contract / notes |
 |---|---|---|---|---|
-| `entries.link_title` + `link_fetched_at` columns | ✅ v2.7.0 | ✅ v2.7.0 | ⏳ | schema v8; FTS5 also gains a `link_title` indexed column |
-| `entries.link_retry_count` + `link_retry_after` columns | ✅ v2.8.2 | ✅ v2.8.2 | ⏳ | schema v9; semantics in `docs/schema.md` § Link metadata retry |
+| `entries.link_title` + `link_fetched_at` columns | ✅ v2.7.0 | ✅ v2.7.0 | ✅ v1.2.0 | schema v8; FTS5 also gains a `link_title` indexed column |
+| `entries.link_retry_count` + `link_retry_after` columns | ✅ v2.8.2 | ✅ v2.8.2 | ✅ v1.2.0 | schema v9; semantics in `docs/schema.md` § Link metadata retry |
 | YouTube oEmbed title fetch | ✅ v2.7.0 | — | ⏳ | iOS reads via CloudKit; doesn't fetch. Windows: hit `https://www.youtube.com/oembed?url=…&format=json`. Standalone in v1, no sync |
 | Generic HTML title scrape (og:title → twitter:title → `<title>`) | ✅ v2.7.0 | — | ⏳ | regex-based, see `Sources/CpdbShared/Analysis/LinkMetadataFetcher.swift` |
 | Preview thumbnails: og:image / twitter:image | ✅ v2.7.1 | ✅ v2.7.1 (read) | ⏳ | downloaded via fetcher, downscaled by `Thumbnailer`, written to `previews` table |
