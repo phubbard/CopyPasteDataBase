@@ -10,6 +10,20 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+- **Transient errors no longer mark a link "fetched".** YouTube's
+  oEmbed endpoint returns HTTP 403 once you trip its rate limit
+  (which a 1000-entry bulk backfill does easily), then recovers an
+  hour later. Previously any fetch error stamped `link_fetched_at`
+  with no title, so the row never got retried — leading to "why is
+  this YouTube link missing a title?" days later. Now `FetchError`
+  has an `isTransient` property: HTTP 403/408/425/429/5xx and
+  generic network errors are transient and leave the row un-stamped
+  for the next cycle to retry. Decode errors and invalid URLs are
+  permanent and still stamp normally.
+- After upgrading, hit Preferences → "Refetch link titles" once to
+  retry the entries that v2.7.0–2.7.6 marked permanently empty due
+  to this bug.
+
 ## [2.7.6] – 2026-04-29
 
 - **Backfill actually runs again.** Root cause of v2.7.0–2.7.5

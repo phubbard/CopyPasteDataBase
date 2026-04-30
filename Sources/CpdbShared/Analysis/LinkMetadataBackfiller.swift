@@ -128,11 +128,22 @@ public struct LinkMetadataBackfiller {
                             }
                             return Outcome(row: row, result: result, error: nil, position: position)
                         } catch {
-                            // Stamp the failure so we don't retry
-                            // this URL on every cycle. Reset via
-                            // resetLinkFetchedAt() lets the user
-                            // retry deliberately.
-                            try? repository.setLinkMetadata(entryId: row.entryId, title: nil)
+                            // Transient errors (HTTP 403/429/5xx,
+                            // network timeouts) are likely to clear
+                            // up on retry, so we leave the row
+                            // un-stamped and a future cycle will
+                            // pick it up again. Permanent failures
+                            // (decode errors, invalid URL) get
+                            // stamped to keep them out of the queue.
+                            // YouTube oEmbed in particular returns
+                            // 403 once we trip its rate limit, then
+                            // recovers an hour later — without this
+                            // distinction those rows would never
+                            // get retried.
+                            let transient = (error as? LinkMetadataFetcher.FetchError)?.isTransient ?? false
+                            if !transient {
+                                try? repository.setLinkMetadata(entryId: row.entryId, title: nil)
+                            }
                             return Outcome(row: row, result: nil, error: error, position: position)
                         }
                     }

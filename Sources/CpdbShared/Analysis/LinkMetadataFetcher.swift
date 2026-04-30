@@ -56,6 +56,28 @@ public actor LinkMetadataFetcher {
             case .network(let error):           return "network: \(error)"
             }
         }
+
+        /// Errors we expect to clear up on retry — typically rate
+        /// limits (YouTube oEmbed returns 403 on bursty traffic) or
+        /// server-side blips. The backfiller leaves these rows
+        /// un-stamped so a future cycle picks them up again instead
+        /// of marking them permanently fetched-with-empty.
+        public var isTransient: Bool {
+            switch self {
+            case .httpError(let code):
+                // 408 timeout, 425 too early, 429 rate limit,
+                // 5xx server. 403 is included because YouTube uses
+                // it as an effective rate-limit signal (real
+                // permission-denied is rare for public endpoints).
+                return code == 403 || code == 408 || code == 425 || code == 429 || (500..<600).contains(code)
+            case .network:
+                // URLSession errors (timeout, DNS, connection lost)
+                // are almost always transient.
+                return true
+            case .invalidURL, .bodyTooLarge, .decodeFailure:
+                return false
+            }
+        }
     }
 
     /// Cap on how many bytes of HTML we'll process per page. Most
