@@ -10,6 +10,8 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+## [2.7.11] – 2026-04-30
+
 - **URL-shaped plain text now classifies as `kind=link`.** Pasteboard
   writes that omit the `public.url` UTI (terminal `pbcopy`, paste-
   into-input flows, some apps' "Copy" buttons) used to land as
