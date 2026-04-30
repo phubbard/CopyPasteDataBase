@@ -50,29 +50,38 @@ if (-not $SkipBuild) {
     }
 }
 
-# Collect the artifacts to upload.
+# Refuse to clobber an existing tag: gh release create would otherwise
+# create the release first and *then* fail on upload, leaving an empty
+# published release behind. Better to abort up front.
+& gh release view $Tag --json url 2>&1 | Out-Null
+if ($LASTEXITCODE -eq 0) {
+    throw "Release $Tag already exists. Delete it first: gh release delete $Tag --cleanup-tag --yes"
+}
+
+# Collect the artifacts to upload. Match Velopack's exact emit names —
+# 'CpdbWin-win-Setup.exe' and 'CpdbWin-win-Portable.zip' — instead of a
+# wildcard. A wildcard caught stale renamed artifacts from prior version
+# cuts (e.g. 'CpdbWin-1.0.0-beta.1-win-x64-Setup.exe' lingering in the
+# rid dir) and rewrote them to the same target path, producing duplicate
+# entries that 404'd on the second upload.
 $artifacts = @()
 foreach ($rid in $Rids) {
     $ridDir = Join-Path $releasesRoot $rid
-    $setup = Join-Path $ridDir "$rid-Setup.exe"
-    $portable = Join-Path $ridDir "$rid-Portable.zip"
-    # Velopack names files as "<channel>-Setup.exe"; the channel default is 'win'.
-    if (-not (Test-Path $setup)) {
-        $setup = Join-Path $ridDir "win-Setup.exe"
-        $portable = Join-Path $ridDir "win-Portable.zip"
+    $emittedSetup    = Join-Path $ridDir 'CpdbWin-win-Setup.exe'
+    $emittedPortable = Join-Path $ridDir 'CpdbWin-win-Portable.zip'
+    foreach ($p in @($emittedSetup, $emittedPortable)) {
+        if (-not (Test-Path $p)) {
+            throw "Expected Velopack artifact missing: $p. Re-run without -SkipBuild."
+        }
     }
-    # Try the actual filename layout vpk emits.
-    Get-ChildItem $ridDir -Filter '*Setup.exe' | ForEach-Object {
-        # Rename to include the rid so beta testers know which to grab.
-        $renamed = Join-Path $ridDir ("CpdbWin-$Version-$rid-Setup.exe")
-        Copy-Item -LiteralPath $_.FullName -Destination $renamed -Force
-        $artifacts += $renamed
-    }
-    Get-ChildItem $ridDir -Filter '*Portable.zip' | ForEach-Object {
-        $renamed = Join-Path $ridDir ("CpdbWin-$Version-$rid-Portable.zip")
-        Copy-Item -LiteralPath $_.FullName -Destination $renamed -Force
-        $artifacts += $renamed
-    }
+
+    # Rename so the version + rid are baked into the filename testers see.
+    $renamedSetup    = Join-Path $ridDir ("CpdbWin-$Version-$rid-Setup.exe")
+    $renamedPortable = Join-Path $ridDir ("CpdbWin-$Version-$rid-Portable.zip")
+    Copy-Item -LiteralPath $emittedSetup    -Destination $renamedSetup    -Force
+    Copy-Item -LiteralPath $emittedPortable -Destination $renamedPortable -Force
+    $artifacts += $renamedSetup
+    $artifacts += $renamedPortable
 }
 
 if ($artifacts.Count -eq 0) {
