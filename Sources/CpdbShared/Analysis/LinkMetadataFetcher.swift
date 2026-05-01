@@ -46,6 +46,13 @@ public actor LinkMetadataFetcher {
         case bodyTooLarge
         case decodeFailure(String)
         case network(any Error)
+        /// HTTP 200 but the page body is a bot-check / CAPTCHA
+        /// interstitial rather than the real content. Detected by
+        /// title-pattern matching ("verification", "are you human",
+        /// "captcha", etc.). Treated as transient so the next
+        /// backfill cycle gets another shot — sometimes the same
+        /// IP/UA gets through later.
+        case botCheckDetected
 
         public var description: String {
             switch self {
@@ -54,6 +61,7 @@ public actor LinkMetadataFetcher {
             case .bodyTooLarge:                 return "body exceeded size cap"
             case .decodeFailure(let reason):    return "decode failure: \(reason)"
             case .network(let error):           return "network: \(error)"
+            case .botCheckDetected:             return "bot-check / CAPTCHA interstitial"
             }
         }
 
@@ -70,14 +78,43 @@ public actor LinkMetadataFetcher {
                 // it as an effective rate-limit signal (real
                 // permission-denied is rare for public endpoints).
                 return code == 403 || code == 408 || code == 425 || code == 429 || (500..<600).contains(code)
-            case .network:
+            case .network, .botCheckDetected:
                 // URLSession errors (timeout, DNS, connection lost)
-                // are almost always transient.
+                // and bot-check interstitials are usually transient
+                // — different time-of-day / IP / load can succeed.
                 return true
             case .invalidURL, .bodyTooLarge, .decodeFailure:
                 return false
             }
         }
+    }
+
+    /// True if a title string looks like a CAPTCHA / bot-check /
+    /// "are you human" interstitial page. Used by the parsers to
+    /// reject obviously-blocked pages so we don't stamp the
+    /// interstitial as the canonical link title. Conservative — we
+    /// don't want to misclassify a legitimate page that happens to
+    /// contain "verification" in a longer title — so we anchor to
+    /// short titles whose dominant phrase is one of the bot-check
+    /// signals.
+    static func looksLikeBotCheck(_ title: String) -> Bool {
+        let t = title.lowercased()
+        // The phrases that show up as the *whole* title on
+        // interstitial pages (Reddit, Cloudflare, hCaptcha,
+        // PerimeterX, Akamai, etc.).
+        let needles = [
+            "please wait for verification",
+            "just a moment",            // Cloudflare's 5-second challenge
+            "are you human",
+            "checking your browser",
+            "attention required",        // Cloudflare blocked-page title
+            "access denied",
+            "verify you are a human",
+            "please verify you are human",
+            "human verification",
+            "captcha",
+        ]
+        return needles.contains(where: { t.contains($0) })
     }
 
     /// Cap on how many bytes of HTML we'll process per page. Most
@@ -118,6 +155,21 @@ public actor LinkMetadataFetcher {
         }
         if Self.isYouTubeURL(url) {
             return try await fetchYouTube(url: url)
+        }
+        // Reddit serves a "Please wait for verification" CAPTCHA
+        // page to non-browser User-Agents, but the public JSON API
+        // (just append `.json` to a comments URL) bypasses the
+        // gate entirely and returns clean post metadata. Try that
+        // first; on failure fall through to the generic HTML
+        // scrape so a malformed Reddit URL doesn't dead-end.
+        if Self.isRedditCommentsURL(url) {
+            do {
+                return try await fetchRedditJSON(url: url)
+            } catch {
+                // Fall through. If the generic scrape also fails
+                // (or hits the bot-check detector), the caller's
+                // transient/permanent classification still applies.
+            }
         }
         return try await fetchGenericHTML(url: url)
     }
@@ -161,6 +213,97 @@ public actor LinkMetadataFetcher {
             )
         } catch {
             throw FetchError.decodeFailure("oembed json: \(error)")
+        }
+    }
+
+    // MARK: - Reddit JSON API
+
+    /// Match a Reddit comments URL that the public JSON API can
+    /// answer for. Reddit serves a "Please wait for verification"
+    /// CAPTCHA to non-browser User-Agents on the HTML path, but
+    /// appending `.json` (or hitting `old.reddit.com`) gets clean
+    /// post metadata back. Match conservatively — only the
+    /// `/r/<sub>/comments/<id>/...` shape, not arbitrary subreddit
+    /// or user-profile pages whose JSON API has a different shape.
+    static func isRedditCommentsURL(_ url: URL) -> Bool {
+        guard let host = url.host?.lowercased() else { return false }
+        let normalized = host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
+        let normalized2 = normalized.hasPrefix("old.") ? String(normalized.dropFirst(4)) : normalized
+        guard normalized2 == "reddit.com" else { return false }
+        let comps = url.pathComponents.filter { $0 != "/" }
+        // /r/<sub>/comments/<id>/<slug>?
+        return comps.count >= 4 && comps[0] == "r" && comps[2] == "comments"
+    }
+
+    private struct RedditPostListing: Decodable {
+        struct Listing: Decodable {
+            struct Children: Decodable {
+                struct Post: Decodable {
+                    let title: String?
+                    // Reddit serves preview images as a structured
+                    // tree (multiple resolutions, sometimes blurred
+                    // for NSFW). We just take the largest non-nil
+                    // source URL — Thumbnailer will downscale.
+                    let thumbnail: String?
+                    let url_overridden_by_dest: String?
+                }
+                let data: Post
+            }
+            let children: [Children]
+        }
+        let data: Listing
+    }
+
+    /// Hit Reddit's public JSON endpoint for a comments URL and
+    /// return the post title + (if present) the post's preview
+    /// thumbnail.
+    private func fetchRedditJSON(url: URL) async throws -> Result {
+        // Strip any trailing slug segments past the post id — the
+        // JSON endpoint cares about `/comments/<id>` and ignores
+        // the rest. Append `.json`.
+        guard let comps = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            throw FetchError.invalidURL
+        }
+        let parts = url.pathComponents.filter { $0 != "/" }
+        // Expect /r/<sub>/comments/<id>/[slug]; rebuild without slug.
+        guard parts.count >= 4 else { throw FetchError.invalidURL }
+        let basePath = "/" + parts.prefix(4).joined(separator: "/") + ".json"
+        var endpointComps = comps
+        endpointComps.host = "www.reddit.com"
+        endpointComps.path = basePath
+        endpointComps.query = nil
+        endpointComps.fragment = nil
+        guard let endpoint = endpointComps.url else { throw FetchError.invalidURL }
+
+        let (data, response) = try await session.data(from: endpoint)
+        if let http = response as? HTTPURLResponse, http.statusCode != 200 {
+            throw FetchError.httpError(http.statusCode)
+        }
+        // The endpoint returns an array of two listings: [post, comments].
+        // We only need the first.
+        do {
+            let listings = try JSONDecoder().decode([RedditPostListing].self, from: data)
+            guard let post = listings.first?.data.children.first?.data else {
+                throw FetchError.decodeFailure("reddit json: empty listing")
+            }
+            // Reddit's `thumbnail` field is sometimes a sentinel
+            // string ("self", "default", "spoiler", "nsfw") instead
+            // of a URL; reject those.
+            let thumbURL: URL? = {
+                if let t = post.thumbnail,
+                   t.hasPrefix("http"),
+                   let u = URL(string: t) { return u }
+                return nil
+            }()
+            return Result(
+                title: post.title?.trimmingCharacters(in: .whitespacesAndNewlines),
+                thumbnailURL: thumbURL,
+                source: post.title == nil ? .none : .htmlOpenGraph
+            )
+        } catch let e as FetchError {
+            throw e
+        } catch {
+            throw FetchError.decodeFailure("reddit json: \(error)")
         }
     }
 
@@ -211,6 +354,18 @@ public actor LinkMetadataFetcher {
         }
         let body: Data = data.count > Self.maxBodyBytes ? Data(data.prefix(Self.maxBodyBytes)) : data
         var result = Self.parseHTMLTitle(body)
+
+        // Bot-check / CAPTCHA interstitial detection. Reddit,
+        // Cloudflare-protected sites, and a growing list of others
+        // serve a "Please wait for verification" / "Just a moment"
+        // page to non-browser User-Agents. The HTTP layer reports
+        // 200 OK so we sail through, but the title we extracted
+        // belongs to the interstitial, not the real page. Reject
+        // here so the row stays a candidate for retry instead of
+        // being permanently stamped with the wrong title.
+        if let title = result.title, Self.looksLikeBotCheck(title) {
+            throw FetchError.botCheckDetected
+        }
 
         // Thumbnail fallback chain when og:image / twitter:image
         // didn't surface a usable URL. Order is biased toward

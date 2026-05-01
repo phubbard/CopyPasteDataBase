@@ -179,6 +179,34 @@ struct LinkMetadataFetcherTests {
         #expect(result.thumbnailURL == nil)
     }
 
+    @Test("Reddit comments URL detection")
+    func redditCommentsDetection() {
+        #expect(LinkMetadataFetcher.isRedditCommentsURL(URL(string: "https://www.reddit.com/r/MLV/comments/1sy973g/title/")!))
+        #expect(LinkMetadataFetcher.isRedditCommentsURL(URL(string: "https://reddit.com/r/MLV/comments/1sy973g/")!))
+        #expect(LinkMetadataFetcher.isRedditCommentsURL(URL(string: "https://old.reddit.com/r/MLV/comments/1sy973g/title/")!))
+        // Non-comments Reddit pages should miss
+        #expect(!LinkMetadataFetcher.isRedditCommentsURL(URL(string: "https://www.reddit.com/r/MLV/")!))
+        #expect(!LinkMetadataFetcher.isRedditCommentsURL(URL(string: "https://www.reddit.com/user/foo")!))
+        // Other hosts
+        #expect(!LinkMetadataFetcher.isRedditCommentsURL(URL(string: "https://example.com/r/MLV/comments/x/")!))
+    }
+
+    @Test("Bot-check title patterns")
+    func botCheckDetection() {
+        // Real Reddit interstitial title we hit in production
+        #expect(LinkMetadataFetcher.looksLikeBotCheck("Reddit - Please wait for verification"))
+        // Cloudflare's two flavours
+        #expect(LinkMetadataFetcher.looksLikeBotCheck("Just a moment..."))
+        #expect(LinkMetadataFetcher.looksLikeBotCheck("Attention Required! | Cloudflare"))
+        // Generic captcha gates
+        #expect(LinkMetadataFetcher.looksLikeBotCheck("Are you human?"))
+        #expect(LinkMetadataFetcher.looksLikeBotCheck("Please verify you are human"))
+        // Real titles must NOT match
+        #expect(!LinkMetadataFetcher.looksLikeBotCheck("Santa Cruz Vala — first ride review"))
+        #expect(!LinkMetadataFetcher.looksLikeBotCheck("Linux — Wikipedia"))
+        #expect(!LinkMetadataFetcher.looksLikeBotCheck(""))
+    }
+
     @Test("Wikipedia host detection")
     func wikipediaHostDetection() {
         #expect(LinkMetadataFetcher.isWikipediaHost("en.wikipedia.org"))

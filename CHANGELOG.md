@@ -10,6 +10,28 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+- **Reject CAPTCHA / bot-check pages as transient failures.** Reddit
+  (and a growing list of Cloudflare-protected sites) serves an
+  interstitial "Please wait for verification" / "Just a moment…"
+  page to non-browser User-Agents. The HTTP layer reports 200 OK,
+  so we used to extract `<title>Reddit - Please wait for
+  verification</title>` and stamp *that* as the canonical title.
+  New `looksLikeBotCheck()` heuristic detects the common
+  interstitial titles ("verification", "just a moment", "attention
+  required", "are you human", "captcha", etc.) and throws a new
+  `FetchError.botCheckDetected` — classified as transient, so the
+  row stays a candidate for retry instead of being permanently
+  marked with the wrong title.
+- **Reddit-specific JSON API path.** Comment URLs of the shape
+  `/r/<sub>/comments/<id>/…` now route through Reddit's public
+  `<...>.json` endpoint, which bypasses the CAPTCHA gate entirely
+  and returns clean post metadata (title + thumbnail). Falls
+  through to the generic HTML scrape on any failure so a malformed
+  URL doesn't dead-end. Subreddit pages and user profiles are not
+  in scope — their JSON shape is different.
+- **2 new tests** cover Reddit comments-URL detection and the bot-
+  check title-pattern matcher.
+
 - **iOS list rows render link titles + thumbnails.** The Mac shipped
   link enrichment in v2.7.x but iOS only exposed the title +
   thumbnail in the *detail* view. Now the SearchView list also
