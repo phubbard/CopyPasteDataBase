@@ -10,6 +10,8 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+## [2.8.6] – 2026-05-01
+
 - **Reject CAPTCHA / bot-check pages as transient failures.** Reddit
   (and a growing list of Cloudflare-protected sites) serves an
   interstitial "Please wait for verification" / "Just a moment…"
