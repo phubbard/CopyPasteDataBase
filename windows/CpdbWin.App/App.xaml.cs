@@ -123,9 +123,29 @@ public partial class App : Application
         _prefsWindow.Activate();
     }
 
+    /// <summary>
+    /// HWND of whatever app held the foreground when our window was last
+    /// brought up. Captured before we steal focus so the paste-back path
+    /// can return the keystroke to the same window. Reset to IntPtr.Zero
+    /// after a paste so a stale handle doesn't leak across launches.
+    /// </summary>
+    public static IntPtr LastForegroundHwnd { get; private set; }
+
     private void BringMainToFront()
     {
         if (_mainWindow is null) return;
+
+        // Capture the current foreground HWND BEFORE we steal focus —
+        // ActivateEntry's paste-back path will restore this window and
+        // send Ctrl+V to it. Skip if it's our own window already (the
+        // user just clicked our tray when our window was already up).
+        var ourHwnd = WindowNative.GetWindowHandle(_mainWindow);
+        var prev = GetForegroundWindow();
+        if (prev != IntPtr.Zero && prev != ourHwnd)
+        {
+            LastForegroundHwnd = prev;
+        }
+
         _mainWindow.AppWindow.Show();
 
         // WinUI's Window.Activate() doesn't reliably steal the foreground
@@ -135,10 +155,94 @@ public partial class App : Application
         // is the AttachThreadInput trick: temporarily attach our input
         // queue to the current foreground window's thread so the focus
         // transition counts as "from the same input context."
-        var hwnd = WindowNative.GetWindowHandle(_mainWindow);
-        ForceForeground(hwnd);
+        ForceForeground(ourHwnd);
         _mainWindow.Activate();
     }
+
+    /// <summary>
+    /// Hide our window, restore the previously-foreground app, then send
+    /// it Ctrl+V so the just-copied flavor pastes immediately. Called by
+    /// MainWindow after a successful clipboard write. If we have no
+    /// captured HWND (cold start, app launched without a prior foreground),
+    /// just hide and leave it to the user to paste manually.
+    /// </summary>
+    public static void HideAndPasteToPreviousForeground(Window win)
+    {
+        var prev = LastForegroundHwnd;
+        LastForegroundHwnd = IntPtr.Zero;
+
+        win.AppWindow.Hide();
+
+        if (prev == IntPtr.Zero) return;
+
+        // Walking the foreground rules: SetForegroundWindow only succeeds
+        // for the process that just lost focus. Hiding our window
+        // satisfies that. The AttachThreadInput dance from BringMainToFront
+        // isn't needed in this direction — we're handing focus BACK, which
+        // Windows allows freely. Still, we serialise these into the same
+        // synchronization unit to avoid the SendInput firing before the
+        // foreground transition completes.
+        SetForegroundWindow(prev);
+        SendCtrlV();
+    }
+
+    /// <summary>
+    /// Synthesize a Ctrl+V keystroke via SendInput. Targets whatever has
+    /// keyboard focus right now — caller must SetForegroundWindow first.
+    /// </summary>
+    private static void SendCtrlV()
+    {
+        // VK_CONTROL = 0x11, V = 0x56. Down-down-up-up so receivers that
+        // match on Ctrl+V (vs separate Ctrl-then-V) see the chord.
+        var inputs = new INPUT[4];
+        inputs[0] = MakeKey(0x11, keyUp: false);  // Ctrl down
+        inputs[1] = MakeKey(0x56, keyUp: false);  // V    down
+        inputs[2] = MakeKey(0x56, keyUp: true);   // V    up
+        inputs[3] = MakeKey(0x11, keyUp: true);   // Ctrl up
+        SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
+    }
+
+    private static INPUT MakeKey(ushort vk, bool keyUp)
+    {
+        const uint INPUT_KEYBOARD = 1;
+        const uint KEYEVENTF_KEYUP = 0x0002;
+        return new INPUT
+        {
+            type = INPUT_KEYBOARD,
+            U = new InputUnion
+            {
+                ki = new KEYBDINPUT
+                {
+                    wVk = vk,
+                    wScan = 0,
+                    dwFlags = keyUp ? KEYEVENTF_KEYUP : 0,
+                    time = 0,
+                    dwExtraInfo = IntPtr.Zero,
+                }
+            }
+        };
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct INPUT { public uint type; public InputUnion U; }
+    [StructLayout(LayoutKind.Explicit)]
+    private struct InputUnion
+    {
+        [FieldOffset(0)] public KEYBDINPUT ki;
+        // Mouse / hardware variants exist but we only synthesise keyboard input.
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    private struct KEYBDINPUT
+    {
+        public ushort wVk;
+        public ushort wScan;
+        public uint dwFlags;
+        public uint time;
+        public IntPtr dwExtraInfo;
+    }
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern uint SendInput(uint nInputs,
+        [MarshalAs(UnmanagedType.LPArray)] INPUT[] pInputs, int cbSize);
 
     private static void ForceForeground(IntPtr hwnd)
     {

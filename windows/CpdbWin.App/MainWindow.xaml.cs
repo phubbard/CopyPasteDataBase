@@ -67,15 +67,33 @@ public sealed partial class MainWindow : Window
         // users can type-to-filter without grabbing the mouse, and reset
         // the keyboard cursor / shift anchor so a stale state from a
         // previous session doesn't surface.
-        this.Activated += (_, _) =>
+        //
+        // Activated fires for both activation AND deactivation — gate on
+        // WindowActivationState so we don't churn focus when the user
+        // tabs away. Use FocusState.Keyboard rather than .Programmatic
+        // so the OS-level focus actually takes (Programmatic doesn't
+        // raise the focus visuals or always grab keyboard input on a
+        // first show), and queue a second Focus() onto the dispatcher to
+        // catch the case where the window's HWND focus transition hasn't
+        // settled by the time Activated runs (typical when shown from
+        // tray click / WM_HOTKEY).
+        this.Activated += (_, args) =>
         {
-            SearchBox.Focus(FocusState.Programmatic);
-            SearchBox.SelectAll();
+            if (args.WindowActivationState == WindowActivationState.Deactivated) return;
+            FocusSearchBox();
+            DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low,
+                FocusSearchBox);
             _cursorIndex = -1;
             _shiftAnchor = -1;
         };
 
         Refresh();
+    }
+
+    private void FocusSearchBox()
+    {
+        SearchBox.Focus(FocusState.Keyboard);
+        SearchBox.SelectAll();
     }
 
     private void OnCaptureIngested(object? sender, IngestOutcome outcome)
@@ -547,9 +565,12 @@ public sealed partial class MainWindow : Window
         if (TryWriteFlavorByPriority(vm.EntryId))
         {
             StatusText.Text = $"Copied #{vm.EntryId} to clipboard";
-            // Hide so the previous app reactivates and the user can paste
-            // immediately. Re-show via tray click or Ctrl+Shift+V.
-            AppWindow.Hide();
+            // Hide our window AND send Ctrl+V to the app that held the
+            // foreground when we were summoned, so the user gets a single-
+            // gesture experience: hotkey → arrow → Enter → text appears in
+            // the original app. App layer owns the foreground capture/restore
+            // because that's where the show-window event also lives.
+            App.HideAndPasteToPreviousForeground(this);
         }
     }
 
