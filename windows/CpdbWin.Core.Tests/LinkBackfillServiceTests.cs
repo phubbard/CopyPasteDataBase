@@ -224,7 +224,12 @@ public class LinkBackfillServiceTests : IDisposable
     [Fact]
     public async Task RunOnceAsync_DrainsUpToBatchSizeRows()
     {
-        // Insert 10 links, set BatchSize to 3, expect 3 fetches.
+        // Insert 10 links, set BatchSize to 3, expect 3 settled rows.
+        // Each cycle fires N HTTP requests per row: 1 for the page, plus
+        // up to one for the resolved thumbnail URL (the favicon fallback
+        // always resolves something on a successful 200, so handler hits
+        // = batch × 2). Assert on the row count rather than handler hits
+        // so the test stays robust to thumbnail-pipeline tweaks.
         for (int i = 0; i < 10; i++)
             IngestLink($"https://example.com/p{i}", DateTimeOffset.FromUnixTimeSeconds(1_700_000_000 + i));
 
@@ -237,8 +242,7 @@ public class LinkBackfillServiceTests : IDisposable
 
         await svc.RunOnceAsync();
 
-        Assert.Equal(3, handler.RequestCount);
-        // 7 still pending.
+        // 7 still pending (10 ingested - 3 settled this cycle).
         Assert.Equal(7, _repo.NextLinkBackfillCandidates(20).Count);
     }
 
@@ -257,7 +261,8 @@ public class LinkBackfillServiceTests : IDisposable
 
         await svc.RunOnceAsync(overrideBatchSize: 7);
 
-        Assert.Equal(7, handler.RequestCount);
+        // 3 still pending: 10 - 7 settled by this cycle.
+        Assert.Equal(3, _repo.NextLinkBackfillCandidates(20).Count);
     }
 
     // ─── Event surface ───────────────────────────────────────────────────
@@ -307,6 +312,126 @@ public class LinkBackfillServiceTests : IDisposable
     }
 
     // ─── End-to-end candidate progression ───────────────────────────────
+
+    // ─── Stage D — thumbnail attach ──────────────────────────────────────
+
+    [Fact]
+    public async Task RunOnceAsync_FetchesThumbnailWhenSuccessHasUrl()
+    {
+        // Confirms the dispatch wiring: a successful HTML fetch with an
+        // og:image surfaces a thumbnail URL, which the service then GETs
+        // via FetchThumbnailBytesAsync. We assert by counting handler hits
+        // — page + thumbnail = 2 requests.
+        IngestLink("https://withthumb.example/", DateTimeOffset.FromUnixTimeSeconds(1_700_000_000));
+
+        var hits = new List<Uri>();
+        var handler = new FakeHandler
+        {
+            OnSend = req =>
+            {
+                hits.Add(req.RequestUri!);
+                if (req.RequestUri!.AbsoluteUri == "https://withthumb.example/")
+                {
+                    return Html("""
+                        <html><head>
+                          <meta property="og:title"  content="Page Title">
+                          <meta property="og:image"  content="https://cdn.example/og.jpg">
+                        </head></html>
+                        """);
+                }
+                if (req.RequestUri!.AbsoluteUri == "https://cdn.example/og.jpg")
+                {
+                    // Non-image bytes — Thumbnailer will refuse to decode.
+                    // Test passes regardless; we're asserting the GET fired.
+                    var resp = new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new ByteArrayContent(new byte[] { 0xFF }),
+                    };
+                    resp.Content.Headers.ContentType =
+                        new System.Net.Http.Headers.MediaTypeHeaderValue("image/jpeg");
+                    return resp;
+                }
+                return new HttpResponseMessage(HttpStatusCode.NotFound);
+            }
+        };
+        using var fetcher = new LinkMetadataFetcher(new HttpClient(handler), ownsClient: true);
+        using var svc = new LinkBackfillService(_repo, fetcher, new FakeProbe());
+
+        await svc.RunOnceAsync();
+
+        Assert.Contains(hits, u => u.AbsoluteUri == "https://withthumb.example/");
+        Assert.Contains(hits, u => u.AbsoluteUri == "https://cdn.example/og.jpg");
+    }
+
+    [Fact]
+    public async Task RunOnceAsync_NonImageThumbnailBytes_NoPreviewWritten()
+    {
+        // Thumbnailer rejects garbage bytes; UpsertPreview must NOT be
+        // called in that case. The link row still settles with its title.
+        var id = IngestLink("https://garbage.example/", DateTimeOffset.FromUnixTimeSeconds(1_700_000_000));
+        var handler = new FakeHandler
+        {
+            OnSend = req =>
+            {
+                if (req.RequestUri!.AbsoluteUri.StartsWith("https://garbage.example/", StringComparison.Ordinal))
+                {
+                    return Html("""
+                        <html><head>
+                          <title>Garbage Page</title>
+                          <meta property="og:image" content="https://cdn.example/garbage.png">
+                        </head></html>
+                        """);
+                }
+                if (req.RequestUri!.AbsoluteUri == "https://cdn.example/garbage.png")
+                {
+                    var resp = new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new ByteArrayContent(new byte[] { 0x00, 0x01, 0x02, 0x03 }),
+                    };
+                    resp.Content.Headers.ContentType =
+                        new System.Net.Http.Headers.MediaTypeHeaderValue("image/png");
+                    return resp;
+                }
+                return new HttpResponseMessage(HttpStatusCode.NotFound);
+            }
+        };
+        using var fetcher = new LinkMetadataFetcher(new HttpClient(handler), ownsClient: true);
+        using var svc = new LinkBackfillService(_repo, fetcher, new FakeProbe());
+
+        await svc.RunOnceAsync();
+
+        Assert.Equal("Garbage Page", _repo.Recent().Single(r => r.Id == id).LinkTitle);
+        Assert.Null(_repo.GetThumbLarge(id));
+    }
+
+    [Fact]
+    public async Task RunOnceAsync_NoThumbnailUrl_NoFetchAttempt()
+    {
+        // Page has og:title but no og:image / favicon should still
+        // resolve (favicon-default fallback always returns a URL). To
+        // simulate the no-thumbnail case at the service layer, point the
+        // candidate at a non-http URL (won't pass TryNormalize), but
+        // that path is Permanent so check a different angle: confirm
+        // that on a Permanent outcome, no thumbnail GET fires.
+        IngestLink("https://nothumb.example/", DateTimeOffset.FromUnixTimeSeconds(1_700_000_000));
+        int requestCount = 0;
+        var handler = new FakeHandler
+        {
+            OnSend = _ =>
+            {
+                requestCount++;
+                return new HttpResponseMessage(HttpStatusCode.NotFound);
+            }
+        };
+        using var fetcher = new LinkMetadataFetcher(new HttpClient(handler), ownsClient: true);
+        using var svc = new LinkBackfillService(_repo, fetcher, new FakeProbe());
+
+        await svc.RunOnceAsync();
+
+        // 404 → Permanent → SettleLink(null). Exactly one request, no
+        // thumbnail GET attempted.
+        Assert.Equal(1, requestCount);
+    }
 
     [Fact]
     public async Task RunOnceAsync_DrainsToEmpty_WhenAllCandidatesFetchSuccessfully()

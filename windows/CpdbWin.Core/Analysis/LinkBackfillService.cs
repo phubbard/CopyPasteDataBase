@@ -1,4 +1,5 @@
 using System.Net.NetworkInformation;
+using CpdbWin.Core.Capture;
 using CpdbWin.Core.Store;
 
 namespace CpdbWin.Core.Analysis;
@@ -194,10 +195,21 @@ public sealed class LinkBackfillService : IDisposable
             outcome = new FetchOutcome.Transient($"unexpected: {ex.Message}");
         }
 
+        WriteFetchLog(c, outcome);
+
         switch (outcome)
         {
             case FetchOutcome.Success success:
                 _entries.SettleLink(c.Id, success.Title);
+                // Attach the og:image / favicon / Wikipedia REST API
+                // thumbnail (whichever resolved). Best-effort — failure
+                // here doesn't undo the title settle. Done AFTER
+                // SettleLink so a later thumbnail crash leaves the row
+                // settled rather than stranding it as a candidate forever.
+                if (success.ThumbnailUrl is { } thumbUrl)
+                {
+                    await TryAttachThumbnailAsync(c.Id, thumbUrl, ct).ConfigureAwait(false);
+                }
                 RaiseSettled(c, success.Title, transient: false);
                 break;
 
@@ -219,6 +231,81 @@ public sealed class LinkBackfillService : IDisposable
                 break;
         }
     }
+
+    /// <summary>
+    /// Download the resolved thumbnail URL, hand the bytes to
+    /// <see cref="Thumbnailer"/>, and write the small + large JPEGs into
+    /// the <c>previews</c> table for <paramref name="entryId"/>. Best-
+    /// effort: 404s, oversized payloads, decoder failures, network blips,
+    /// and any other path that doesn't yield bytes get silently skipped.
+    /// The link row's title is already settled by the time we get here,
+    /// so the worst-case is "no preview thumbnail for this entry."
+    /// </summary>
+    private async Task TryAttachThumbnailAsync(long entryId, Uri url, CancellationToken ct)
+    {
+        try
+        {
+            var bytes = await _fetcher.FetchThumbnailBytesAsync(url, ct).ConfigureAwait(false);
+            if (bytes is null || bytes.Length == 0) return;
+            var thumbs = Thumbnailer.Generate(bytes);
+            if (thumbs.Small is null && thumbs.Large is null) return;
+            _entries.UpsertPreview(entryId, thumbs.Small, thumbs.Large);
+        }
+        catch
+        {
+            // Best-effort — a thumbnail failure must never tear down the
+            // backfill cycle. The Errored event is reserved for the cycle
+            // itself; thumbnail-attach errors are quiet.
+        }
+    }
+
+    /// <summary>
+    /// Append a one-line record of each fetch attempt to
+    /// <c>%LOCALAPPDATA%\cpdb\link-fetch.log</c>. Diagnostic surface only;
+    /// the file rotates by being capped at 1 MB (truncated when oversize).
+    /// Best-effort: a failure to log must never escape the backfill loop.
+    /// </summary>
+    private static void WriteFetchLog(LinkBackfillCandidate c, FetchOutcome outcome)
+    {
+        try
+        {
+            var path = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "cpdb", "link-fetch.log");
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+
+            // Cheap rotation: truncate when the file passes 1 MB. Replaces
+            // the need for a real rolling logger and keeps the file readable
+            // by `Get-Content -Tail` without filling the disk.
+            if (File.Exists(path) && new FileInfo(path).Length > 1_000_000)
+            {
+                File.WriteAllText(path, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] (rotated)\n");
+            }
+
+            string line = outcome switch
+            {
+                FetchOutcome.Success { Title: { } t, ThumbnailUrl: var u, Source: var s } =>
+                    $"OK [{s}] {c.Url} → \"{Trunc(t, 80)}\"" + (u is null ? "" : $" thumb={u}"),
+                FetchOutcome.Success { Title: null, ThumbnailUrl: var u, Source: var s } =>
+                    $"OK-EMPTY [{s}] {c.Url} (200 but no title found)" + (u is null ? "" : $" thumb={u}"),
+                FetchOutcome.Permanent p =>
+                    $"PERMANENT {c.Url} — {p.Reason}",
+                FetchOutcome.Transient t =>
+                    $"TRANSIENT {c.Url} — {t.Reason} (retry #{c.RetryCount + 1})",
+                _ => $"UNKNOWN-OUTCOME {c.Url}",
+            };
+
+            File.AppendAllText(path,
+                $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] {line}\n");
+        }
+        catch
+        {
+            // Logging is never critical-path.
+        }
+    }
+
+    private static string Trunc(string s, int max) =>
+        s.Length <= max ? s : s.Substring(0, max) + "…";
 
     private void RaiseSettled(LinkBackfillCandidate c, string? title, bool transient)
     {

@@ -37,6 +37,203 @@ public class LinkMetadataFetcherTests
         Assert.Equal(expected, LinkMetadataFetcher.IsYouTubeHost(new Uri(url)));
     }
 
+    // ─── Reddit comments URL detection ───────────────────────────────────
+
+    [Theory]
+    [InlineData("https://www.reddit.com/r/AskReddit/comments/abc123/why_do_cats/",      true,  "AskReddit", "abc123")]
+    [InlineData("https://old.reddit.com/r/programming/comments/xyz",                     true,  "programming", "xyz")]
+    [InlineData("https://new.reddit.com/r/technology/comments/foo/bar",                  true,  "technology", "foo")]
+    [InlineData("https://m.reddit.com/r/aww/comments/baz/",                              true,  "aww", "baz")]
+    [InlineData("https://np.reddit.com/r/sub/comments/id/title/",                        true,  "sub", "id")]
+    [InlineData("https://reddit.com/r/sub/comments/id",                                  true,  "sub", "id")]
+    // Non-comment Reddit URLs fall through to the HTML scrape.
+    [InlineData("https://www.reddit.com/r/programming/",                                 false, null, null)]
+    [InlineData("https://www.reddit.com/user/spez",                                      false, null, null)]
+    [InlineData("https://reddit.com/",                                                   false, null, null)]
+    // Reddit-shaped paths on non-Reddit hosts must NOT match.
+    [InlineData("https://example.com/r/sub/comments/id",                                 false, null, null)]
+    public void TryParseRedditCommentsUrl_HitsRealRedditPosts(
+        string url, bool expected, string? expectedSub, string? expectedId)
+    {
+        var ok = LinkMetadataFetcher.TryParseRedditCommentsUrl(new Uri(url), out var sub, out var id);
+        Assert.Equal(expected, ok);
+        if (expected)
+        {
+            Assert.Equal(expectedSub, sub);
+            Assert.Equal(expectedId,  id);
+        }
+        else
+        {
+            Assert.Null(sub);
+            Assert.Null(id);
+        }
+    }
+
+    [Fact]
+    public async Task FetchAsync_RedditCommentsUrl_HitsJsonEndpointAndParses()
+    {
+        var hits = new List<Uri>();
+        var handler = new FakeHandler
+        {
+            OnSend = req =>
+            {
+                hits.Add(req.RequestUri!);
+                if (req.RequestUri!.AbsoluteUri.EndsWith(".json", StringComparison.Ordinal))
+                {
+                    return Json(req, """
+                        [
+                          { "kind": "Listing",
+                            "data": { "children": [
+                              { "kind": "t3",
+                                "data": {
+                                  "title": "Why do cats knead?",
+                                  "thumbnail": "https://b.thumbs.redditmedia.com/abc.jpg"
+                                }
+                              }
+                            ]}
+                          },
+                          { "kind": "Listing",
+                            "data": { "children": [] } }
+                        ]
+                        """);
+                }
+                return new HttpResponseMessage(HttpStatusCode.NotFound);
+            }
+        };
+        using var fetcher = new LinkMetadataFetcher(new HttpClient(handler), ownsClient: true);
+        var outcome = await fetcher.FetchAsync(
+            "https://www.reddit.com/r/AskReddit/comments/abc123/why_do_cats_knead/");
+        var success = Assert.IsType<FetchOutcome.Success>(outcome);
+        Assert.Equal("Why do cats knead?", success.Title);
+        Assert.Equal(new Uri("https://b.thumbs.redditmedia.com/abc.jpg"), success.ThumbnailUrl);
+        // Confirms we hit the .json endpoint and not the comments page.
+        Assert.Single(hits);
+        Assert.EndsWith(".json", hits[0].AbsoluteUri);
+    }
+
+    [Theory]
+    [InlineData("self")]
+    [InlineData("default")]
+    [InlineData("spoiler")]
+    [InlineData("nsfw")]
+    [InlineData("")]
+    public async Task FetchAsync_RedditSentinelThumbnail_RejectedAsNotAnImage(string sentinel)
+    {
+        // Build the JSON without raw-string interpolation — the
+        // double-brace escape ($$""" ... """) plays poorly with the
+        // single-brace pairs in the body, and concat is unambiguous.
+        var body = "[{\"data\":{\"children\":[{\"data\":"
+                 + "{\"title\":\"text post\",\"thumbnail\":\""
+                 + sentinel
+                 + "\"}}]}}]";
+        var handler = new FakeHandler
+        {
+            OnSend = req =>
+            {
+                if (req.RequestUri!.AbsoluteUri.EndsWith(".json", StringComparison.Ordinal))
+                {
+                    return Json(req, body);
+                }
+                return new HttpResponseMessage(HttpStatusCode.NotFound);
+            }
+        };
+        using var fetcher = new LinkMetadataFetcher(new HttpClient(handler), ownsClient: true);
+        var outcome = await fetcher.FetchAsync(
+            "https://www.reddit.com/r/test/comments/abc/text_post/");
+        var success = Assert.IsType<FetchOutcome.Success>(outcome);
+        Assert.Equal("text post", success.Title);
+        // Sentinel rejected — no thumbnail surfaced.
+        Assert.Null(success.ThumbnailUrl);
+    }
+
+    [Fact]
+    public async Task FetchAsync_RedditMissingPostBody_FallsThroughToHtmlScrape()
+    {
+        // Empty children array → Reddit JSON gives us nothing useful;
+        // contract says we fall through to step 3.
+        var hits = new List<Uri>();
+        var handler = new FakeHandler
+        {
+            OnSend = req =>
+            {
+                hits.Add(req.RequestUri!);
+                if (req.RequestUri!.AbsoluteUri.EndsWith(".json", StringComparison.Ordinal))
+                {
+                    return Json(req, """[{"data":{"children":[]}}]""");
+                }
+                return Html(req, req.RequestUri!.AbsoluteUri,
+                    "<html><head><title>HTML Fallback Title</title></head></html>");
+            }
+        };
+        using var fetcher = new LinkMetadataFetcher(new HttpClient(handler), ownsClient: true);
+        var outcome = await fetcher.FetchAsync(
+            "https://www.reddit.com/r/test/comments/xyz/post/");
+        var success = Assert.IsType<FetchOutcome.Success>(outcome);
+        Assert.Equal("HTML Fallback Title", success.Title);
+        // Both endpoints hit — JSON first, then HTML fallback.
+        Assert.Equal(2, hits.Count);
+        Assert.EndsWith(".json", hits[0].AbsoluteUri);
+    }
+
+    // ─── Bot-check rejection ─────────────────────────────────────────────
+
+    [Theory]
+    [InlineData("Just a moment...",                        true)]
+    [InlineData("Just a moment",                           true)]
+    [InlineData("Please wait for verification",            true)]
+    [InlineData("Are you human?",                          true)]
+    [InlineData("Checking your browser before accessing",  true)]
+    [InlineData("Attention Required! | Cloudflare",        true)]
+    [InlineData("ACCESS DENIED",                           true)]   // case-insensitive
+    [InlineData("Verify you are a human",                  true)]
+    [InlineData("Please verify you are human",             true)]
+    [InlineData("Human verification required",             true)]
+    [InlineData("Please complete the captcha",             true)]
+    [InlineData("This is a real article title",            false)]
+    [InlineData("",                                        false)]
+    public void LooksLikeBotCheck_MatchesContractList(string title, bool expected) =>
+        Assert.Equal(expected, LinkMetadataFetcher.LooksLikeBotCheck(title));
+
+    [Fact]
+    public void BotCheckPatterns_HasExactlyTenEntries() =>
+        // Schema contract names ten substrings — any change must round-trip
+        // through docs/schema.md § Fetcher resolution chain step 4.
+        Assert.Equal(10, LinkMetadataFetcher.BotCheckPatterns.Length);
+
+    [Fact]
+    public async Task FetchAsync_BotCheckTitle_ReturnsTransient()
+    {
+        // Cloudflare-style 200 OK page with a bot-check title — the row
+        // must stay a candidate for retry (Transient), not get settled
+        // with a junk title.
+        var handler = new FakeHandler
+        {
+            OnSend = req => Html(req, "https://blocked.example/",
+                "<html><head><title>Just a moment...</title></head></html>")
+        };
+        using var fetcher = new LinkMetadataFetcher(new HttpClient(handler), ownsClient: true);
+        Assert.IsType<FetchOutcome.Transient>(
+            await fetcher.FetchAsync("https://blocked.example/"));
+    }
+
+    [Fact]
+    public async Task FetchAsync_BotCheckOgTitle_AlsoReturnsTransient()
+    {
+        // Also exercise the og:title path — bot-check pages sometimes
+        // populate that too.
+        const string body =
+            "<html><head>" +
+            "<meta property=\"og:title\" content=\"Attention Required! | Cloudflare\">" +
+            "</head></html>";
+        var handler = new FakeHandler
+        {
+            OnSend = req => Html(req, "https://og-blocked.example/", body)
+        };
+        using var fetcher = new LinkMetadataFetcher(new HttpClient(handler), ownsClient: true);
+        Assert.IsType<FetchOutcome.Transient>(
+            await fetcher.FetchAsync("https://og-blocked.example/"));
+    }
+
     // ─── Wikipedia host detection ────────────────────────────────────────
 
     [Theory]

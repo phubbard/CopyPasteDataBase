@@ -40,6 +40,10 @@ public sealed partial class MainWindow : Window
         _host = host;
         _host.Capture.Ingested += OnCaptureIngested;
         _host.Capture.Errored += OnCaptureErrored;
+        // Live-refresh as the link-metadata backfill loop fills in titles.
+        // Each Settle/Bump fires once per row; we coalesce by debouncing
+        // on the dispatcher rather than re-querying per-row.
+        _host.LinkBackfill.RowSettled += OnLinkBackfillSettled;
 
         // Use AddHandler with handledEventsToo so we still see KeyDown after
         // TextBox / ListView mark it handled internally (Delete in TextBox
@@ -63,15 +67,33 @@ public sealed partial class MainWindow : Window
         // users can type-to-filter without grabbing the mouse, and reset
         // the keyboard cursor / shift anchor so a stale state from a
         // previous session doesn't surface.
-        this.Activated += (_, _) =>
+        //
+        // Activated fires for both activation AND deactivation — gate on
+        // WindowActivationState so we don't churn focus when the user
+        // tabs away. Use FocusState.Keyboard rather than .Programmatic
+        // so the OS-level focus actually takes (Programmatic doesn't
+        // raise the focus visuals or always grab keyboard input on a
+        // first show), and queue a second Focus() onto the dispatcher to
+        // catch the case where the window's HWND focus transition hasn't
+        // settled by the time Activated runs (typical when shown from
+        // tray click / WM_HOTKEY).
+        this.Activated += (_, args) =>
         {
-            SearchBox.Focus(FocusState.Programmatic);
-            SearchBox.SelectAll();
+            if (args.WindowActivationState == WindowActivationState.Deactivated) return;
+            FocusSearchBox();
+            DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low,
+                FocusSearchBox);
             _cursorIndex = -1;
             _shiftAnchor = -1;
         };
 
         Refresh();
+    }
+
+    private void FocusSearchBox()
+    {
+        SearchBox.Focus(FocusState.Keyboard);
+        SearchBox.SelectAll();
     }
 
     private void OnCaptureIngested(object? sender, IngestOutcome outcome)
@@ -94,6 +116,23 @@ public sealed partial class MainWindow : Window
         DispatcherQueue.TryEnqueue(() =>
         {
             StatusText.Text = $"Capture error: {ex.Message}";
+        });
+    }
+
+    private void OnLinkBackfillSettled(object? sender, CpdbWin.Core.Analysis.LinkBackfillSettledEventArgs e)
+    {
+        // Refresh the list whenever a row gets its title (or its retry
+        // counter bumped — the kind=link badge stays the same but a fresh
+        // status line helps diagnose the loop running). Marshalled onto
+        // the dispatcher because the backfill cycle runs on a Timer /
+        // ThreadPool thread.
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            if (!e.Transient && e.Title is not null)
+            {
+                StatusText.Text = $"Fetched title for #{e.EntryId}";
+            }
+            Refresh();
         });
     }
 
@@ -230,6 +269,8 @@ public sealed partial class MainWindow : Window
         DetailTextScroll.Visibility  = Visibility.Collapsed;
         DetailImage.Visibility       = Visibility.Collapsed;
         DetailImage.Source           = null;
+        DetailLinkScroll.Visibility  = Visibility.Collapsed;
+        DetailLinkImage.Source       = null;
         ResetMeta();
     }
 
@@ -240,6 +281,8 @@ public sealed partial class MainWindow : Window
         DetailTextScroll.Visibility  = Visibility.Collapsed;
         DetailImage.Visibility       = Visibility.Collapsed;
         DetailImage.Source           = null;
+        DetailLinkScroll.Visibility  = Visibility.Collapsed;
+        DetailLinkImage.Source       = null;
         ResetMeta();
     }
 
@@ -256,7 +299,26 @@ public sealed partial class MainWindow : Window
         DetailEmpty.Visibility = Visibility.Collapsed;
         ResetMeta();
 
-        // Image entries first — show the larger preview if we have one.
+        // Always-collapse the layouts we're not using; the branches below
+        // make the right one visible.
+        DetailLinkScroll.Visibility = Visibility.Collapsed;
+        DetailLinkImage.Source      = null;
+
+        // Pull a fresh row so we can route on kind + read the fetched
+        // link_title and the original URL (text_preview).
+        var row = FindRow(vm.EntryId);
+
+        // kind=link — title on top, thumbnail in the middle, URL at the
+        // bottom (clickable HyperlinkButton). The thumbnail is the
+        // og:image / favicon fetched by Stage D's TryAttachThumbnailAsync
+        // and stored in the previews table.
+        if (row is { Kind: "link" } linkRow)
+        {
+            ShowLinkDetail(linkRow);
+            return;
+        }
+
+        // Image entries — show the larger preview if we have one.
         var thumb = _host.Entries.GetThumbLarge(vm.EntryId);
         if (thumb is not null)
         {
@@ -284,6 +346,73 @@ public sealed partial class MainWindow : Window
         DetailText.Text = "(no preview available)";
         DetailTextScroll.Visibility = Visibility.Visible;
         DetailImage.Visibility      = Visibility.Collapsed;
+    }
+
+    private void ShowLinkDetail(EntryRow row)
+    {
+        // Title — prefer the fetched link_title, fall back to the captured
+        // first-line title (typically the URL itself when no fetch yet).
+        var title = !string.IsNullOrWhiteSpace(row.LinkTitle)
+            ? row.LinkTitle!
+            : (row.Title ?? row.TextPreview ?? "(untitled link)");
+        DetailLinkTitle.Text = title;
+
+        // Thumbnail — fed by the Stage D fetcher (og:image → twitter:image
+        // → Wikipedia REST API → favicon). May be null if the fetch hasn't
+        // run yet, was 4xx-blocked, or returned no decodable bytes.
+        var thumb = _host.Entries.GetThumbLarge(row.Id);
+        if (thumb is not null)
+        {
+            DetailLinkImage.Source     = LoadBitmap(thumb);
+            DetailLinkImage.Visibility = Visibility.Visible;
+        }
+        else
+        {
+            DetailLinkImage.Source     = null;
+            DetailLinkImage.Visibility = Visibility.Collapsed;
+        }
+
+        // URL — clickable HyperlinkButton at the bottom.
+        var url = row.TextPreview ?? row.Title ?? "";
+        DetailLinkUrl.Content = url;
+        if (Uri.TryCreate(url, UriKind.Absolute, out var u)
+            && (u.Scheme == "http" || u.Scheme == "https"))
+        {
+            DetailLinkUrl.NavigateUri = u;
+            DetailLinkUrl.Visibility  = Visibility.Visible;
+        }
+        else
+        {
+            DetailLinkUrl.NavigateUri = null;
+            // Still show the text — non-clickable — so the URL string is
+            // at least readable.
+            DetailLinkUrl.Visibility  = string.IsNullOrEmpty(url)
+                ? Visibility.Collapsed
+                : Visibility.Visible;
+        }
+
+        DetailLinkScroll.Visibility = Visibility.Visible;
+        DetailTextScroll.Visibility = Visibility.Collapsed;
+        DetailImage.Visibility      = Visibility.Collapsed;
+        DetailImage.Source          = null;
+    }
+
+    /// <summary>
+    /// Pull the freshest <see cref="EntryRow"/> for an entry id from the
+    /// repository. Used by the detail pane to read fields the
+    /// <see cref="EntryViewModel"/> doesn't surface (kind, link_title,
+    /// text_preview).
+    /// </summary>
+    private EntryRow? FindRow(long entryId)
+    {
+        // Repository doesn't expose a by-id getter; piggyback on Recent.
+        // The list is small (capped at 100) and the lookup is rare (only
+        // on selection change), so the linear scan is fine.
+        foreach (var r in _host.Entries.Recent(limit: 200))
+        {
+            if (r.Id == entryId) return r;
+        }
+        return null;
     }
 
     private void ShowMetadata(long entryId, bool includeImageMetadata)
@@ -526,9 +655,12 @@ public sealed partial class MainWindow : Window
         if (TryWriteFlavorByPriority(vm.EntryId))
         {
             StatusText.Text = $"Copied #{vm.EntryId} to clipboard";
-            // Hide so the previous app reactivates and the user can paste
-            // immediately. Re-show via tray click or Ctrl+Shift+V.
-            AppWindow.Hide();
+            // Hide our window AND send Ctrl+V to the app that held the
+            // foreground when we were summoned, so the user gets a single-
+            // gesture experience: hotkey → arrow → Enter → text appears in
+            // the original app. App layer owns the foreground capture/restore
+            // because that's where the show-window event also lives.
+            App.HideAndPasteToPreviousForeground(this);
         }
     }
 
@@ -556,6 +688,7 @@ public sealed class EntryViewModel
     public long EntryId { get; init; }
     public string Title { get; init; } = "";
     public string Subtitle { get; init; } = "";
+    public string Tooltip { get; init; } = "";
     public ImageSource? Thumbnail { get; init; }
     public bool Pinned { get; init; }
 
@@ -568,11 +701,84 @@ public sealed class EntryViewModel
     public static EntryViewModel From(EntryRow row) => new()
     {
         EntryId   = row.Id,
-        Title     = row.Title ?? KindLabel(row.Kind),
-        Subtitle  = $"{row.AppName ?? "?"} · {FormatTime(row.CreatedAt)} · {row.Kind}",
+        // Title resolution preference for link rows:
+        //   1. fetched link_title (e.g. "The New York Times - Breaking News…")
+        //   2. the captured plain-text title (typically the URL itself)
+        //   3. kind label as a last resort.
+        // For non-link rows, link_title is always null so the chain
+        // collapses to the original behavior.
+        Title     = NonEmpty(row.LinkTitle) ?? row.Title ?? KindLabel(row.Kind),
+        // Subtitle picks up the URL when we have a real fetched title,
+        // so the row still surfaces "where it came from".
+        Subtitle  = BuildSubtitle(row),
+        Tooltip   = BuildTooltip(row),
         Thumbnail = ThumbnailFrom(row.ThumbSmall),
         Pinned    = row.Pinned,
     };
+
+    /// <summary>
+    /// Multi-line hover tooltip for the row card. Surfaces the kind, the
+    /// originating app's display name (when known), and the capture
+    /// timestamp in absolute form. Mirrors macOS v2.7.12 hover tooltips.
+    /// Skips the "originating device" line — Windows is standalone in v1
+    /// (no sync substrate yet).
+    /// </summary>
+    private static string BuildTooltip(EntryRow row)
+    {
+        var lines = new List<string>(4)
+        {
+            // Type comes first; matches the macOS layout where it's the
+            // most-glanced datum.
+            $"Type: {KindDisplayName(row.Kind)}",
+        };
+        if (!string.IsNullOrEmpty(row.AppName))
+        {
+            lines.Add($"From: {row.AppName}");
+        }
+        else if (!string.IsNullOrEmpty(row.AppBundleId))
+        {
+            // Fall back to bundle id when we never resolved a display name —
+            // better breadcrumb than just "From: ?".
+            lines.Add($"From: {row.AppBundleId}");
+        }
+        lines.Add($"Captured: {FormatAbsoluteTime(row.CapturedAt)}");
+        return string.Join('\n', lines);
+    }
+
+    private static string KindDisplayName(string kind) => kind switch
+    {
+        "text"  => "Text",
+        "link"  => "Link",
+        "image" => "Image",
+        "file"  => "File",
+        "color" => "Color",
+        _       => kind,
+    };
+
+    private static string FormatAbsoluteTime(double unix)
+    {
+        // "Wed, 30 Apr 2026 09:39:19 PM" — readable + month abbreviation
+        // disambiguates "5/4" (US/EU date order ambiguity).
+        var dt = DateTimeOffset.FromUnixTimeSeconds((long)unix).LocalDateTime;
+        return dt.ToString("ddd, dd MMM yyyy hh:mm:ss tt");
+    }
+
+    private static string BuildSubtitle(EntryRow row)
+    {
+        var meta = $"{row.AppName ?? "?"} · {FormatTime(row.CreatedAt)} · {row.Kind}";
+        // Link row with a fetched title — show the URL as breadcrumb so
+        // the user still knows where the title came from.
+        if (row.Kind == "link"
+            && !string.IsNullOrEmpty(row.LinkTitle)
+            && !string.IsNullOrEmpty(row.TextPreview))
+        {
+            return $"{row.TextPreview} · {meta}";
+        }
+        return meta;
+    }
+
+    private static string? NonEmpty(string? s) =>
+        string.IsNullOrWhiteSpace(s) ? null : s;
 
     private static ImageSource? ThumbnailFrom(byte[]? bytes)
     {

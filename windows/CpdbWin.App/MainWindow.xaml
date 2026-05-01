@@ -31,7 +31,8 @@
                       SelectionMode="Extended">
                 <ListView.ItemTemplate>
                     <DataTemplate x:DataType="local:EntryViewModel">
-                        <Grid ColumnDefinitions="48,*,Auto" ColumnSpacing="10" Margin="0,4">
+                        <Grid ColumnDefinitions="48,*,Auto" ColumnSpacing="10" Margin="0,4"
+                              ToolTipService.ToolTip="{x:Bind Tooltip}">
                             <Grid.ContextFlyout>
                                 <MenuFlyout>
                                     <MenuFlyoutItem Text="{x:Bind PinMenuLabel}" Click="PinMenuItem_Click">
@@ -79,6 +80,31 @@
                                        FontFamily="Consolas"/>
                         </ScrollViewer>
                         <Image x:Name="DetailImage" Visibility="Collapsed" Stretch="Uniform"/>
+                        <!-- Link entries: stacked title / thumbnail / URL.
+                             Used when the selected row is kind=link.
+                             Title gets prominence at the top; the og:image
+                             thumbnail (Stage D) sits centered; the URL is
+                             a clickable HyperlinkButton at the bottom. -->
+                        <ScrollViewer x:Name="DetailLinkScroll"
+                                      Visibility="Collapsed"
+                                      VerticalScrollBarVisibility="Auto"
+                                      HorizontalScrollBarVisibility="Disabled">
+                            <StackPanel Spacing="10" Padding="2">
+                                <TextBlock x:Name="DetailLinkTitle"
+                                           FontSize="16"
+                                           FontWeight="SemiBold"
+                                           TextWrapping="Wrap"
+                                           IsTextSelectionEnabled="True"/>
+                                <Image x:Name="DetailLinkImage"
+                                       Visibility="Collapsed"
+                                       MaxHeight="320"
+                                       HorizontalAlignment="Center"
+                                       Stretch="Uniform"/>
+                                <HyperlinkButton x:Name="DetailLinkUrl"
+                                                 FontSize="12"
+                                                 Padding="0"/>
+                            </StackPanel>
+                        </ScrollViewer>
                         <TextBlock x:Name="DetailEmpty"
                                    Text="Select an entry to preview"
                                    Opacity="0.5"

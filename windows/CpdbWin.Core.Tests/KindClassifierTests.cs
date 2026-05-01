@@ -84,4 +84,65 @@ public class KindClassifierTests
     [Fact]
     public void Empty_FlavorsClassifyAsOther() =>
         Assert.Equal("other", KindClassifier.Classify(Array.Empty<CanonicalHash.Flavor>()));
+
+    // ─── URL-shaped plain text → link (parity w/ Mac v2.7.11) ────────────
+
+    [Fact]
+    public void Link_PlainTextHttpUrl_NoOtherFlavors()
+    {
+        // Windows clipboard often delivers "Copy address" out of Edge /
+        // Chrome as plain text only — no public.url. Without this rule
+        // those captures land as kind=text and skip the backfill loop.
+        Assert.Equal("link", KindClassifier.Classify(new[]
+        {
+            F("public.utf8-plain-text", "https://www.youtube.com/watch?v=abc"),
+        }));
+    }
+
+    [Fact]
+    public void Link_PlainTextHttpsUrl_TrimmedWhitespaceOK() =>
+        Assert.Equal("link", KindClassifier.Classify(new[]
+        {
+            F("public.utf8-plain-text", "  https://example.com/article\n"),
+        }));
+
+    [Fact]
+    public void Text_PlainTextWithUrlInsideProse_StaysText() =>
+        // "Look at https://example.com for context" — has whitespace so
+        // it's a sentence containing a URL, not a URL itself.
+        Assert.Equal("text", KindClassifier.Classify(new[]
+        {
+            F("public.utf8-plain-text", "Look at https://example.com for context"),
+        }));
+
+    [Fact]
+    public void Text_PlainTextNonHttpScheme_StaysText() =>
+        Assert.Equal("text", KindClassifier.Classify(new[]
+        {
+            F("public.utf8-plain-text", "ftp://files.example/x"),
+        }));
+
+    [Fact]
+    public void Text_OversizedUrl_StaysText()
+    {
+        // 4 KB starts-with-http blob — would mis-classify without the
+        // length cap. Cap is MaxUrlLength = 2048.
+        var bigBlob = "https://example.com/" + new string('x', 4000);
+        Assert.Equal("text", KindClassifier.Classify(new[]
+        {
+            F("public.utf8-plain-text", bigBlob),
+        }));
+    }
+
+    [Theory]
+    [InlineData("https://example.com",                 true)]
+    [InlineData("http://example.com/path?q=1#frag",    true)]
+    [InlineData("HTTPS://EXAMPLE.COM",                 true)]   // case-insensitive scheme
+    [InlineData("",                                    false)]
+    [InlineData("https://",                            false)]  // no host
+    [InlineData("not a url at all",                    false)]
+    [InlineData("file:///C:/local",                    false)]
+    [InlineData("javascript:alert(1)",                 false)]
+    public void LooksLikeUrl_MatchesContract(string s, bool expected) =>
+        Assert.Equal(expected, KindClassifier.LooksLikeUrl(s));
 }

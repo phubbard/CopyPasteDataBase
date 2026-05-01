@@ -49,12 +49,32 @@ public sealed class Ingestor
         if (existingId is not null)
         {
             BumpCreatedAt(tx, existingId.Value, ts);
-            // Pull the existing row's kind so the wake-on-link capture
-            // hook in AppHost still fires when a URL already in the
-            // store gets re-copied.
+
+            // Reclassify-on-bump: if the kind classifier has gained new
+            // rules since the row was originally captured (notably the
+            // URL-shaped-plain-text → kind=link heuristic), the stored
+            // kind can be stale. When the new classification differs,
+            // update the kind in place and reset the link backfill state
+            // so the row gets enriched on the next cycle. Mirrors the
+            // macOS v2.7.14 reclassify-on-bump behavior.
             var existingKind = LookupKind(tx, existingId.Value);
+            var newKind = KindClassifier.Classify(snapshot.Flavors);
+            string reportedKind = existingKind ?? newKind;
+            if (existingKind is not null && existingKind != newKind)
+            {
+                ReclassifyKind(tx, existingId.Value, newKind);
+                if (newKind == "link")
+                {
+                    // Drift was non-link → link: the row never got a
+                    // chance to be enriched. Clear link_fetched_at +
+                    // retry state so the candidate query picks it up.
+                    ClearLinkState(tx, existingId.Value);
+                }
+                reportedKind = newKind;
+            }
+
             tx.Commit();
-            return new IngestOutcome(IngestKind.Bumped, existingId.Value, EntryKind: existingKind);
+            return new IngestOutcome(IngestKind.Bumped, existingId.Value, EntryKind: reportedKind);
         }
 
         var deviceId = UpsertDevice(tx, device);
@@ -135,6 +155,32 @@ public sealed class Ingestor
         cmd.Parameters.AddWithValue("$id", id);
         var v = cmd.ExecuteScalar();
         return v is null or DBNull ? null : (string)v;
+    }
+
+    private void ReclassifyKind(SqliteTransaction tx, long id, string newKind)
+    {
+        using var cmd = _db.CreateCommand();
+        cmd.Transaction = tx;
+        cmd.CommandText = "UPDATE entries SET kind = $k WHERE id = $id";
+        cmd.Parameters.AddWithValue("$k", newKind);
+        cmd.Parameters.AddWithValue("$id", id);
+        cmd.ExecuteNonQuery();
+    }
+
+    private void ClearLinkState(SqliteTransaction tx, long id)
+    {
+        using var cmd = _db.CreateCommand();
+        cmd.Transaction = tx;
+        cmd.CommandText = """
+            UPDATE entries
+            SET link_title = NULL,
+                link_fetched_at = NULL,
+                link_retry_count = 0,
+                link_retry_after = NULL
+            WHERE id = $id
+            """;
+        cmd.Parameters.AddWithValue("$id", id);
+        cmd.ExecuteNonQuery();
     }
 
     private void BumpCreatedAt(SqliteTransaction tx, long id, double ts)
