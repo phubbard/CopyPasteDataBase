@@ -1,4 +1,5 @@
 using System.Net.NetworkInformation;
+using CpdbWin.Core.Capture;
 using CpdbWin.Core.Store;
 
 namespace CpdbWin.Core.Analysis;
@@ -200,6 +201,15 @@ public sealed class LinkBackfillService : IDisposable
         {
             case FetchOutcome.Success success:
                 _entries.SettleLink(c.Id, success.Title);
+                // Attach the og:image / favicon / Wikipedia REST API
+                // thumbnail (whichever resolved). Best-effort — failure
+                // here doesn't undo the title settle. Done AFTER
+                // SettleLink so a later thumbnail crash leaves the row
+                // settled rather than stranding it as a candidate forever.
+                if (success.ThumbnailUrl is { } thumbUrl)
+                {
+                    await TryAttachThumbnailAsync(c.Id, thumbUrl, ct).ConfigureAwait(false);
+                }
                 RaiseSettled(c, success.Title, transient: false);
                 break;
 
@@ -219,6 +229,33 @@ public sealed class LinkBackfillService : IDisposable
                 _entries.BumpLinkRetry(c.Id);
                 RaiseSettled(c, null, transient: true);
                 break;
+        }
+    }
+
+    /// <summary>
+    /// Download the resolved thumbnail URL, hand the bytes to
+    /// <see cref="Thumbnailer"/>, and write the small + large JPEGs into
+    /// the <c>previews</c> table for <paramref name="entryId"/>. Best-
+    /// effort: 404s, oversized payloads, decoder failures, network blips,
+    /// and any other path that doesn't yield bytes get silently skipped.
+    /// The link row's title is already settled by the time we get here,
+    /// so the worst-case is "no preview thumbnail for this entry."
+    /// </summary>
+    private async Task TryAttachThumbnailAsync(long entryId, Uri url, CancellationToken ct)
+    {
+        try
+        {
+            var bytes = await _fetcher.FetchThumbnailBytesAsync(url, ct).ConfigureAwait(false);
+            if (bytes is null || bytes.Length == 0) return;
+            var thumbs = Thumbnailer.Generate(bytes);
+            if (thumbs.Small is null && thumbs.Large is null) return;
+            _entries.UpsertPreview(entryId, thumbs.Small, thumbs.Large);
+        }
+        catch
+        {
+            // Best-effort — a thumbnail failure must never tear down the
+            // backfill cycle. The Errored event is reserved for the cycle
+            // itself; thumbnail-attach errors are quiet.
         }
     }
 

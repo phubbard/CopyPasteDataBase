@@ -55,7 +55,7 @@ Legend:
 | `entries.link_retry_count` + `link_retry_after` columns | ✅ v2.8.2 | ✅ v2.8.2 | ✅ v1.2.0 | schema v9; semantics in `docs/schema.md` § Link metadata retry |
 | YouTube oEmbed title fetch | ✅ v2.7.0 | — | ✅ v1.3.0 | iOS reads via CloudKit; doesn't fetch. Windows: hits `https://www.youtube.com/oembed?url=…&format=json`. Standalone in v1, no sync |
 | Generic HTML title scrape (og:title → twitter:title → `<title>`) | ✅ v2.7.0 | — | ✅ v1.3.0 | regex-based, see `windows/CpdbWin.Core/Analysis/LinkMetadataParser.cs` |
-| Preview thumbnails: og:image / twitter:image | ✅ v2.7.1 | ✅ v2.7.1 (read) | ⏳ | resolution implemented; downscaling + previews-table write lands in Stage D |
+| Preview thumbnails: og:image / twitter:image | ✅ v2.7.1 | ✅ v2.7.1 (read) | ✅ v1.5.0 | `LinkBackfillService.TryAttachThumbnailAsync` downloads bytes, hands to `Thumbnailer`, writes to `previews` table. Best-effort: 404s / decode failures leave the entry without a preview rather than failing the settle. |
 | Wikipedia REST API thumbnail fallback | ✅ v2.7.13 | — | ✅ v1.3.0 | hits `/api/rest_v1/page/summary/<title>` for `*.wikipedia.org` URLs lacking og:image |
 | Favicon thumbnail fallback (apple-touch-icon → icon → `/favicon.ico`) | ✅ v2.7.13 | — | ✅ v1.3.0 | last-resort thumb when nothing else works |
 | URL-shaped plain text → kind=link classification | ✅ v2.7.11 | ✅ v2.7.11 | ✅ v1.4.0 | covers Edge / Chrome "Copy address" writes that omit `public.url`. Heuristic in `KindClassifier.LooksLikeUrl` |

@@ -269,6 +269,8 @@ public sealed partial class MainWindow : Window
         DetailTextScroll.Visibility  = Visibility.Collapsed;
         DetailImage.Visibility       = Visibility.Collapsed;
         DetailImage.Source           = null;
+        DetailLinkScroll.Visibility  = Visibility.Collapsed;
+        DetailLinkImage.Source       = null;
         ResetMeta();
     }
 
@@ -279,6 +281,8 @@ public sealed partial class MainWindow : Window
         DetailTextScroll.Visibility  = Visibility.Collapsed;
         DetailImage.Visibility       = Visibility.Collapsed;
         DetailImage.Source           = null;
+        DetailLinkScroll.Visibility  = Visibility.Collapsed;
+        DetailLinkImage.Source       = null;
         ResetMeta();
     }
 
@@ -295,7 +299,26 @@ public sealed partial class MainWindow : Window
         DetailEmpty.Visibility = Visibility.Collapsed;
         ResetMeta();
 
-        // Image entries first — show the larger preview if we have one.
+        // Always-collapse the layouts we're not using; the branches below
+        // make the right one visible.
+        DetailLinkScroll.Visibility = Visibility.Collapsed;
+        DetailLinkImage.Source      = null;
+
+        // Pull a fresh row so we can route on kind + read the fetched
+        // link_title and the original URL (text_preview).
+        var row = FindRow(vm.EntryId);
+
+        // kind=link — title on top, thumbnail in the middle, URL at the
+        // bottom (clickable HyperlinkButton). The thumbnail is the
+        // og:image / favicon fetched by Stage D's TryAttachThumbnailAsync
+        // and stored in the previews table.
+        if (row is { Kind: "link" } linkRow)
+        {
+            ShowLinkDetail(linkRow);
+            return;
+        }
+
+        // Image entries — show the larger preview if we have one.
         var thumb = _host.Entries.GetThumbLarge(vm.EntryId);
         if (thumb is not null)
         {
@@ -323,6 +346,73 @@ public sealed partial class MainWindow : Window
         DetailText.Text = "(no preview available)";
         DetailTextScroll.Visibility = Visibility.Visible;
         DetailImage.Visibility      = Visibility.Collapsed;
+    }
+
+    private void ShowLinkDetail(EntryRow row)
+    {
+        // Title — prefer the fetched link_title, fall back to the captured
+        // first-line title (typically the URL itself when no fetch yet).
+        var title = !string.IsNullOrWhiteSpace(row.LinkTitle)
+            ? row.LinkTitle!
+            : (row.Title ?? row.TextPreview ?? "(untitled link)");
+        DetailLinkTitle.Text = title;
+
+        // Thumbnail — fed by the Stage D fetcher (og:image → twitter:image
+        // → Wikipedia REST API → favicon). May be null if the fetch hasn't
+        // run yet, was 4xx-blocked, or returned no decodable bytes.
+        var thumb = _host.Entries.GetThumbLarge(row.Id);
+        if (thumb is not null)
+        {
+            DetailLinkImage.Source     = LoadBitmap(thumb);
+            DetailLinkImage.Visibility = Visibility.Visible;
+        }
+        else
+        {
+            DetailLinkImage.Source     = null;
+            DetailLinkImage.Visibility = Visibility.Collapsed;
+        }
+
+        // URL — clickable HyperlinkButton at the bottom.
+        var url = row.TextPreview ?? row.Title ?? "";
+        DetailLinkUrl.Content = url;
+        if (Uri.TryCreate(url, UriKind.Absolute, out var u)
+            && (u.Scheme == "http" || u.Scheme == "https"))
+        {
+            DetailLinkUrl.NavigateUri = u;
+            DetailLinkUrl.Visibility  = Visibility.Visible;
+        }
+        else
+        {
+            DetailLinkUrl.NavigateUri = null;
+            // Still show the text — non-clickable — so the URL string is
+            // at least readable.
+            DetailLinkUrl.Visibility  = string.IsNullOrEmpty(url)
+                ? Visibility.Collapsed
+                : Visibility.Visible;
+        }
+
+        DetailLinkScroll.Visibility = Visibility.Visible;
+        DetailTextScroll.Visibility = Visibility.Collapsed;
+        DetailImage.Visibility      = Visibility.Collapsed;
+        DetailImage.Source          = null;
+    }
+
+    /// <summary>
+    /// Pull the freshest <see cref="EntryRow"/> for an entry id from the
+    /// repository. Used by the detail pane to read fields the
+    /// <see cref="EntryViewModel"/> doesn't surface (kind, link_title,
+    /// text_preview).
+    /// </summary>
+    private EntryRow? FindRow(long entryId)
+    {
+        // Repository doesn't expose a by-id getter; piggyback on Recent.
+        // The list is small (capped at 100) and the lookup is rare (only
+        // on selection change), so the linear scan is fine.
+        foreach (var r in _host.Entries.Recent(limit: 200))
+        {
+            if (r.Id == entryId) return r;
+        }
+        return null;
     }
 
     private void ShowMetadata(long entryId, bool includeImageMetadata)
