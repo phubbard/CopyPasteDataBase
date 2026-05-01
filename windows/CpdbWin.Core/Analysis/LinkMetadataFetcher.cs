@@ -44,12 +44,17 @@ public sealed class LinkMetadataFetcher : IDisposable
     public const int MaxThumbnailBytes = 4 * 1024 * 1024;
 
     /// <summary>
-    /// User-Agent string. Some sites block the default
-    /// <c>HttpClient/x.x</c> with a 403; identifying as a generic browser
-    /// is a benign accommodation (we're an honest fetcher, not a scraper).
+    /// User-Agent string. Sites with bot-mitigation (NYT, CNN, Cloudflare-
+    /// fronted publishers) 403 anything that doesn't look like a real
+    /// browser — including UAs that contain telltale tokens like our
+    /// product name. Send a plain Chromium-on-Windows UA. We're an honest
+    /// fetcher pulling og:title / &lt;title&gt;; the UA is the cheapest
+    /// way to get past the most common blocks.
     /// </summary>
     public const string DefaultUserAgent =
-        "Mozilla/5.0 (Windows NT 10.0; Win64) cpdb-link-fetcher/1.0";
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        + "AppleWebKit/537.36 (KHTML, like Gecko) "
+        + "Chrome/130.0.0.0 Safari/537.36";
 
     private readonly HttpClient _http;
     private readonly bool _ownsHttp;

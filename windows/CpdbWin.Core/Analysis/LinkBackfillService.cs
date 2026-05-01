@@ -194,6 +194,8 @@ public sealed class LinkBackfillService : IDisposable
             outcome = new FetchOutcome.Transient($"unexpected: {ex.Message}");
         }
 
+        WriteFetchLog(c, outcome);
+
         switch (outcome)
         {
             case FetchOutcome.Success success:
@@ -219,6 +221,54 @@ public sealed class LinkBackfillService : IDisposable
                 break;
         }
     }
+
+    /// <summary>
+    /// Append a one-line record of each fetch attempt to
+    /// <c>%LOCALAPPDATA%\cpdb\link-fetch.log</c>. Diagnostic surface only;
+    /// the file rotates by being capped at 1 MB (truncated when oversize).
+    /// Best-effort: a failure to log must never escape the backfill loop.
+    /// </summary>
+    private static void WriteFetchLog(LinkBackfillCandidate c, FetchOutcome outcome)
+    {
+        try
+        {
+            var path = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "cpdb", "link-fetch.log");
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+
+            // Cheap rotation: truncate when the file passes 1 MB. Replaces
+            // the need for a real rolling logger and keeps the file readable
+            // by `Get-Content -Tail` without filling the disk.
+            if (File.Exists(path) && new FileInfo(path).Length > 1_000_000)
+            {
+                File.WriteAllText(path, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] (rotated)\n");
+            }
+
+            string line = outcome switch
+            {
+                FetchOutcome.Success { Title: { } t, ThumbnailUrl: var u, Source: var s } =>
+                    $"OK [{s}] {c.Url} → \"{Trunc(t, 80)}\"" + (u is null ? "" : $" thumb={u}"),
+                FetchOutcome.Success { Title: null, ThumbnailUrl: var u, Source: var s } =>
+                    $"OK-EMPTY [{s}] {c.Url} (200 but no title found)" + (u is null ? "" : $" thumb={u}"),
+                FetchOutcome.Permanent p =>
+                    $"PERMANENT {c.Url} — {p.Reason}",
+                FetchOutcome.Transient t =>
+                    $"TRANSIENT {c.Url} — {t.Reason} (retry #{c.RetryCount + 1})",
+                _ => $"UNKNOWN-OUTCOME {c.Url}",
+            };
+
+            File.AppendAllText(path,
+                $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] {line}\n");
+        }
+        catch
+        {
+            // Logging is never critical-path.
+        }
+    }
+
+    private static string Trunc(string s, int max) =>
+        s.Length <= max ? s : s.Substring(0, max) + "…";
 
     private void RaiseSettled(LinkBackfillCandidate c, string? title, bool transient)
     {
