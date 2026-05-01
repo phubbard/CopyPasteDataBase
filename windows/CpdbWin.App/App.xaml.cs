@@ -3,6 +3,7 @@ using CpdbWin.Core;
 using CpdbWin.Core.Service;
 using CpdbWin.Core.Store;
 using Microsoft.UI.Xaml;
+using Velopack;
 using WinRT.Interop;
 
 namespace CpdbWin.App;
@@ -33,6 +34,35 @@ public partial class App : Application
 
     protected override void OnLaunched(LaunchActivatedEventArgs args)
     {
+        try { OnLaunchedCore(args); }
+        catch (Exception ex)
+        {
+            try
+            {
+                var path = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "cpdb", "startup-crash.log");
+                Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+                File.WriteAllText(path,
+                    $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] OnLaunched threw\n\n" +
+                    ex.ToString());
+            }
+            catch { /* best effort */ }
+            throw;
+        }
+    }
+
+    private void OnLaunchedCore(LaunchActivatedEventArgs args)
+    {
+        // Velopack hooks: when Setup.exe / squirrel-flavoured commands
+        // invoke our exe with --veloapp-* args, Run() handles the
+        // install / uninstall / update lifecycle and exits before any
+        // UI is shown. On a normal launch it returns immediately.
+        // Lives at the top of OnLaunched (rather than in a custom Main)
+        // so we don't have to fight the WinAppSDK auto-generated Main +
+        // bootstrap sequence; one less moving part to break.
+        VelopackApp.Build().Run();
+
         Host = AppHost.Bootstrap();
         _settingsPath = Path.Combine(Host.Paths.Root, "settings.json");
         _settings = UserSettings.Load(_settingsPath);

@@ -40,6 +40,10 @@ public sealed partial class MainWindow : Window
         _host = host;
         _host.Capture.Ingested += OnCaptureIngested;
         _host.Capture.Errored += OnCaptureErrored;
+        // Live-refresh as the link-metadata backfill loop fills in titles.
+        // Each Settle/Bump fires once per row; we coalesce by debouncing
+        // on the dispatcher rather than re-querying per-row.
+        _host.LinkBackfill.RowSettled += OnLinkBackfillSettled;
 
         // Use AddHandler with handledEventsToo so we still see KeyDown after
         // TextBox / ListView mark it handled internally (Delete in TextBox
@@ -94,6 +98,23 @@ public sealed partial class MainWindow : Window
         DispatcherQueue.TryEnqueue(() =>
         {
             StatusText.Text = $"Capture error: {ex.Message}";
+        });
+    }
+
+    private void OnLinkBackfillSettled(object? sender, CpdbWin.Core.Analysis.LinkBackfillSettledEventArgs e)
+    {
+        // Refresh the list whenever a row gets its title (or its retry
+        // counter bumped — the kind=link badge stays the same but a fresh
+        // status line helps diagnose the loop running). Marshalled onto
+        // the dispatcher because the backfill cycle runs on a Timer /
+        // ThreadPool thread.
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            if (!e.Transient && e.Title is not null)
+            {
+                StatusText.Text = $"Fetched title for #{e.EntryId}";
+            }
+            Refresh();
         });
     }
 
@@ -568,11 +589,36 @@ public sealed class EntryViewModel
     public static EntryViewModel From(EntryRow row) => new()
     {
         EntryId   = row.Id,
-        Title     = row.Title ?? KindLabel(row.Kind),
-        Subtitle  = $"{row.AppName ?? "?"} · {FormatTime(row.CreatedAt)} · {row.Kind}",
+        // Title resolution preference for link rows:
+        //   1. fetched link_title (e.g. "The New York Times - Breaking News…")
+        //   2. the captured plain-text title (typically the URL itself)
+        //   3. kind label as a last resort.
+        // For non-link rows, link_title is always null so the chain
+        // collapses to the original behavior.
+        Title     = NonEmpty(row.LinkTitle) ?? row.Title ?? KindLabel(row.Kind),
+        // Subtitle picks up the URL when we have a real fetched title,
+        // so the row still surfaces "where it came from".
+        Subtitle  = BuildSubtitle(row),
         Thumbnail = ThumbnailFrom(row.ThumbSmall),
         Pinned    = row.Pinned,
     };
+
+    private static string BuildSubtitle(EntryRow row)
+    {
+        var meta = $"{row.AppName ?? "?"} · {FormatTime(row.CreatedAt)} · {row.Kind}";
+        // Link row with a fetched title — show the URL as breadcrumb so
+        // the user still knows where the title came from.
+        if (row.Kind == "link"
+            && !string.IsNullOrEmpty(row.LinkTitle)
+            && !string.IsNullOrEmpty(row.TextPreview))
+        {
+            return $"{row.TextPreview} · {meta}";
+        }
+        return meta;
+    }
+
+    private static string? NonEmpty(string? s) =>
+        string.IsNullOrWhiteSpace(s) ? null : s;
 
     private static ImageSource? ThumbnailFrom(byte[]? bytes)
     {

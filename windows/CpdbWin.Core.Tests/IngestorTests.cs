@@ -331,4 +331,117 @@ public class IngestorTests : IDisposable
         while (reader.Read()) utis.Add(reader.GetString(0));
         Assert.Equal(new[] { "public.html", "public.utf8-plain-text" }, utis);
     }
+
+    // ─── Reclassify-on-bump (parity w/ macOS v2.7.14) ────────────────────
+
+    [Fact]
+    public void Ingest_BumpedRow_KindStableWhenClassifierAgrees()
+    {
+        // No drift case: same content captured twice, kind stays the same,
+        // link backfill state must NOT be reset on bump (otherwise we'd
+        // re-fetch every time the user re-copies a settled URL).
+        var snap = TextSnapshot("https://example.com/q");
+        var first = _ingest.Ingest(snap, null, _device);
+        Assert.Equal(IngestKind.Inserted, first.Kind);
+        Assert.Equal("link", first.EntryKind);
+
+        // Pretend the backfiller settled this row.
+        using (var cmd = _db.CreateCommand())
+        {
+            cmd.CommandText = """
+                UPDATE entries
+                SET link_title = 'Cached title', link_fetched_at = 12345.0
+                WHERE id = $id
+                """;
+            cmd.Parameters.AddWithValue("$id", first.EntryId);
+            cmd.ExecuteNonQuery();
+        }
+
+        var second = _ingest.Ingest(snap, null, _device);
+        Assert.Equal(IngestKind.Bumped, second.Kind);
+        Assert.Equal("link", second.EntryKind);
+
+        // Title + fetched_at preserved.
+        using var check = _db.CreateCommand();
+        check.CommandText = "SELECT link_title, link_fetched_at FROM entries WHERE id=$id";
+        check.Parameters.AddWithValue("$id", first.EntryId);
+        using var reader = check.ExecuteReader();
+        Assert.True(reader.Read());
+        Assert.Equal("Cached title", reader.GetString(0));
+        Assert.Equal(12345.0, reader.GetDouble(1));
+    }
+
+    [Fact]
+    public void Ingest_BumpedRow_DriftedFromTextToLink_ReclassifiesAndResetsLinkState()
+    {
+        // Simulate a row originally captured before the URL-shape heuristic
+        // shipped: stored kind is "text" even though content is a URL.
+        // Re-copy the URL — Ingest must update kind to "link" and clear
+        // link_fetched_at so the backfill loop picks it up.
+        var snap = TextSnapshot("https://example.com/old");
+        var first = _ingest.Ingest(snap, null, _device);
+        Assert.Equal("link", first.EntryKind);  // already classified link with new heuristic
+
+        // Manually rewind: simulate the pre-heuristic state — kind=text,
+        // link_fetched_at sentinel left over from a permanent-give-up path.
+        using (var cmd = _db.CreateCommand())
+        {
+            cmd.CommandText = """
+                UPDATE entries
+                SET kind = 'text',
+                    link_title = NULL,
+                    link_fetched_at = 99999.0,
+                    link_retry_count = 6,
+                    link_retry_after = 88888.0
+                WHERE id = $id
+                """;
+            cmd.Parameters.AddWithValue("$id", first.EntryId);
+            cmd.ExecuteNonQuery();
+        }
+
+        var second = _ingest.Ingest(snap, null, _device);
+        Assert.Equal(IngestKind.Bumped, second.Kind);
+        // EntryKind reports the NEW (corrected) kind so the wake hook fires.
+        Assert.Equal("link", second.EntryKind);
+
+        using var check = _db.CreateCommand();
+        check.CommandText = """
+            SELECT kind, link_title, link_fetched_at, link_retry_count, link_retry_after
+            FROM entries WHERE id=$id
+            """;
+        check.Parameters.AddWithValue("$id", first.EntryId);
+        using var reader = check.ExecuteReader();
+        Assert.True(reader.Read());
+        Assert.Equal("link", reader.GetString(0));
+        Assert.True(reader.IsDBNull(1));        // link_title cleared
+        Assert.True(reader.IsDBNull(2));        // link_fetched_at cleared → row is a candidate again
+        Assert.Equal(0, reader.GetInt64(3));    // retry counter reset
+        Assert.True(reader.IsDBNull(4));        // retry_after cleared
+    }
+
+    [Fact]
+    public void Ingest_BumpedRow_DriftedNonLinkToNonLink_ReclassifiesWithoutTouchingLinkState()
+    {
+        // Hypothetical drift between two non-link kinds (e.g. classifier
+        // change reclassifies "other" → "text"). We update kind but leave
+        // link_* alone — the link backfill state is meaningless on
+        // non-link rows anyway.
+        var snap = new ClipboardSnapshot(new[]
+        {
+            new CanonicalHash.Flavor("public.utf8-plain-text", Encoding.UTF8.GetBytes("not a url")),
+        });
+        var first = _ingest.Ingest(snap, null, _device);
+        Assert.Equal("text", first.EntryKind);
+
+        using (var cmd = _db.CreateCommand())
+        {
+            cmd.CommandText = "UPDATE entries SET kind = 'other' WHERE id = $id";
+            cmd.Parameters.AddWithValue("$id", first.EntryId);
+            cmd.ExecuteNonQuery();
+        }
+
+        var second = _ingest.Ingest(snap, null, _device);
+        Assert.Equal(IngestKind.Bumped, second.Kind);
+        Assert.Equal("text", second.EntryKind);  // reclassified back to text
+    }
 }
