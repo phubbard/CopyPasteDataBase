@@ -10,6 +10,23 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+- **iOS list rows render link titles + thumbnails.** The Mac shipped
+  link enrichment in v2.7.x but iOS only exposed the title +
+  thumbnail in the *detail* view. Now the SearchView list also
+  honours them:
+    - `EntryRow`'s leading icon shows the preview thumbnail (44×44
+      rounded square) for `kind=link` entries that have one in
+      the `previews` table — same code path image entries already
+      use, just extended to cover links.
+    - `EntryRow`'s snippet text prefers `entry.linkTitle` when
+      present, falling back through the existing chain (title →
+      textPreview → linkURL → kind label) when the backfill hasn't
+      run or the page had no extractable title.
+    - `SearchView`'s row-build query now SELECTs `thumb_small` for
+      both image AND link kinds (previously only images).
+  iOS doesn't fetch link metadata — it's read-only — so this just
+  lights up the data the Mac is already syncing down via CloudKit.
+
 ## [2.8.4] – 2026-04-30
 
 - **Unified "Permissions" section in Preferences.** Accessibility

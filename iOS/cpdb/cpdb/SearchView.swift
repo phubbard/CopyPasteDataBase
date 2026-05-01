@@ -443,7 +443,15 @@ struct SearchView: View {
                         }
                     }
 
-                    if entry.kind == .image {
+                    // Image and link kinds both write thumbnails to
+                    // the same `previews` table — image entries get
+                    // their captured payload thumbnailed at ingest
+                    // (v1.1+), link entries get the og:image / oEmbed
+                    // / Wikipedia / favicon-fallback bytes from the
+                    // background backfiller (v2.7.1+). Either way
+                    // the row renders with a real visual instead of
+                    // the kind glyph.
+                    if entry.kind == .image || effective == .link {
                         thumbSmall = try Data.fetchOne(
                             db,
                             sql: "SELECT thumb_small FROM previews WHERE entry_id = ?",

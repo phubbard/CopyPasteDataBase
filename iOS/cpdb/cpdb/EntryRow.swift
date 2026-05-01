@@ -89,7 +89,13 @@ struct EntryRow: View {
     @ViewBuilder
     private var leadingIcon: some View {
         #if canImport(UIKit)
-        if displayKind == .image,
+        // Image AND link entries can have thumbnail bytes — image
+        // captures get the payload thumbnailed at ingest, links
+        // get the og:image / oEmbed / Wikipedia / favicon-fallback
+        // bytes from the v2.7.x background backfiller. Either way
+        // the row leads with a real visual instead of the kind
+        // glyph.
+        if (displayKind == .image || displayKind == .link),
            let data = thumbSmall,
            let image = UIImage(data: data)
         {
@@ -118,6 +124,18 @@ struct EntryRow: View {
     }
 
     private var snippet: String {
+        // Link-kind entries: prefer the background-fetched
+        // human-readable title (v2.7.0+) when present. Falls back
+        // through the existing chain when the backfill hasn't run
+        // yet, the page had no extractable title, or this is a
+        // text-promoted-to-link row whose linkTitle column is null
+        // because the original was kind=text.
+        if displayKind == .link,
+           let lt = entry.linkTitle,
+           !lt.isEmpty
+        {
+            return lt
+        }
         if let title = entry.title, !title.isEmpty { return title }
         if let text = entry.textPreview, !text.isEmpty { return text }
         if let url = linkURL, !url.isEmpty { return url }
