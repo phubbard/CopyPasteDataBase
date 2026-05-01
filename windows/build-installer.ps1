@@ -77,7 +77,12 @@ Write-Host "==> Packing Setup.exe with Velopack" -ForegroundColor Cyan
     --packDir      $publishDir `
     --mainExe      CpdbWin.App.exe `
     --runtime      $Rid `
+    --shortcuts    'StartMenu,Desktop' `
     --outputDir    $releaseDir
+# `--shortcuts` is explicit because Velopack's default ("None" for some
+# versions) silently dropped the Start menu entry on testers' machines —
+# they couldn't find the app after install. Both StartMenu + Desktop
+# shortcuts get cleaned up by the Velopack uninstaller.
 if ($LASTEXITCODE -ne 0) { throw "vpk pack failed (exit $LASTEXITCODE)" }
 
 Write-Host ""

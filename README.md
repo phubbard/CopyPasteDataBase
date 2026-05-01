@@ -1,6 +1,19 @@
 # cpdb
 
-[![Tests](https://github.com/phubbard/CopyPasteDataBase/actions/workflows/tests.yml/badge.svg)](https://github.com/phubbard/CopyPasteDataBase/actions/workflows/tests.yml)
+**CI**
+
+[![Tests · macOS + iOS](https://github.com/phubbard/CopyPasteDataBase/actions/workflows/tests.yml/badge.svg)](https://github.com/phubbard/CopyPasteDataBase/actions/workflows/tests.yml)
+[![Tests · Windows](https://github.com/phubbard/CopyPasteDataBase/actions/workflows/windows-tests.yml/badge.svg)](https://github.com/phubbard/CopyPasteDataBase/actions/workflows/windows-tests.yml)
+
+**Supported platforms**
+
+| Platform | Architecture | Ship vehicle |
+|---|---|---|
+| ![macOS arm64](https://img.shields.io/badge/macOS-arm64-blue?logo=apple&logoColor=white) | Apple Silicon | Universal `.dmg` ([latest release](https://github.com/phubbard/CopyPasteDataBase/releases/latest)) |
+| ![macOS x86_64](https://img.shields.io/badge/macOS-x86__64-blue?logo=apple&logoColor=white) | Intel | Universal `.dmg` (same binary as arm64) |
+| ![iOS arm64](https://img.shields.io/badge/iOS-arm64-lightgrey?logo=apple&logoColor=white) | iPhone | Xcode build from `iOS/cpdb/` (no public TestFlight yet) |
+| ![Windows x64](https://img.shields.io/badge/Windows-x64-0078d6?logo=windows&logoColor=white) | Intel / AMD | Velopack `Setup.exe` ([latest release](https://github.com/phubbard/CopyPasteDataBase/releases/latest)) |
+| ![Windows arm64](https://img.shields.io/badge/Windows-arm64-0078d6?logo=windows&logoColor=white) | Snapdragon X / Surface | Velopack `Setup.exe` (separate per-RID artifact) |
 
 A from-scratch, native Swift replacement for the macOS clipboard app
 [Paste](https://pasteapp.io) (`com.wiheads.paste`). Infinite disk-backed
