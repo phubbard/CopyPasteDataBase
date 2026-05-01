@@ -383,11 +383,11 @@ public class EntryRepositoryTests : IDisposable
     [Fact]
     public void NextLinkBackfillCandidates_SkipsNonLinkKinds()
     {
-        // kind=text rows have URL-shaped text_preview (e.g. someone copied
-        // a URL out of a terminal — no public.url flavor) — but until Stage
-        // E ships the URL-shaped-text → kind=link heuristic, kind stays
-        // 'text'. The candidate query gates on kind so we skip them.
-        _ingestor.Ingest(TextSnapshot("https://looks-like-a-link.example/"), null, _device);
+        // Plain prose / non-URL text always stays kind=text, even with
+        // the URL-shape heuristic. The candidate query gates on
+        // kind='link' so a kind=text row never enters the backfill loop.
+        _ingestor.Ingest(TextSnapshot("a perfectly ordinary copied paragraph"),
+            null, _device);
 
         Assert.Empty(_repo.NextLinkBackfillCandidates(limit: 10));
     }

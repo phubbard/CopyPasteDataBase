@@ -58,11 +58,11 @@ Legend:
 | Preview thumbnails: og:image / twitter:image | ✅ v2.7.1 | ✅ v2.7.1 (read) | ⏳ | resolution implemented; downscaling + previews-table write lands in Stage D |
 | Wikipedia REST API thumbnail fallback | ✅ v2.7.13 | — | ✅ v1.3.0 | hits `/api/rest_v1/page/summary/<title>` for `*.wikipedia.org` URLs lacking og:image |
 | Favicon thumbnail fallback (apple-touch-icon → icon → `/favicon.ico`) | ✅ v2.7.13 | — | ✅ v1.3.0 | last-resort thumb when nothing else works |
-| URL-shaped plain text → kind=link classification | ✅ v2.7.11 | ✅ v2.7.11 | ⏳ | covers `pbcopy`-style writes that omit `public.url`. Heuristic in `PasteboardSnapshot.kind` |
-| Reclassify-on-bump (kind drift after heuristic update) | ✅ v2.7.14 | — | ⏳ | when content_hash dedup bumps an existing row, compare new vs stored kind and update |
+| URL-shaped plain text → kind=link classification | ✅ v2.7.11 | ✅ v2.7.11 | ✅ v1.4.0 | covers Edge / Chrome "Copy address" writes that omit `public.url`. Heuristic in `KindClassifier.LooksLikeUrl` |
+| Reclassify-on-bump (kind drift after heuristic update) | ✅ v2.7.14 | — | ✅ v1.4.0 | when content_hash dedup bumps an existing row, compare new vs stored kind, update + reset link backfill state on text→link drift |
 | `cpdb reclassify-kinds` migration | ✅ v2.7.14 | — | ⏳ | one-shot retroactive cleanup |
 | Capture-wake immediate enrichment | ✅ v2.7.10 | — | ✅ v1.3.0 | fire 5-row backfill on every link capture. Windows: AppHost subscribes to `CaptureService.Ingested` and routes kind=link inserts/bumps to `LinkBackfillService.WakeForCapture` |
-| Live popup card updates while backfill runs | ✅ v2.7.10 | ✅ v2.5 (live updates) | ⏳ | GRDB ValueObservation tracks `SUM(link_fetched_at)` + `previews` count |
+| Live popup card updates while backfill runs | ✅ v2.7.10 | ✅ v2.5 (live updates) | ✅ v1.4.0 | MainWindow subscribes to `LinkBackfillService.RowSettled` and re-renders via dispatcher |
 | Capture-wake gates on kind=link | ✅ v2.7.11 | — | ✅ v1.3.0 | text/image/file captures don't pointlessly fire link backfill |
 | Transient error classification | ✅ v2.7.7 | — | ✅ v1.3.0 | HTTP 403/408/425/429/5xx + network errors are transient; don't stamp `link_fetched_at` |
 | Exponential backoff (1·2^count min, cap 60 min) | ✅ v2.8.2 | — | ✅ v1.2.0 | contract: `docs/schema.md` § Link metadata retry. 6-attempt cap |
