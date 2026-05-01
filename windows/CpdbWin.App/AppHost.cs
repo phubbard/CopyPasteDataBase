@@ -51,7 +51,11 @@ public sealed class AppHost : IDisposable
         var paths = AppPaths.Initialize(rootOverride);
 
         var db = DbHelper.Open(paths.Database);
-        if (!DbHelper.IsInitialized(db)) Schema.Initialize(db);
+        // Single entry point — fresh DB → Schema.Initialize; existing DB
+        // (e.g. v1.0 / v1.1 install at schema v5) → Migrator.Migrate runs
+        // any pending v6/v7/v8/v9 ALTER TABLEs and FTS5 rebuild. Idempotent
+        // and fast on already-current DBs.
+        Migrator.EnsureSchema(db);
 
         var blobs = new BlobStore(paths.Blobs);
 

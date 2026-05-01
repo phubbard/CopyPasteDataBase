@@ -12,6 +12,17 @@ dated `[1.X.Y]` heading and reset `[Unreleased]` to empty.
 
 ## [Unreleased]
 
+- **In-place schema migrator.** New `Migrator.EnsureSchema(db)` is
+  the single boot entry point: fresh installs run `Schema.Initialize`,
+  existing v1.0/v1.1 installs (schema v5) flow through `Migrate`
+  which applies v6 (pinned + index), v7 (body_evicted_at), v8
+  (link_title + link_fetched_at + FTS5 rebuild + reindex live rows),
+  v9 (link_retry_count + link_retry_after) — only the missing
+  steps. Idempotent: safe to call on a fully-up-to-date DB and
+  picks up where it left off if a previous boot crashed mid-
+  migration. Previously the upgrade path was "delete cpdb.db and
+  start fresh" — testers lost their history.
+
 - **`cpdb-win` maintenance CLI.** New console executable
   (`CpdbWin.Cli` project, output `cpdb-win.exe`) ships alongside
   the GUI app. Three subcommands implemented in v1:
