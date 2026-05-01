@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <!--
+      One-shot maintenance CLI for cpdb-win. Console-only — no WinUI
+      dependency — so it starts in milliseconds and doesn't briefly
+      flash a window when invoked. Mirrors the macOS `cpdb` subcommand
+      surface: see windows/CHANGELOG.md and docs/parity.md § CLI.
+    -->
+    <OutputType>Exe</OutputType>
+    <RootNamespace>CpdbWin.Cli</RootNamespace>
+    <AssemblyName>cpdb-win</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\CpdbWin.Core\CpdbWin.Core.csproj" />
+  </ItemGroup>
+</Project>

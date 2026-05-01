@@ -12,6 +12,31 @@ dated `[1.X.Y]` heading and reset `[Unreleased]` to empty.
 
 ## [Unreleased]
 
+- **`cpdb-win` maintenance CLI.** New console executable
+  (`CpdbWin.Cli` project, output `cpdb-win.exe`) ships alongside
+  the GUI app. Three subcommands implemented in v1:
+  - `cpdb-win reclassify-kinds` — re-applies the current
+    `KindClassifier` to every live row; updates kind on drift,
+    resets link backfill state on text→link drift.
+  - `cpdb-win backfill-titles --retry-empty` — clears
+    `link_fetched_at` + retry counters for kind=link rows that
+    settled with null/empty title.
+  - `cpdb-win dedupe --links-all-time` — collapses live link
+    rows that share a `text_preview` URL; salvages `link_title`
+    from a sibling before tombstoning so the survivor inherits
+    a populated title.
+
+  Implementation lives in `CpdbWin.Core.Maintenance.MaintenanceCommands`
+  so the same helpers can be invoked from the GUI later (e.g. a
+  Preferences "Run maintenance" button). All operations are
+  idempotent and safe to run while the GUI is up — WAL mode
+  serializes the writes.
+- **Hover tooltips on row cards.** Each entry in the popup list
+  now shows a `ToolTipService.ToolTip` with the entry kind, the
+  source app's display name (or bundle id when not resolved),
+  and the absolute capture timestamp. Skips the originating-
+  device line — Windows is standalone in v1 (no sync substrate
+  yet). Mirrors macOS v2.7.12.
 - **Reddit JSON API path.** URLs matching `/r/<sub>/comments/<id>/…`
   now route through `https://www.reddit.com/r/<sub>/comments/<id>.json`
   for clean title + thumbnail JSON without scraping the comment

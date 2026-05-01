@@ -688,6 +688,7 @@ public sealed class EntryViewModel
     public long EntryId { get; init; }
     public string Title { get; init; } = "";
     public string Subtitle { get; init; } = "";
+    public string Tooltip { get; init; } = "";
     public ImageSource? Thumbnail { get; init; }
     public bool Pinned { get; init; }
 
@@ -710,9 +711,57 @@ public sealed class EntryViewModel
         // Subtitle picks up the URL when we have a real fetched title,
         // so the row still surfaces "where it came from".
         Subtitle  = BuildSubtitle(row),
+        Tooltip   = BuildTooltip(row),
         Thumbnail = ThumbnailFrom(row.ThumbSmall),
         Pinned    = row.Pinned,
     };
+
+    /// <summary>
+    /// Multi-line hover tooltip for the row card. Surfaces the kind, the
+    /// originating app's display name (when known), and the capture
+    /// timestamp in absolute form. Mirrors macOS v2.7.12 hover tooltips.
+    /// Skips the "originating device" line — Windows is standalone in v1
+    /// (no sync substrate yet).
+    /// </summary>
+    private static string BuildTooltip(EntryRow row)
+    {
+        var lines = new List<string>(4)
+        {
+            // Type comes first; matches the macOS layout where it's the
+            // most-glanced datum.
+            $"Type: {KindDisplayName(row.Kind)}",
+        };
+        if (!string.IsNullOrEmpty(row.AppName))
+        {
+            lines.Add($"From: {row.AppName}");
+        }
+        else if (!string.IsNullOrEmpty(row.AppBundleId))
+        {
+            // Fall back to bundle id when we never resolved a display name —
+            // better breadcrumb than just "From: ?".
+            lines.Add($"From: {row.AppBundleId}");
+        }
+        lines.Add($"Captured: {FormatAbsoluteTime(row.CapturedAt)}");
+        return string.Join('\n', lines);
+    }
+
+    private static string KindDisplayName(string kind) => kind switch
+    {
+        "text"  => "Text",
+        "link"  => "Link",
+        "image" => "Image",
+        "file"  => "File",
+        "color" => "Color",
+        _       => kind,
+    };
+
+    private static string FormatAbsoluteTime(double unix)
+    {
+        // "Wed, 30 Apr 2026 09:39:19 PM" — readable + month abbreviation
+        // disambiguates "5/4" (US/EU date order ambiguity).
+        var dt = DateTimeOffset.FromUnixTimeSeconds((long)unix).LocalDateTime;
+        return dt.ToString("ddd, dd MMM yyyy hh:mm:ss tt");
+    }
 
     private static string BuildSubtitle(EntryRow row)
     {
