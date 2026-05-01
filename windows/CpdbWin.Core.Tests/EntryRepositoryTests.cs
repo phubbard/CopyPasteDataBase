@@ -339,17 +339,27 @@ public class EntryRepositoryTests : IDisposable
     [Fact]
     public void NextLinkBackfillCandidates_FindsFreshlyCapturedLinks()
     {
-        var a = _ingestor.Ingest(HttpLinkSnapshot("https://example.com/a"), null, _device).EntryId;
-        var b = _ingestor.Ingest(HttpLinkSnapshot("https://example.com/b"), null, _device).EntryId;
+        // Explicit timestamps so newest-first ordering is deterministic.
+        // Without them, two Ingests in the same wall-clock millisecond
+        // share created_at and the ORDER BY tiebreaker is implementation-
+        // defined.
+        var aOutcome = _ingestor.Ingest(HttpLinkSnapshot("https://example.com/a"), null, _device,
+            DateTimeOffset.FromUnixTimeSeconds(1_700_000_000));
+        var bOutcome = _ingestor.Ingest(HttpLinkSnapshot("https://example.com/b"), null, _device,
+            DateTimeOffset.FromUnixTimeSeconds(1_700_000_500));
+
+        // Confirm both inserted (not deduped to one row).
+        Assert.Equal(IngestKind.Inserted, aOutcome.Kind);
+        Assert.Equal(IngestKind.Inserted, bOutcome.Kind);
 
         var candidates = _repo.NextLinkBackfillCandidates(limit: 10);
 
         Assert.Equal(2, candidates.Count);
         // Newest first.
-        Assert.Equal(b, candidates[0].Id);
+        Assert.Equal(bOutcome.EntryId, candidates[0].Id);
         Assert.Equal("https://example.com/b", candidates[0].Url);
         Assert.Equal(0, candidates[0].RetryCount);
-        Assert.Equal(a, candidates[1].Id);
+        Assert.Equal(aOutcome.EntryId, candidates[1].Id);
     }
 
     [Fact]
