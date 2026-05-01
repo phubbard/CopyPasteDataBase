@@ -139,6 +139,29 @@ public sealed class EntryRepository
     }
 
     /// <summary>
+    /// Upsert preview thumbnails for <paramref name="entryId"/>. Used by
+    /// the link-metadata backfill loop to attach a fetched og:image /
+    /// favicon thumbnail to a kind=link row, and (in principle) any other
+    /// caller that wants to refresh thumbnails out-of-band from ingest.
+    /// Either bytes parameter may be null to leave that side untouched is
+    /// NOT supported here — both columns get rewritten to whatever was
+    /// passed (matches the Ingestor's existing semantics).
+    /// </summary>
+    public void UpsertPreview(long entryId, byte[]? small, byte[]? large)
+    {
+        using var cmd = _db.CreateCommand();
+        cmd.CommandText = """
+            INSERT INTO previews(entry_id, thumb_small, thumb_large)
+            VALUES($id, $s, $l)
+            ON CONFLICT(entry_id) DO UPDATE SET thumb_small=$s, thumb_large=$l
+            """;
+        cmd.Parameters.AddWithValue("$id", entryId);
+        cmd.Parameters.AddWithValue("$s", (object?)small ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$l", (object?)large ?? DBNull.Value);
+        cmd.ExecuteNonQuery();
+    }
+
+    /// <summary>
     /// Resolves a single flavor's bytes — either from the inline column or
     /// from the on-disk blob store. Returns null if the flavor doesn't exist.
     /// </summary>
