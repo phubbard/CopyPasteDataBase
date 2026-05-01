@@ -49,8 +49,12 @@ public sealed class Ingestor
         if (existingId is not null)
         {
             BumpCreatedAt(tx, existingId.Value, ts);
+            // Pull the existing row's kind so the wake-on-link capture
+            // hook in AppHost still fires when a URL already in the
+            // store gets re-copied.
+            var existingKind = LookupKind(tx, existingId.Value);
             tx.Commit();
-            return new IngestOutcome(IngestKind.Bumped, existingId.Value);
+            return new IngestOutcome(IngestKind.Bumped, existingId.Value, EntryKind: existingKind);
         }
 
         var deviceId = UpsertDevice(tx, device);
@@ -81,7 +85,7 @@ public sealed class Ingestor
         }
 
         tx.Commit();
-        return new IngestOutcome(IngestKind.Inserted, entryId);
+        return new IngestOutcome(IngestKind.Inserted, entryId, EntryKind: kind);
     }
 
     private static byte[]? FindImageFlavorBytes(IReadOnlyList<CanonicalHash.Flavor> flavors)
@@ -121,6 +125,16 @@ public sealed class Ingestor
         cmd.Parameters.AddWithValue("$h", hash);
         var v = cmd.ExecuteScalar();
         return v is null or DBNull ? null : (long)v;
+    }
+
+    private string? LookupKind(SqliteTransaction tx, long id)
+    {
+        using var cmd = _db.CreateCommand();
+        cmd.Transaction = tx;
+        cmd.CommandText = "SELECT kind FROM entries WHERE id = $id";
+        cmd.Parameters.AddWithValue("$id", id);
+        var v = cmd.ExecuteScalar();
+        return v is null or DBNull ? null : (string)v;
     }
 
     private void BumpCreatedAt(SqliteTransaction tx, long id, double ts)
@@ -231,11 +245,13 @@ public sealed class Ingestor
     {
         using var cmd = _db.CreateCommand();
         cmd.Transaction = tx;
-        // OCR/tags stay empty in v1. Empty strings (not NULL) so FTS5 indexes
-        // them as zero-length tokens, matching how CpdbCore writes the row.
+        // OCR/tags/link_title start empty. Empty strings (not NULL) so FTS5
+        // indexes them as zero-length tokens, matching how CpdbCore writes
+        // the row. link_title gets populated later by the metadata backfiller
+        // via EntryRepository.SettleLink.
         cmd.CommandText = """
-            INSERT INTO entries_fts(rowid, title, text, app_name, ocr_text, image_tags)
-            VALUES($id, $title, $text, $app, '', '')
+            INSERT INTO entries_fts(rowid, title, text, app_name, ocr_text, image_tags, link_title)
+            VALUES($id, $title, $text, $app, '', '', '')
             """;
         cmd.Parameters.AddWithValue("$id", entryId);
         cmd.Parameters.AddWithValue("$title", title ?? "");
@@ -271,4 +287,8 @@ public enum IngestKind
     Skipped,
 }
 
-public readonly record struct IngestOutcome(IngestKind Kind, long EntryId, string? Reason = null);
+public readonly record struct IngestOutcome(
+    IngestKind Kind,
+    long EntryId,
+    string? Reason = null,
+    string? EntryKind = null);

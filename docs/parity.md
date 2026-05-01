@@ -51,23 +51,23 @@ Legend:
 
 | Feature | macOS | iOS | Windows | Contract / notes |
 |---|---|---|---|---|
-| `entries.link_title` + `link_fetched_at` columns | ✅ v2.7.0 | ✅ v2.7.0 | ⏳ | schema v8; FTS5 also gains a `link_title` indexed column |
-| `entries.link_retry_count` + `link_retry_after` columns | ✅ v2.8.2 | ✅ v2.8.2 | ⏳ | schema v9; semantics in `docs/schema.md` § Link metadata retry |
-| YouTube oEmbed title fetch | ✅ v2.7.0 | — | ⏳ | iOS reads via CloudKit; doesn't fetch. Windows: hit `https://www.youtube.com/oembed?url=…&format=json`. Standalone in v1, no sync |
-| Generic HTML title scrape (og:title → twitter:title → `<title>`) | ✅ v2.7.0 | — | ⏳ | regex-based, see `Sources/CpdbShared/Analysis/LinkMetadataFetcher.swift` |
-| Preview thumbnails: og:image / twitter:image | ✅ v2.7.1 | ✅ v2.7.1 (read) | ⏳ | downloaded via fetcher, downscaled by `Thumbnailer`, written to `previews` table |
-| Wikipedia REST API thumbnail fallback | ✅ v2.7.13 | — | ⏳ | hits `/api/rest_v1/page/summary/<title>` for `*.wikipedia.org` URLs lacking og:image |
-| Favicon thumbnail fallback (apple-touch-icon → icon → `/favicon.ico`) | ✅ v2.7.13 | — | ⏳ | last-resort thumb when nothing else works |
+| `entries.link_title` + `link_fetched_at` columns | ✅ v2.7.0 | ✅ v2.7.0 | ✅ v1.2.0 | schema v8; FTS5 also gains a `link_title` indexed column |
+| `entries.link_retry_count` + `link_retry_after` columns | ✅ v2.8.2 | ✅ v2.8.2 | ✅ v1.2.0 | schema v9; semantics in `docs/schema.md` § Link metadata retry |
+| YouTube oEmbed title fetch | ✅ v2.7.0 | — | ✅ v1.3.0 | iOS reads via CloudKit; doesn't fetch. Windows: hits `https://www.youtube.com/oembed?url=…&format=json`. Standalone in v1, no sync |
+| Generic HTML title scrape (og:title → twitter:title → `<title>`) | ✅ v2.7.0 | — | ✅ v1.3.0 | regex-based, see `windows/CpdbWin.Core/Analysis/LinkMetadataParser.cs` |
+| Preview thumbnails: og:image / twitter:image | ✅ v2.7.1 | ✅ v2.7.1 (read) | ⏳ | resolution implemented; downscaling + previews-table write lands in Stage D |
+| Wikipedia REST API thumbnail fallback | ✅ v2.7.13 | — | ✅ v1.3.0 | hits `/api/rest_v1/page/summary/<title>` for `*.wikipedia.org` URLs lacking og:image |
+| Favicon thumbnail fallback (apple-touch-icon → icon → `/favicon.ico`) | ✅ v2.7.13 | — | ✅ v1.3.0 | last-resort thumb when nothing else works |
 | URL-shaped plain text → kind=link classification | ✅ v2.7.11 | ✅ v2.7.11 | ⏳ | covers `pbcopy`-style writes that omit `public.url`. Heuristic in `PasteboardSnapshot.kind` |
 | Reclassify-on-bump (kind drift after heuristic update) | ✅ v2.7.14 | — | ⏳ | when content_hash dedup bumps an existing row, compare new vs stored kind and update |
 | `cpdb reclassify-kinds` migration | ✅ v2.7.14 | — | ⏳ | one-shot retroactive cleanup |
-| Capture-wake immediate enrichment | ✅ v2.7.10 | — | ⏳ | fire 5-row backfill on every link capture. Mac uses notification observer |
+| Capture-wake immediate enrichment | ✅ v2.7.10 | — | ✅ v1.3.0 | fire 5-row backfill on every link capture. Windows: AppHost subscribes to `CaptureService.Ingested` and routes kind=link inserts/bumps to `LinkBackfillService.WakeForCapture` |
 | Live popup card updates while backfill runs | ✅ v2.7.10 | ✅ v2.5 (live updates) | ⏳ | GRDB ValueObservation tracks `SUM(link_fetched_at)` + `previews` count |
-| Capture-wake gates on kind=link | ✅ v2.7.11 | — | ⏳ | text/image/file captures don't pointlessly fire link backfill |
-| Transient error classification | ✅ v2.7.7 | — | ⏳ | HTTP 403/429/5xx + network errors are transient; don't stamp `link_fetched_at` |
-| Exponential backoff (1·2^count min, cap 60 min) | ✅ v2.8.2 | — | ⏳ | contract: `docs/schema.md` § Link metadata retry. 6-attempt cap |
-| Reachability gate before fetches | ✅ v2.8.2 | — | ⏳ | mac: `NWPathMonitor`. Windows: `NetworkInformation.GetInternetConnectionProfile()` or `Microsoft.Windows.Net.Connectivity` |
-| Online-edge catch-up wake | ✅ v2.8.2 | — | ⏳ | network transitions offline→online → fire backfill batch |
+| Capture-wake gates on kind=link | ✅ v2.7.11 | — | ✅ v1.3.0 | text/image/file captures don't pointlessly fire link backfill |
+| Transient error classification | ✅ v2.7.7 | — | ✅ v1.3.0 | HTTP 403/408/425/429/5xx + network errors are transient; don't stamp `link_fetched_at` |
+| Exponential backoff (1·2^count min, cap 60 min) | ✅ v2.8.2 | — | ✅ v1.2.0 | contract: `docs/schema.md` § Link metadata retry. 6-attempt cap |
+| Reachability gate before fetches | ✅ v2.8.2 | — | ✅ v1.3.0 | mac: `NWPathMonitor`. Windows: `IConnectivityProbe` (default `NetworkInterface.GetIsNetworkAvailable`) |
+| Online-edge catch-up wake | ✅ v2.8.2 | — | ✅ v1.3.0 | network transitions offline→online → fire backfill batch via `NetworkChange.NetworkAvailabilityChanged` |
 | "Retry empties" targeted refetch | ✅ v2.7.8 | — | ⏳ | only clears sentinels for rows whose `link_title` is null/empty |
 | Hover tooltips on cards (source app, device, timestamp) | ✅ v2.7.12 | — | ⏳ | uses Cocoa `.help()`; Windows: WinUI `ToolTip` |
 | Bot-check / CAPTCHA detection (transient classification) | ✅ v2.8.6 | — | ⏳ | reject titles like "Please wait for verification", "Just a moment…", "Attention Required!", "Are you human?", etc. as transient (don't stamp link_fetched_at). Pattern list in `LinkMetadataFetcher.looksLikeBotCheck` |

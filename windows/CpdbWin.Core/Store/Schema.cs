@@ -4,7 +4,7 @@ namespace CpdbWin.Core.Store;
 
 /// <summary>
 /// On-disk SQLite schema for cpdb-win. Bit-compatible with the macOS app's
-/// schema v5 — see ../../../docs/schema.md for the cross-client contract.
+/// schema v9 — see ../../../docs/schema.md for the cross-client contract.
 /// New clients emit the union DDL below in one transaction rather than
 /// replaying each migration. The list of migration identifiers is seeded
 /// into <c>grdb_migrations</c> so the file is interchangeable with a Mac
@@ -20,6 +20,9 @@ public static class Schema
         "v4_reseed_push_queue_for_flavors",
         "v5_content_addressed_records",
         "v6_pinned",
+        "v7_body_evicted",
+        "v8_link_metadata",
+        "v9_link_retry_backoff",
     };
 
     public const string UnionDdl = """
@@ -39,7 +42,17 @@ public static class Schema
             ocr_text         TEXT,
             image_tags       TEXT,
             analyzed_at      REAL,
-            pinned           INTEGER NOT NULL DEFAULT 0
+            pinned           INTEGER NOT NULL DEFAULT 0,
+            -- v7: tier-2 eviction sentinel. Reserved column for parity
+            -- with Mac schema; eviction itself is not yet implemented
+            -- on Windows (see docs/parity.md § Storage management).
+            body_evicted_at  REAL,
+            -- v8: background-fetched link metadata.
+            link_title       TEXT,
+            link_fetched_at  REAL,
+            -- v9: exponential-backoff retry state for the link fetcher.
+            link_retry_count INTEGER NOT NULL DEFAULT 0,
+            link_retry_after REAL
         );
         CREATE INDEX idx_entries_created_at ON entries(created_at DESC);
         CREATE INDEX idx_entries_kind ON entries(kind);
@@ -117,6 +130,7 @@ public static class Schema
             app_name,
             ocr_text,
             image_tags,
+            link_title,
             tokenize='porter unicode61 remove_diacritics 2'
         );
 

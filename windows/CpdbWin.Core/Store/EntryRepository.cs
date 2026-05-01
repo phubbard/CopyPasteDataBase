@@ -21,7 +21,8 @@ public sealed class EntryRepository
     private const string SelectEntryColumns = """
         SELECT e.id, e.kind, e.title, e.text_preview,
                e.created_at, e.captured_at, e.total_size,
-               a.bundle_id, a.name, p.thumb_small, e.pinned
+               a.bundle_id, a.name, p.thumb_small, e.pinned,
+               e.link_title
         FROM entries e
         LEFT JOIN apps a ON a.id = e.source_app_id
         LEFT JOIN previews p ON p.entry_id = e.id
@@ -155,6 +156,182 @@ public sealed class EntryRepository
         return null;
     }
 
+    // ─── Link metadata backfill (docs/schema.md § Link metadata enrichment) ──
+
+    /// <summary>
+    /// Hard cap on transient-failure retries. After 6 transient failures the
+    /// fetcher gives up via <see cref="SettleLink"/> with a null title, which
+    /// stamps <c>link_fetched_at</c> permanently.
+    /// </summary>
+    public const int MaxLinkRetries = 6;
+
+    /// <summary>
+    /// Wait time before the next retry, given the transient-failure count just
+    /// recorded. Contract: <c>60 · min(60, 2^count)</c> seconds, so the
+    /// per-attempt schedule is 2 / 4 / 8 / 16 / 32 / 60 minutes (cap kicks in
+    /// at count = 6, which is also the give-up threshold). Pure function for
+    /// testability.
+    /// </summary>
+    public static double ComputeRetryBackoffSeconds(int newCount)
+    {
+        if (newCount < 1) newCount = 1;
+        var pow = Math.Pow(2, newCount);
+        return 60.0 * Math.Min(60.0, pow);
+    }
+
+    /// <summary>
+    /// Rows the link-metadata fetcher should try next. Filters per the
+    /// schema contract:
+    /// <list type="bullet">
+    /// <item><c>kind = 'link'</c> — only links get enriched.</item>
+    /// <item><c>deleted_at IS NULL</c> — skip tombstones.</item>
+    /// <item><c>link_fetched_at IS NULL</c> — skip already-settled rows
+    ///       (success or permanent failure).</item>
+    /// <item><c>text_preview LIKE 'http%'</c> — must look like a URL; rules
+    ///       out kind=link rows we mis-classified.</item>
+    /// <item><c>link_retry_count &lt; MaxLinkRetries</c> — stop trying once
+    ///       we've burned through the budget.</item>
+    /// <item><c>link_retry_after IS NULL OR &lt;= now</c> — backoff window
+    ///       must have elapsed.</item>
+    /// </list>
+    /// Newest-first so freshly captured links surface immediately.
+    /// </summary>
+    public IReadOnlyList<LinkBackfillCandidate> NextLinkBackfillCandidates(
+        int limit,
+        DateTimeOffset? now = null)
+    {
+        var nowSec = (now ?? DateTimeOffset.UtcNow).ToUnixTimeMilliseconds() / 1000.0;
+
+        const string sql = """
+            SELECT id, text_preview, link_retry_count
+            FROM entries
+            WHERE kind = 'link'
+              AND deleted_at IS NULL
+              AND link_fetched_at IS NULL
+              AND text_preview IS NOT NULL
+              AND text_preview LIKE 'http%'
+              AND link_retry_count < $maxRetries
+              AND (link_retry_after IS NULL OR link_retry_after <= $now)
+            ORDER BY created_at DESC
+            LIMIT $limit
+            """;
+
+        var rows = new List<LinkBackfillCandidate>();
+        using var cmd = _db.CreateCommand();
+        cmd.CommandText = sql;
+        cmd.Parameters.AddWithValue("$maxRetries", MaxLinkRetries);
+        cmd.Parameters.AddWithValue("$now", nowSec);
+        cmd.Parameters.AddWithValue("$limit", limit);
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read())
+        {
+            rows.Add(new LinkBackfillCandidate(
+                Id: reader.GetInt64(0),
+                Url: reader.GetString(1),
+                RetryCount: (int)reader.GetInt64(2)
+            ));
+        }
+        return rows;
+    }
+
+    /// <summary>
+    /// Mark a link row settled — either with a fetched title (success) or
+    /// with <paramref name="title"/> = null (permanent give-up). Stamps
+    /// <c>link_fetched_at</c> so the row stops appearing as a backfill
+    /// candidate, clears the retry counter, and writes the title into both
+    /// <c>entries.link_title</c> and the FTS5 shadow column.
+    /// </summary>
+    public void SettleLink(long entryId, string? title, DateTimeOffset? at = null)
+    {
+        var ts = (at ?? DateTimeOffset.UtcNow).ToUnixTimeMilliseconds() / 1000.0;
+
+        using var tx = _db.BeginTransaction();
+
+        using (var cmd = _db.CreateCommand())
+        {
+            cmd.Transaction = tx;
+            cmd.CommandText = """
+                UPDATE entries
+                SET link_title = $title,
+                    link_fetched_at = $ts,
+                    link_retry_count = 0,
+                    link_retry_after = NULL
+                WHERE id = $id AND deleted_at IS NULL
+                """;
+            cmd.Parameters.AddWithValue("$title", (object?)title ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("$ts", ts);
+            cmd.Parameters.AddWithValue("$id", entryId);
+            cmd.ExecuteNonQuery();
+        }
+
+        // FTS5 doesn't support partial UPDATE on a virtual table; we rewrite
+        // the row's shadow entry. Mac path uses the same "delete then insert"
+        // dance — see Sources/CpdbShared/Store/Schema.swift v8 reindex loop.
+        // For now we only touch the link_title column via a direct UPDATE
+        // since the FTS5 shadow's other columns are still valid for this row.
+        using (var cmd = _db.CreateCommand())
+        {
+            cmd.Transaction = tx;
+            cmd.CommandText = """
+                UPDATE entries_fts
+                SET link_title = $title
+                WHERE rowid = $id
+                """;
+            cmd.Parameters.AddWithValue("$title", title ?? string.Empty);
+            cmd.Parameters.AddWithValue("$id", entryId);
+            cmd.ExecuteNonQuery();
+        }
+
+        tx.Commit();
+    }
+
+    /// <summary>
+    /// Record a transient failure for the link row. Increments
+    /// <c>link_retry_count</c> by one, parks <c>link_retry_after</c> at
+    /// <paramref name="now"/> + <see cref="ComputeRetryBackoffSeconds"/>(new
+    /// count). The row stays a candidate (link_fetched_at remains NULL) but
+    /// the time gate keeps the backfill loop from hammering it.
+    /// </summary>
+    public void BumpLinkRetry(long entryId, DateTimeOffset? now = null)
+    {
+        var nowSec = (now ?? DateTimeOffset.UtcNow).ToUnixTimeMilliseconds() / 1000.0;
+
+        // Two-step: SELECT current count, then write new count + retry_after.
+        // Atomic under a transaction.
+        using var tx = _db.BeginTransaction();
+
+        int currentCount;
+        using (var cmd = _db.CreateCommand())
+        {
+            cmd.Transaction = tx;
+            cmd.CommandText = "SELECT link_retry_count FROM entries WHERE id=$id";
+            cmd.Parameters.AddWithValue("$id", entryId);
+            var v = cmd.ExecuteScalar();
+            if (v is null || v is DBNull) { tx.Rollback(); return; }
+            currentCount = (int)(long)v;
+        }
+
+        var newCount = currentCount + 1;
+        var retryAfter = nowSec + ComputeRetryBackoffSeconds(newCount);
+
+        using (var cmd = _db.CreateCommand())
+        {
+            cmd.Transaction = tx;
+            cmd.CommandText = """
+                UPDATE entries
+                SET link_retry_count = $c,
+                    link_retry_after = $ra
+                WHERE id = $id AND deleted_at IS NULL
+                """;
+            cmd.Parameters.AddWithValue("$c", newCount);
+            cmd.Parameters.AddWithValue("$ra", retryAfter);
+            cmd.Parameters.AddWithValue("$id", entryId);
+            cmd.ExecuteNonQuery();
+        }
+
+        tx.Commit();
+    }
+
     /// <summary>
     /// Mark <paramref name="entryId"/> deleted (sets <c>deleted_at</c>) and
     /// remove the FTS5 row so the entry stops surfacing in searches. The
@@ -216,7 +393,8 @@ public sealed class EntryRepository
                 AppBundleId: reader.IsDBNull(7) ? null : reader.GetString(7),
                 AppName: reader.IsDBNull(8) ? null : reader.GetString(8),
                 ThumbSmall: reader.IsDBNull(9) ? null : (byte[])reader.GetValue(9),
-                Pinned: reader.GetInt64(10) != 0
+                Pinned: reader.GetInt64(10) != 0,
+                LinkTitle: reader.IsDBNull(11) ? null : reader.GetString(11)
             ));
         }
         return rows;
@@ -234,7 +412,8 @@ public readonly record struct EntryRow(
     string? AppBundleId,
     string? AppName,
     byte[]? ThumbSmall,
-    bool Pinned);
+    bool Pinned,
+    string? LinkTitle);
 
 public readonly record struct FlavorRow(
     long EntryId,
@@ -242,3 +421,15 @@ public readonly record struct FlavorRow(
     long Size,
     bool IsInline,
     string? BlobKey);
+
+/// <summary>
+/// A row the link-metadata fetcher should try next. <c>Url</c> is the
+/// already-validated http(s):// string from <c>entries.text_preview</c>;
+/// <c>RetryCount</c> is the number of transient failures so far (0 on first
+/// attempt) — useful for logging and for callers that want to vary timeout
+/// per attempt.
+/// </summary>
+public readonly record struct LinkBackfillCandidate(
+    long Id,
+    string Url,
+    int RetryCount);

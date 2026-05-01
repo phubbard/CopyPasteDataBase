@@ -324,4 +324,222 @@ public class EntryRepositoryTests : IDisposable
         Assert.Single(_repo.Search("brown", kind: "link"));
         Assert.Empty(_repo.Search("brown", kind: "image"));
     }
+
+    // ─── Link-metadata backfill (v8 + v9) ──────────────────────────────────
+
+    private static ClipboardSnapshot HttpLinkSnapshot(string url, DateTimeOffset? at = null) =>
+        // Mirrors a "Copy link" out of any browser: public.url is the lead
+        // signal (drives kind=link), plain-text shadow is what FTS5 sees.
+        new(new[]
+        {
+            new CanonicalHash.Flavor("public.url", Encoding.UTF8.GetBytes(url)),
+            new CanonicalHash.Flavor("public.utf8-plain-text", Encoding.UTF8.GetBytes(url)),
+        });
+
+    [Fact]
+    public void NextLinkBackfillCandidates_FindsFreshlyCapturedLinks()
+    {
+        // Explicit timestamps so newest-first ordering is deterministic.
+        // Without them, two Ingests in the same wall-clock millisecond
+        // share created_at and the ORDER BY tiebreaker is implementation-
+        // defined.
+        var aOutcome = _ingestor.Ingest(HttpLinkSnapshot("https://example.com/a"), null, _device,
+            DateTimeOffset.FromUnixTimeSeconds(1_700_000_000));
+        var bOutcome = _ingestor.Ingest(HttpLinkSnapshot("https://example.com/b"), null, _device,
+            DateTimeOffset.FromUnixTimeSeconds(1_700_000_500));
+
+        // Confirm both inserted (not deduped to one row).
+        Assert.Equal(IngestKind.Inserted, aOutcome.Kind);
+        Assert.Equal(IngestKind.Inserted, bOutcome.Kind);
+
+        var candidates = _repo.NextLinkBackfillCandidates(limit: 10);
+
+        Assert.Equal(2, candidates.Count);
+        // Newest first.
+        Assert.Equal(bOutcome.EntryId, candidates[0].Id);
+        Assert.Equal("https://example.com/b", candidates[0].Url);
+        Assert.Equal(0, candidates[0].RetryCount);
+        Assert.Equal(aOutcome.EntryId, candidates[1].Id);
+    }
+
+    [Fact]
+    public void NextLinkBackfillCandidates_SkipsSettledRows()
+    {
+        var id = _ingestor.Ingest(HttpLinkSnapshot("https://settled.example/"), null, _device).EntryId;
+        _repo.SettleLink(id, "Settled Page");
+
+        Assert.Empty(_repo.NextLinkBackfillCandidates(limit: 10));
+    }
+
+    [Fact]
+    public void NextLinkBackfillCandidates_SkipsTombstoned()
+    {
+        var id = _ingestor.Ingest(HttpLinkSnapshot("https://gone.example/"), null, _device).EntryId;
+        _repo.Tombstone(id);
+
+        Assert.Empty(_repo.NextLinkBackfillCandidates(limit: 10));
+    }
+
+    [Fact]
+    public void NextLinkBackfillCandidates_SkipsNonLinkKinds()
+    {
+        // kind=text rows have URL-shaped text_preview (e.g. someone copied
+        // a URL out of a terminal — no public.url flavor) — but until Stage
+        // E ships the URL-shaped-text → kind=link heuristic, kind stays
+        // 'text'. The candidate query gates on kind so we skip them.
+        _ingestor.Ingest(TextSnapshot("https://looks-like-a-link.example/"), null, _device);
+
+        Assert.Empty(_repo.NextLinkBackfillCandidates(limit: 10));
+    }
+
+    [Fact]
+    public void NextLinkBackfillCandidates_SkipsRowsWithoutHttpPreview()
+    {
+        // A kind=link row whose text_preview is null or non-http (think
+        // public.url-name with a human title rather than a URL) shouldn't
+        // be sent to the fetcher — there's nothing to GET.
+        var snap = new ClipboardSnapshot(new[]
+        {
+            new CanonicalHash.Flavor("public.url", Encoding.UTF8.GetBytes("file:///local/path")),
+        });
+        var id = _ingestor.Ingest(snap, null, _device).EntryId;
+
+        // Sanity: row landed as kind=link.
+        var row = _repo.Recent().Single(r => r.Id == id);
+        Assert.Equal("link", row.Kind);
+
+        // …but the candidate query rejects it (text_preview is "file:///..."
+        // not "http..." — LIKE 'http%' filters it out).
+        Assert.Empty(_repo.NextLinkBackfillCandidates(limit: 10));
+    }
+
+    [Fact]
+    public void NextLinkBackfillCandidates_RespectsRetryAfterGate()
+    {
+        var id = _ingestor.Ingest(HttpLinkSnapshot("https://rate-limited.example/"), null, _device).EntryId;
+        var t0 = DateTimeOffset.FromUnixTimeSeconds(1_700_000_000);
+
+        _repo.BumpLinkRetry(id, t0);
+
+        // First retry: backoff is 60·min(60, 2^1) = 120s. Still gated at t0+60s.
+        Assert.Empty(_repo.NextLinkBackfillCandidates(limit: 10, now: t0.AddSeconds(60)));
+
+        // After the gate elapses the row reappears.
+        var laterCandidates = _repo.NextLinkBackfillCandidates(limit: 10, now: t0.AddSeconds(150));
+        Assert.Single(laterCandidates);
+        Assert.Equal(1, laterCandidates[0].RetryCount);
+    }
+
+    [Fact]
+    public void NextLinkBackfillCandidates_RespectsMaxRetryCap()
+    {
+        var id = _ingestor.Ingest(HttpLinkSnapshot("https://forever-broken.example/"), null, _device).EntryId;
+        var t0 = DateTimeOffset.FromUnixTimeSeconds(1_700_000_000);
+
+        // Burn through MaxLinkRetries transient failures — at the cap, the
+        // candidate query stops returning the row even after the backoff
+        // window elapses. The fetcher is expected to switch to SettleLink(.., null)
+        // for permanent give-up; until that happens, this test guards against
+        // an infinite-retry bug.
+        for (int i = 0; i < EntryRepository.MaxLinkRetries; i++)
+            _repo.BumpLinkRetry(id, t0.AddSeconds(i));
+
+        // Fast-forward way past any backoff.
+        var farFuture = t0.AddDays(7);
+        Assert.Empty(_repo.NextLinkBackfillCandidates(limit: 10, now: farFuture));
+    }
+
+    [Fact]
+    public void SettleLink_WithTitle_StampsTitleAndFetchedAt()
+    {
+        var id = _ingestor.Ingest(HttpLinkSnapshot("https://example.com/article"), null, _device).EntryId;
+        var t0 = DateTimeOffset.FromUnixTimeSeconds(1_700_000_500);
+
+        _repo.SettleLink(id, "Example article", at: t0);
+
+        var row = _repo.Recent().Single(r => r.Id == id);
+        Assert.Equal("Example article", row.LinkTitle);
+        Assert.Empty(_repo.NextLinkBackfillCandidates(limit: 10));
+    }
+
+    [Fact]
+    public void SettleLink_WithNullTitle_GivesUpPermanently()
+    {
+        // Permanent-failure path: HTTP 404 / page lacks any title / DNS NXDOMAIN
+        // after retry budget exhausted. We still stamp link_fetched_at so the
+        // row stops appearing as a candidate.
+        var id = _ingestor.Ingest(HttpLinkSnapshot("https://no-title.example/"), null, _device).EntryId;
+        _repo.SettleLink(id, null);
+
+        var row = _repo.Recent().Single(r => r.Id == id);
+        Assert.Null(row.LinkTitle);
+        Assert.Empty(_repo.NextLinkBackfillCandidates(limit: 10));
+    }
+
+    [Fact]
+    public void SettleLink_PopulatesFtsLinkTitle()
+    {
+        // After backfill, the fetched title is searchable via FTS5 — even if
+        // it doesn't appear in the entry's title or text_preview.
+        var id = _ingestor.Ingest(HttpLinkSnapshot("https://example.com/x"), null, _device).EntryId;
+        _repo.SettleLink(id, "Quokka spotted on Rottnest Island");
+
+        var hits = _repo.Search("quokka");
+        Assert.Single(hits);
+        Assert.Equal(id, hits[0].Id);
+    }
+
+    [Fact]
+    public void SettleLink_ResetsRetryCounter()
+    {
+        var id = _ingestor.Ingest(HttpLinkSnapshot("https://example.com/y"), null, _device).EntryId;
+        var t0 = DateTimeOffset.FromUnixTimeSeconds(1_700_000_000);
+        _repo.BumpLinkRetry(id, t0);
+        _repo.BumpLinkRetry(id, t0);
+
+        _repo.SettleLink(id, "Got it on the third try");
+
+        // Now sneak the row back into candidacy by clearing fetched_at, and
+        // confirm retry_count is back to 0 / retry_after cleared.
+        using (var cmd = _db.CreateCommand())
+        {
+            cmd.CommandText = "UPDATE entries SET link_fetched_at=NULL WHERE id=$id";
+            cmd.Parameters.AddWithValue("$id", id);
+            cmd.ExecuteNonQuery();
+        }
+        var c = _repo.NextLinkBackfillCandidates(limit: 10).Single();
+        Assert.Equal(id, c.Id);
+        Assert.Equal(0, c.RetryCount);
+    }
+
+    [Fact]
+    public void BumpLinkRetry_IncrementsCountAndScheduling()
+    {
+        var id = _ingestor.Ingest(HttpLinkSnapshot("https://flaky.example/"), null, _device).EntryId;
+        var t0 = DateTimeOffset.FromUnixTimeSeconds(1_700_000_000);
+
+        _repo.BumpLinkRetry(id, t0);
+
+        using var cmd = _db.CreateCommand();
+        cmd.CommandText = "SELECT link_retry_count, link_retry_after FROM entries WHERE id=$id";
+        cmd.Parameters.AddWithValue("$id", id);
+        using var reader = cmd.ExecuteReader();
+        Assert.True(reader.Read());
+        Assert.Equal(1, (int)reader.GetInt64(0));
+        // Backoff for count=1 → 60·min(60, 2) = 120s. retry_after = t0 + 120.
+        Assert.Equal(t0.ToUnixTimeSeconds() + 120, (long)reader.GetDouble(1));
+    }
+
+    [Theory]
+    [InlineData(1,   120.0)] // 60 · 2
+    [InlineData(2,   240.0)] // 60 · 4
+    [InlineData(3,   480.0)] // 60 · 8
+    [InlineData(4,   960.0)] // 60 · 16
+    [InlineData(5,  1920.0)] // 60 · 32
+    [InlineData(6,  3600.0)] // cap kicks in: 60 · min(60, 64) = 3600
+    [InlineData(7,  3600.0)] // cap holds
+    public void ComputeRetryBackoffSeconds_FollowsContractSchedule(int count, double expected)
+    {
+        Assert.Equal(expected, EntryRepository.ComputeRetryBackoffSeconds(count));
+    }
 }
