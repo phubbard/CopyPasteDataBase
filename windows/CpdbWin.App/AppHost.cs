@@ -1,3 +1,4 @@
+using CpdbWin.Core.Analysis;
 using CpdbWin.Core.Ingest;
 using CpdbWin.Core.Service;
 using CpdbWin.Core.Store;
@@ -21,6 +22,8 @@ public sealed class AppHost : IDisposable
     public Ingestor Ingestor { get; }
     public EntryRepository Entries { get; }
     public CaptureService Capture { get; }
+    public LinkMetadataFetcher LinkFetcher { get; }
+    public LinkBackfillService LinkBackfill { get; }
     public AppPaths.Resolved Paths { get; }
 
     private AppHost(
@@ -29,7 +32,9 @@ public sealed class AppHost : IDisposable
         BlobStore blobs,
         Ingestor ingestor,
         EntryRepository entries,
-        CaptureService capture)
+        CaptureService capture,
+        LinkMetadataFetcher linkFetcher,
+        LinkBackfillService linkBackfill)
     {
         Paths = paths;
         Database = db;
@@ -37,6 +42,8 @@ public sealed class AppHost : IDisposable
         Ingestor = ingestor;
         Entries = entries;
         Capture = capture;
+        LinkFetcher = linkFetcher;
+        LinkBackfill = linkBackfill;
     }
 
     public static AppHost Bootstrap(string? rootOverride = null)
@@ -55,13 +62,32 @@ public sealed class AppHost : IDisposable
         var ingestor = new Ingestor(db, blobs);
         var entries = new EntryRepository(db, blobs);
         var capture = new CaptureService(ingestor);
-        capture.Start();
 
-        return new AppHost(paths, db, blobs, ingestor, entries, capture);
+        var linkFetcher = new LinkMetadataFetcher();
+        var linkBackfill = new LinkBackfillService(entries, linkFetcher);
+        // Capture-wake: every kind=link insert (or bump) kicks an
+        // immediate fetch cycle so a freshly-copied URL gets its title
+        // within a few seconds rather than waiting on the periodic
+        // timer. Reentry-guarded inside WakeForCapture, so a flurry of
+        // pastes coalesces.
+        capture.Ingested += (_, outcome) =>
+        {
+            if (outcome.EntryKind == "link" &&
+                (outcome.Kind == IngestKind.Inserted || outcome.Kind == IngestKind.Bumped))
+            {
+                linkBackfill.WakeForCapture();
+            }
+        };
+        capture.Start();
+        linkBackfill.Start();
+
+        return new AppHost(paths, db, blobs, ingestor, entries, capture, linkFetcher, linkBackfill);
     }
 
     public void Dispose()
     {
+        LinkBackfill.Dispose();
+        LinkFetcher.Dispose();
         Capture.Dispose();
         Database.Dispose();
     }
