@@ -526,18 +526,36 @@ every live row.
 >    `m.youtube.com` / `www.youtube.com`): hit the public oEmbed
 >    endpoint `https://www.youtube.com/oembed?url=<url>&format=json`.
 >    Use `title` and `thumbnail_url` fields.
-> 2. **Generic HTML scrape** (everything else): GET the URL with a
+> 2. **Reddit comments** (host matches `(www\.|old\.)?reddit.com`
+>    AND path matches `/r/<sub>/comments/<id>/…`): hit
+>    `https://www.reddit.com/r/<sub>/comments/<id>.json`. Parse the
+>    array; first listing's `data.children[0].data` has `title` +
+>    optional `thumbnail` (reject sentinel values "self", "default",
+>    "spoiler", "nsfw" — only use real `http*`-prefixed URLs).
+>    Falls through to step 3 on any error so a malformed Reddit URL
+>    doesn't dead-end.
+> 3. **Generic HTML scrape** (everything else): GET the URL with a
 >    browser-shaped User-Agent. Extract title in this priority:
 >    `<meta property="og:title" content="…">` →
 >    `<meta name="twitter:title" content="…">` →
 >    `<title>…</title>`. Extract thumbnail in priority:
 >    `og:image` / `og:image:secure_url` / `og:image:url` →
 >    `twitter:image` / `twitter:image:src`.
-> 3. **Wikipedia REST API fallback** (only when host matches
->    `*.wikipedia.org` AND step 2 produced no thumbnail URL): GET
+> 4. **Bot-check rejection** (post-extraction, before stamping):
+>    if the extracted title matches a CAPTCHA / "are you human"
+>    pattern (`looksLikeBotCheck`), throw a transient error so the
+>    row stays a candidate for retry. Pattern list:
+>    `"please wait for verification"`, `"just a moment"`,
+>    `"are you human"`, `"checking your browser"`,
+>    `"attention required"`, `"access denied"`,
+>    `"verify you are a human"`, `"please verify you are human"`,
+>    `"human verification"`, `"captcha"` (case-insensitive
+>    substring match).
+> 5. **Wikipedia REST API fallback** (only when host matches
+>    `*.wikipedia.org` AND step 3 produced no thumbnail URL): GET
 >    `https://<host>/api/rest_v1/page/summary/<title>`, use
 >    `thumbnail.source` then `originalimage.source`.
-> 4. **Favicon fallback** (when no thumbnail yet): scan HTML head
+> 6. **Favicon fallback** (when no thumbnail yet): scan HTML head
 >    for `<link rel="apple-touch-icon" href="…">` (preferred —
 >    typically 180×180 PNG), then `<link rel="icon">` /
 >    `rel="shortcut icon">`. Resolve relative hrefs against the page
