@@ -123,6 +123,21 @@ public sealed class LinkMetadataFetcher : IDisposable
         {
             return await FetchYouTubeAsync(url, ct).ConfigureAwait(false);
         }
+        if (TryParseRedditCommentsUrl(url, out var sub, out var id))
+        {
+            // Step 2 of the resolution chain. Reddit's JSON API returns
+            // a clean post title + thumbnail URL with no scraping. Fall
+            // through to the generic HTML scrape on any error so a
+            // malformed Reddit URL doesn't dead-end.
+            var redditOutcome = await FetchRedditAsync(url, sub!, id!, ct).ConfigureAwait(false);
+            if (redditOutcome is FetchOutcome.Success { Title.Length: > 0 } success)
+            {
+                return success;
+            }
+            // Either Reddit gave us no title (deleted post, NSFW gate, etc.)
+            // or the call failed transient/permanent. Try the HTML path
+            // before giving up — Reddit serves a real <title> in HTML too.
+        }
         return await FetchGenericHtmlAsync(url, ct).ConfigureAwait(false);
     }
 
@@ -232,6 +247,137 @@ public sealed class LinkMetadataFetcher : IDisposable
         PropertyNameCaseInsensitive = true,
     };
 
+    // ─── Reddit JSON ──────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Detect a Reddit comments URL and extract its <c>(subreddit, postId)</c>.
+    /// Host must be <c>reddit.com</c> or one of <c>www.|old.|new.|m.|np.</c>;
+    /// path must be <c>/r/&lt;sub&gt;/comments/&lt;id&gt;[/...]</c>. Public so
+    /// the unit tests can exercise the matcher without HTTP. Mirrors the
+    /// per-URL contract in <c>docs/schema.md § Fetcher resolution chain</c>.
+    /// </summary>
+    public static bool TryParseRedditCommentsUrl(Uri url, out string? subreddit, out string? postId)
+    {
+        subreddit = null;
+        postId = null;
+        var host = url.Host.ToLowerInvariant();
+        // Strip the few subdomain prefixes Reddit ships under. The schema
+        // contract names www. / old. ; we also accept m. / new. / np. /
+        // i.redd.it variants since they're real-world common.
+        foreach (var prefix in new[] { "www.", "old.", "new.", "m.", "np." })
+        {
+            if (host.StartsWith(prefix, StringComparison.Ordinal))
+            {
+                host = host[prefix.Length..];
+                break;
+            }
+        }
+        if (host != "reddit.com") return false;
+
+        // /r/<sub>/comments/<id>[/...]
+        var segments = url.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        if (segments.Length < 4) return false;
+        if (!segments[0].Equals("r", StringComparison.OrdinalIgnoreCase)) return false;
+        if (!segments[2].Equals("comments", StringComparison.OrdinalIgnoreCase)) return false;
+        var sub = segments[1];
+        var id = segments[3];
+        if (string.IsNullOrEmpty(sub) || string.IsNullOrEmpty(id)) return false;
+
+        subreddit = sub;
+        postId = id;
+        return true;
+    }
+
+    /// <summary>
+    /// Sentinel <c>thumbnail</c> values Reddit serves for posts that have
+    /// no real image. Schema contract: reject these and fall through to
+    /// the HTML / favicon path.
+    /// </summary>
+    private static readonly HashSet<string> RedditThumbnailSentinels = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "self", "default", "spoiler", "nsfw", "image", ""
+    };
+
+    private async Task<FetchOutcome> FetchRedditAsync(
+        Uri originalUrl, string subreddit, string postId, CancellationToken ct)
+    {
+        var endpoint = new Uri(
+            $"https://www.reddit.com/r/{Uri.EscapeDataString(subreddit)}/comments/{Uri.EscapeDataString(postId)}.json");
+        try
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Get, endpoint);
+            // Reddit serves cleaner JSON (sometimes with full post body)
+            // when we explicitly ask for it. The default Accept (which
+            // includes text/html) sometimes routes us to the HTML page.
+            req.Headers.Accept.Clear();
+            req.Headers.Accept.ParseAdd("application/json");
+            using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseContentRead, ct)
+                .ConfigureAwait(false);
+            if (!resp.IsSuccessStatusCode)
+            {
+                return ClassifyHttpFailure((int)resp.StatusCode, "reddit json");
+            }
+            var json = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+            try
+            {
+                using var doc = JsonDocument.Parse(json);
+                // Shape: [ { "kind":"Listing", "data":{ "children":[
+                //   { "kind":"t3", "data":{ "title":"...", "thumbnail":"..." } }, ... ] } }, ... ]
+                var root = doc.RootElement;
+                if (root.ValueKind != JsonValueKind.Array || root.GetArrayLength() < 1)
+                {
+                    return new FetchOutcome.Permanent("reddit json: unexpected shape");
+                }
+                var firstListing = root[0];
+                if (!firstListing.TryGetProperty("data", out var listingData)) goto fallback;
+                if (!listingData.TryGetProperty("children", out var children)
+                    || children.ValueKind != JsonValueKind.Array
+                    || children.GetArrayLength() < 1) goto fallback;
+                var post = children[0];
+                if (!post.TryGetProperty("data", out var postData)) goto fallback;
+
+                string? title = null;
+                if (postData.TryGetProperty("title", out var titleEl)
+                    && titleEl.ValueKind == JsonValueKind.String)
+                {
+                    title = titleEl.GetString()?.Trim();
+                    if (string.IsNullOrEmpty(title)) title = null;
+                }
+                Uri? thumb = null;
+                if (postData.TryGetProperty("thumbnail", out var thumbEl)
+                    && thumbEl.ValueKind == JsonValueKind.String)
+                {
+                    var raw = thumbEl.GetString();
+                    if (raw is not null
+                        && !RedditThumbnailSentinels.Contains(raw)
+                        && (raw.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+                            || raw.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+                        && Uri.TryCreate(raw, UriKind.Absolute, out var u))
+                    {
+                        thumb = u;
+                    }
+                }
+
+                return new FetchOutcome.Success(title, thumb, LinkMetadataParser.TitleSource.None);
+
+            fallback:
+                return new FetchOutcome.Permanent("reddit json: missing post body");
+            }
+            catch (JsonException ex)
+            {
+                return new FetchOutcome.Permanent($"reddit json parse: {ex.Message}");
+            }
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            return new FetchOutcome.Transient("reddit json timeout");
+        }
+        catch (HttpRequestException ex)
+        {
+            return new FetchOutcome.Transient($"reddit json network: {ex.Message}");
+        }
+    }
+
     // ─── Generic HTML scrape ──────────────────────────────────────────────
 
     private async Task<FetchOutcome> FetchGenericHtmlAsync(Uri url, CancellationToken ct)
@@ -272,6 +418,20 @@ public sealed class LinkMetadataFetcher : IDisposable
         }
 
         var parsed = LinkMetadataParser.Parse(body);
+
+        // Step 4 of the resolution chain: bot-check rejection. Cloudflare
+        // / DataDome / Akamai bot mitigation often serves a 200 OK page
+        // whose title is "Just a moment…" or "Attention Required!" — the
+        // raw HTTP status looks fine but there's nothing useful in the
+        // body. Treat as transient so the row stays a candidate; the
+        // backoff window gives the rate-limiter time to forget us. Per
+        // schema.md § Fetcher resolution chain step 4.
+        if (parsed.Title is { } extractedTitle && LooksLikeBotCheck(extractedTitle))
+        {
+            return new FetchOutcome.Transient(
+                $"bot-check rejection: \"{Trunc(extractedTitle, 60)}\"");
+        }
+
         var thumb = parsed.ThumbnailUrl;
 
         // Wikipedia REST API thumbnail fallback — articles like
@@ -290,6 +450,47 @@ public sealed class LinkMetadataFetcher : IDisposable
 
         return new FetchOutcome.Success(parsed.Title, thumb, parsed.Source);
     }
+
+    /// <summary>
+    /// Bot-check pattern list per <c>docs/schema.md § Fetcher resolution
+    /// chain step 4</c>. Case-insensitive substring match; if any matches
+    /// the post-extraction title, the page is treated as a bot challenge
+    /// (Cloudflare "Just a moment…", Akamai "Access Denied", etc.) and
+    /// the fetch is reported as transient. Public so unit tests can
+    /// exercise the matcher directly.
+    /// </summary>
+    public static bool LooksLikeBotCheck(string title)
+    {
+        if (string.IsNullOrEmpty(title)) return false;
+        foreach (var pattern in BotCheckPatterns)
+        {
+            if (title.Contains(pattern, StringComparison.OrdinalIgnoreCase)) return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Ten substrings that have shown up in real bot-mitigation interstitial
+    /// pages. Order doesn't matter — first match wins. Match the schema
+    /// contract verbatim; do not edit without updating
+    /// <c>docs/schema.md § Fetcher resolution chain step 4</c>.
+    /// </summary>
+    public static readonly string[] BotCheckPatterns =
+    {
+        "please wait for verification",
+        "just a moment",
+        "are you human",
+        "checking your browser",
+        "attention required",
+        "access denied",
+        "verify you are a human",
+        "please verify you are human",
+        "human verification",
+        "captcha",
+    };
+
+    private static string Trunc(string s, int max) =>
+        s.Length <= max ? s : s.Substring(0, max) + "…";
 
     // ─── Wikipedia REST API ───────────────────────────────────────────────
 

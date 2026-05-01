@@ -70,8 +70,8 @@ Legend:
 | Online-edge catch-up wake | ✅ v2.8.2 | — | ✅ v1.3.0 | network transitions offline→online → fire backfill batch via `NetworkChange.NetworkAvailabilityChanged` |
 | "Retry empties" targeted refetch | ✅ v2.7.8 | — | ⏳ | only clears sentinels for rows whose `link_title` is null/empty |
 | Hover tooltips on cards (source app, device, timestamp) | ✅ v2.7.12 | — | ⏳ | uses Cocoa `.help()`; Windows: WinUI `ToolTip` |
-| Bot-check / CAPTCHA detection (transient classification) | ✅ v2.8.6 | — | ⏳ | reject titles like "Please wait for verification", "Just a moment…", "Attention Required!", "Are you human?", etc. as transient (don't stamp link_fetched_at). Pattern list in `LinkMetadataFetcher.looksLikeBotCheck` |
-| Reddit `.json` API path | ✅ v2.8.6 | — | ⏳ | URLs matching `/r/<sub>/comments/<id>/…` route through `https://www.reddit.com/r/<sub>/comments/<id>.json` (bypasses CAPTCHA gate). Falls through to generic HTML scrape on any failure |
+| Bot-check / CAPTCHA detection (transient classification) | ✅ v2.8.6 | — | ✅ v1.6.0 | reject titles like "Please wait for verification", "Just a moment…", "Attention Required!", "Are you human?", etc. as transient (don't stamp link_fetched_at). Pattern list in `LinkMetadataFetcher.LooksLikeBotCheck` (10 substrings, case-insensitive) |
+| Reddit `.json` API path | ✅ v2.8.6 | — | ✅ v1.6.0 | URLs matching `/r/<sub>/comments/<id>/…` route through `https://www.reddit.com/r/<sub>/comments/<id>.json` (bypasses CAPTCHA gate). Sentinel `thumbnail` values ("self"/"default"/"spoiler"/"nsfw"/"") rejected. Falls through to generic HTML scrape on any error |
 | Multi-mac dupe prevention (loginwindow blocklist) | ✅ v2.7.9 | — | — | Apple-specific source-app phantom |
 | `cpdb dedupe --links-all-time` (cross-time link collapse) | ✅ v2.7.9 | — | ⏳ | salvages `link_title` from siblings before tombstoning |
 | Permissions UI (Accessibility + Local Network status) | ✅ v2.8.4 | — | — | Windows uses MSIX capability manifest, no runtime equivalent |
