@@ -63,6 +63,37 @@ public class UserSettingsTests : IDisposable
             try { Directory.Delete(Path.GetDirectoryName(nested)!, true); } catch { }
         }
     }
+
+    [Fact]
+    public void AutoLaunchInitialized_DefaultsFalse_OnNewSettings()
+    {
+        // Brand-new settings.json — the App layer reads this and runs the
+        // first-run autostart enable, then flips the flag.
+        Assert.False(new UserSettings().AutoLaunchInitialized);
+        Assert.False(UserSettings.Load(_path).AutoLaunchInitialized);
+    }
+
+    [Fact]
+    public void AutoLaunchInitialized_RoundTripsThroughLoad()
+    {
+        var s = new UserSettings { AutoLaunchInitialized = true };
+        s.Save(_path);
+
+        var loaded = UserSettings.Load(_path);
+        Assert.True(loaded.AutoLaunchInitialized);
+    }
+
+    [Fact]
+    public void AutoLaunchInitialized_OldSettingsFile_StaysFalse()
+    {
+        // Files written by previous versions don't have the field. JSON
+        // deserialization should fall back to the default (false), which
+        // means existing users get a one-shot autostart enable on upgrade —
+        // intentional: it matches the new-install behavior.
+        File.WriteAllText(_path, """{ "hotkey": { "modifiers": 6, "virtualKey": 86 } }""");
+        var loaded = UserSettings.Load(_path);
+        Assert.False(loaded.AutoLaunchInitialized);
+    }
 }
 
 public class HotkeyFormatterTests

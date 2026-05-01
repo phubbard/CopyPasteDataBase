@@ -38,6 +38,17 @@ public sealed class UserSettings
     [JsonPropertyName("hotkey")]
     public HotkeyConfig Hotkey { get; set; } = HotkeyConfig.Default;
 
+    /// <summary>
+    /// One-shot bookkeeping for the "default to run-at-boot" first-run
+    /// behavior. False on a brand-new settings.json; the App layer flips it
+    /// to true after enabling the HKCU\…\Run autostart entry once. Subsequent
+    /// launches see <c>true</c> and skip the auto-enable, so a user who has
+    /// since disabled autostart via the tray menu doesn't get it silently
+    /// re-enabled on every startup.
+    /// </summary>
+    [JsonPropertyName("autoLaunchInitialized")]
+    public bool AutoLaunchInitialized { get; set; } = false;
+
     private static readonly JsonSerializerOptions JsonOpts = new()
     {
         WriteIndented = true,
