@@ -31,7 +31,8 @@
                       SelectionMode="Extended">
                 <ListView.ItemTemplate>
                     <DataTemplate x:DataType="local:EntryViewModel">
-                        <Grid ColumnDefinitions="48,*,Auto" ColumnSpacing="10" Margin="0,4">
+                        <Grid ColumnDefinitions="48,*,Auto" ColumnSpacing="10" Margin="0,4"
+                              ToolTipService.ToolTip="{x:Bind Tooltip}">
                             <Grid.ContextFlyout>
                                 <MenuFlyout>
                                     <MenuFlyoutItem Text="{x:Bind PinMenuLabel}" Click="PinMenuItem_Click">
