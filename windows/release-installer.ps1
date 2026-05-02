@@ -53,8 +53,24 @@ if (-not $SkipBuild) {
 # Refuse to clobber an existing tag: gh release create would otherwise
 # create the release first and *then* fail on upload, leaving an empty
 # published release behind. Better to abort up front.
-& gh release view $Tag --json url 2>&1 | Out-Null
-if ($LASTEXITCODE -eq 0) {
+#
+# Note on PowerShell 5.1 native-command stderr handling: with
+# $ErrorActionPreference='Stop', any line a native exe writes to stderr
+# becomes an ErrorRecord that aborts the script -- even with `2>$null`
+# or `2>&1 | Out-Null` (the redirection layer fires after the wrapping).
+# Ducking under it via try/catch with a local 'Continue' policy is the
+# only reliable way to ask "does this release exist?" without the
+# script blowing up when it does NOT.
+$tagExists = $false
+try {
+    $prevPref = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    $null = & gh release view $Tag --json url 2>$null
+    $tagExists = ($LASTEXITCODE -eq 0)
+} finally {
+    $ErrorActionPreference = $prevPref
+}
+if ($tagExists) {
     throw "Release $Tag already exists. Delete it first: gh release delete $Tag --cleanup-tag --yes"
 }
 
@@ -103,5 +119,5 @@ if ($LASTEXITCODE -ne 0) { throw "gh release create failed (exit $LASTEXITCODE)"
 Write-Host ""
 Write-Host "Release created: $Tag" -ForegroundColor Green
 if (-not $Live) {
-    Write-Host "  (draft — open https://github.com/phubbard/CopyPasteDataBase/releases to publish)"
+    Write-Host "  (draft -- open https://github.com/phubbard/CopyPasteDataBase/releases to publish)"
 }
