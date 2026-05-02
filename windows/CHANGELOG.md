@@ -12,6 +12,72 @@ dated `[1.X.Y]` heading and reset `[Unreleased]` to empty.
 
 ## [Unreleased]
 
+## [1.9.0] – 2026-05-01
+
+- **Paste-back actually works now.** Picking an entry in the popup
+  has, since v1.4.0, hidden the window and synthesized Ctrl+V to
+  the previously-foreground app. The hide + foreground transition
+  was correct but `SendInput` was silently rejecting every event:
+  the managed `INPUT` struct only declared the `KEYBDINPUT` arm of
+  the union (24 bytes), so `Marshal.SizeOf<INPUT>()` returned 32
+  while the OS expects 40 bytes on x64. With `cbSize` mismatched,
+  `SendInput` returned 0 inputs injected and we never noticed
+  because we didn't check the return value. Fixed: union now
+  spelled out with `MOUSEINPUT` + `KEYBDINPUT` + `HARDWAREINPUT`,
+  the return value is logged so a future regression won't be
+  silent.
+- **Foreground-app capture is now resilient.** Previous version
+  only captured `LastForegroundHwnd` inside `BringMainToFront`
+  (hotkey / tray-click paths). After a successful paste-back
+  cleared the captured HWND, any subsequent way the window came
+  back to view (Activated re-fire, click-back, prefs return,
+  etc.) didn't have a fresh HWND to paste to — paste-back
+  silently no-op'd. Now we install a global
+  `SetWinEventHook(EVENT_SYSTEM_FOREGROUND)` that updates
+  `LastForegroundHwnd` on every foreground change, excluding our
+  own window. The captured target reflects the last non-cpdb-win
+  app that was foreground, regardless of how cpdb-win was
+  summoned.
+- **`AttachThreadInput` on the way out.** Hardened the
+  `SetForegroundWindow` call after our window hides — the same
+  thread-input-fusion trick we use to steal focus on summon now
+  also fuses for the foreground hand-back, so the OS reliably
+  honors the focus restore even when our process isn't the
+  freshly-deactivated one.
+- **`ShowWindow(SW_RESTORE)` only when iconic.** Previous version
+  unconditionally `SW_RESTORE`'d the previous window before
+  pasting, which on a non-minimized window can toggle z-order /
+  snap state and visually move it. Now we only un-minimize when
+  the previous window is actually minimized (`IsIconic`).
+- **Modifier-state drain before SendInput.** If the user is
+  still physically holding `Shift` from the `Ctrl+Shift+V` hotkey
+  by the time we paste back, our synthetic `Ctrl+V` recombines
+  with the held `Shift` into `Ctrl+Shift+V` — which is our own
+  hotkey, so we'd pop the window back up instead of pasting. Now
+  we send synthetic key-up events for `Shift` / `Alt` / `Win`
+  before issuing `Ctrl+V`.
+- **`%LOCALAPPDATA%\cpdb\paste-back.log`.** Per-event diagnostic
+  log for the paste-back path: which entry was activated, whether
+  the clipboard write succeeded, the captured prevHwnd, whether
+  `SetForegroundWindow` worked, the foreground class name + first
+  40 chars of the clipboard text right before SendInput, and the
+  number of inputs SendInput accepted. Self-rotates at 1 MB.
+
+- **README per-platform badges.** Two CI status badges (Tests ·
+  macOS+iOS / Tests · Windows) plus a "Supported platforms"
+  matrix using shields.io static badges for macOS arm64 / x86_64,
+  iOS arm64, Windows x64 / arm64.
+- **Velopack `--shortcuts StartMenu,Desktop`.** Explicit in
+  `build-installer.ps1` so future installer-driven installs
+  always create both shortcuts. Velopack's default left some
+  testers without a Start menu entry on first install.
+- **`windows/create-start-menu-shortcut.ps1`** — for testers on
+  pre-1.9.0 builds (no `--shortcuts` flag) or running directly
+  from a Debug build, a one-shot helper that resolves the cpdb-win
+  exe and writes Start menu + Desktop `.lnk` files.
+
+## [1.8.0] – 2026-05-01
+
 - **In-place schema migrator.** New `Migrator.EnsureSchema(db)` is
   the single boot entry point: fresh installs run `Schema.Initialize`,
   existing v1.0/v1.1 installs (schema v5) flow through `Migrate`

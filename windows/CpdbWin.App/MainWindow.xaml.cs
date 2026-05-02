@@ -652,7 +652,10 @@ public sealed partial class MainWindow : Window
 
     private void ActivateEntry(EntryViewModel vm)
     {
-        if (TryWriteFlavorByPriority(vm.EntryId))
+        App.WritePasteLog($"ActivateEntry: id={vm.EntryId}");
+        var wrote = TryWriteFlavorByPriority(vm.EntryId);
+        App.WritePasteLog($"  TryWriteFlavorByPriority → {wrote}");
+        if (wrote)
         {
             StatusText.Text = $"Copied #{vm.EntryId} to clipboard";
             // Hide our window AND send Ctrl+V to the app that held the
@@ -661,6 +664,12 @@ public sealed partial class MainWindow : Window
             // the original app. App layer owns the foreground capture/restore
             // because that's where the show-window event also lives.
             App.HideAndPasteToPreviousForeground(this);
+        }
+        else
+        {
+            // Flavor-mismatch is silent otherwise — the user picks an
+            // entry, the window doesn't budge, no idea why. Surface it.
+            StatusText.Text = $"#{vm.EntryId} has no pasteable flavor";
         }
     }
 
