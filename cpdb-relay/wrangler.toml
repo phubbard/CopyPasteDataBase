@@ -1,0 +1,26 @@
+name = "cpdb-relay"
+main = "src/worker.ts"
+compatibility_date = "2025-04-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Bind the per-workspace Durable Object class. The DO is keyed by
+# `idFromName(workspace_id)` so each workspace gets its own
+# isolated state machine + WebSocket fan-out.
+[[durable_objects.bindings]]
+name = "WORKSPACE"
+class_name = "Workspace"
+
+# R2 bucket for encrypted envelope bytes. One bucket holds all
+# workspaces; objects are keyed `<workspace_id>/<envelope_id>` so
+# there's no namespace collision risk.
+[[r2_buckets]]
+binding = "ENVELOPES"
+bucket_name = "cpdb-envelopes"
+preview_bucket_name = "cpdb-envelopes-preview"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["Workspace"]
+
+[observability]
+enabled = true
