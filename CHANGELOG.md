@@ -10,6 +10,12 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+- **Auto-update end-to-end verification.** Trivial release cut
+  solely to prove the v2.9.1 Sparkle pipeline works in the wild:
+  a running 2.9.1 install detecting, downloading, EdDSA-verifying,
+  and installing this 2.9.2 from the live GitHub appcast. No
+  functional change.
+
 ## [2.9.1] – 2026-05-18
 
 - **In-app auto-update via Sparkle 2.** The direct-download Mac
