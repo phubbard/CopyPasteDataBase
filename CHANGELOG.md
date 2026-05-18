@@ -10,6 +10,8 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+## [2.9.3] – 2026-05-18
+
 - **Auto-update robustness verification + honest documentation.**
   The v2.9.1 e2e test (2.9.1→2.9.2) surfaced that the app's
   long-standing `installSPMBundleShims()` (root-level symlinks for
