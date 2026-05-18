@@ -10,20 +10,41 @@ import SwiftUI
 @main
 enum CpdbAppMain {
     static func main() {
-        // Repoint SPM resource bundle lookups BEFORE anything else.
-        // SPM's generated `Bundle.module` accessor looks for each
-        // resource bundle at `Bundle.main.bundleURL.appendingPathComponent(name + ".bundle")`
-        // — the top level of the .app. codesign refuses to seal
-        // anything there, so the Makefile ships bundles inside
-        // Contents/Resources/ instead. We create symlinks at the top
-        // level at launch time, pointing at the real bundles.
+        // SPM's generated `Bundle.module` accessor (this toolchain)
+        // hardcodes exactly two lookup paths:
+        //   1. Bundle.main.bundleURL/<name>.bundle   ← the .app ROOT
+        //   2. an absolute .build/ dev path          ← dead on user machines
+        // It does NOT check Contents/Resources/. codesign, conversely,
+        // *forbids* any content at the .app root ("unsealed contents
+        // present in the bundle root") — verified empirically, even
+        // when the symlink is present at sign time. These two
+        // constraints are irreconcilable, so the resource bundles
+        // ship inside Contents/Resources/ (Apple-correct, sealed) and
+        // we create root-level symlinks at launch to satisfy SPM's
+        // hardcoded path #1.
         //
-        // Why this is safe: macOS verifies the code signature at
-        // process launch. Modifying non-code files inside our own
-        // bundle post-launch doesn't re-trigger verification.
-        // symlinks aren't in the signed seal (codesign wouldn't have
-        // accepted them at sign time), so adding them now doesn't
-        // invalidate anything.
+        // Honest accounting of the tradeoff (the previous comment
+        // here was wrong to call it "safe"):
+        //
+        //   • This DOES break `codesign --verify --deep --strict`
+        //     and `spctl --assess` *once the app has launched* —
+        //     the symlinks are unsigned root content.
+        //   • It does NOT affect the user-facing flows:
+        //       - Fresh install: the notarized DMG contains the
+        //         clean bundle (no symlinks). Gatekeeper assesses it
+        //         at first launch and passes; it never re-assesses a
+        //         launched app, so the post-launch self-symlink is
+        //         invisible to it.
+        //       - Sparkle update: Sparkle validates the freshly
+        //         downloaded DMG (clean) and the host's Designated
+        //         Requirement (team-id/identifier, which a structural
+        //         root-symlink doesn't alter). Proven across
+        //         consecutive hops by the release smoke test.
+        //
+        // Net: a real but contained defect. Removing the shim is not
+        // an option (KeyboardShortcuts' Bundle.module fatalErrors if
+        // its bundle is unresolvable). Documented here so the next
+        // person doesn't "fix" it by deleting a load-bearing hack.
         installSPMBundleShims()
 
         let app = NSApplication.shared

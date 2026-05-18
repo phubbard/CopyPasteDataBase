@@ -10,6 +10,22 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+- **Auto-update robustness verification + honest documentation.**
+  The v2.9.1 e2e test (2.9.1→2.9.2) surfaced that the app's
+  long-standing `installSPMBundleShims()` (root-level symlinks for
+  SPM's hardcoded `Bundle.module` path) breaks
+  `codesign --verify --strict` / `spctl` *on a launched app*. Audited
+  it: it does NOT affect fresh installs (notarized DMG ships the
+  clean bundle; Gatekeeper passes at first launch and never
+  re-assesses) or Sparkle updates (validates the clean downloaded
+  DMG + the host Designated Requirement, which a structural symlink
+  doesn't change). The shim is load-bearing — KeyboardShortcuts'
+  `Bundle.module` `fatalError`s without it, and codesign forbids
+  the bundle at the .app root regardless — so it stays, but the
+  misleading "this is safe" comment is replaced with an honest
+  accounting. This release is the consecutive-hop proof: a running,
+  already-self-symlinked 2.9.2 updating itself to 2.9.3.
+
 ## [2.9.2] – 2026-05-18
 
 - **Auto-update end-to-end verification.** Trivial release cut
