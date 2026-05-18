@@ -1,6 +1,7 @@
 import AppKit
 import CloudKit
 import SwiftUI
+import UniformTypeIdentifiers
 import KeyboardShortcuts
 import ServiceManagement
 import CpdbCore
@@ -73,6 +74,8 @@ private struct PreferencesView: View {
     @State private var timeWindowDays: Int = EvictionPrefs.timeWindowDays
     @State private var evictionStatus: String = ""
     @State private var linkBackfillStatus: String = ""
+    @State private var importExportStatus: String = ""
+    @State private var exportFormat: HistoryExporter.Format = .md
 
     // Image analysis prefs — loaded once on appear, written back when
     // individual controls are edited.
@@ -395,6 +398,35 @@ private struct PreferencesView: View {
                 Text("Background-fetches page or video titles for captured URLs so search finds links by their content.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+
+            Section("Import / Export") {
+                HStack {
+                    Button("Import URLs…") { importURLs() }
+                    Spacer()
+                }
+                Text("Seed the database from a text file of one http(s):// or file:// URL per line. Each is treated like a clipboard copy, so links get titles + thumbnails fetched in the background. Blank lines and #-comments are skipped.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Picker("Export format", selection: $exportFormat) {
+                    Text("Markdown").tag(HistoryExporter.Format.md)
+                    Text("CSV").tag(HistoryExporter.Format.csv)
+                    Text("HTML").tag(HistoryExporter.Format.html)
+                }
+                HStack {
+                    Button("Export…") { exportHistory() }
+                    Spacer()
+                }
+                Text("Writes the whole history (newest first) as a portable document. Metadata + text only — flavor bytes aren't included; this is a reading/searching archive, not a restore image.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                if !importExportStatus.isEmpty {
+                    Text(importExportStatus)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
         }
         .formStyle(.grouped)
@@ -722,6 +754,66 @@ private struct PreferencesView: View {
                 await MainActor.run { linkBackfillStatus = summary }
             } catch {
                 await MainActor.run { linkBackfillStatus = "Failed: \(error)" }
+            }
+        }
+    }
+
+    /// "Import URLs…" — NSOpenPanel for a .txt, then run the shared
+    /// `UrlImporter` off the main thread. Imported links flow through
+    /// the normal ingest path so the backfill enriches them.
+    private func importURLs() {
+        let panel = NSOpenPanel()
+        panel.title = "Import URLs"
+        panel.message = "Pick a text file with one http(s):// or file:// URL per line."
+        panel.allowedContentTypes = [.plainText, .text, .utf8PlainText]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        importExportStatus = "Importing…"
+        Task.detached {
+            do {
+                let raw = try String(contentsOf: url, encoding: .utf8)
+                let store = try Store.open()
+                // 1-hour spread so a bulk import doesn't collapse to
+                // one timestamp and scramble popup ordering.
+                let r = try UrlImporter.run(rawText: raw, into: store, spreadSeconds: 3600)
+                let msg: String
+                if r.acceptedCount == 0 {
+                    msg = "No importable URLs found (\(r.rejected.count) rejected)."
+                } else {
+                    msg = "Imported \(r.inserted) new · \(r.bumped) bumped · \(r.skipped) skipped · \(r.rejected.count) rejected. Links enrich in the background."
+                }
+                await MainActor.run { importExportStatus = msg }
+            } catch {
+                await MainActor.run { importExportStatus = "Import failed: \(error.localizedDescription)" }
+            }
+        }
+    }
+
+    /// "Export…" — NSSavePanel pre-filled with a sensible name +
+    /// the picked format's extension, then render via the shared
+    /// `HistoryExporter` off the main thread.
+    private func exportHistory() {
+        let fmt = exportFormat
+        let panel = NSSavePanel()
+        panel.title = "Export Clipboard History"
+        let stamp = ISO8601DateFormatter.string(
+            from: Date(), timeZone: .current,
+            formatOptions: [.withFullDate]
+        )
+        panel.nameFieldStringValue = "cpdb-export-\(stamp).\(fmt.fileExtension)"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        importExportStatus = "Exporting…"
+        Task.detached {
+            do {
+                let store = try Store.open()
+                let (doc, count) = try HistoryExporter.export(from: store, format: fmt)
+                try doc.write(to: url, atomically: true, encoding: .utf8)
+                await MainActor.run {
+                    importExportStatus = "Exported \(count) entries → \(url.lastPathComponent)"
+                }
+            } catch {
+                await MainActor.run { importExportStatus = "Export failed: \(error.localizedDescription)" }
             }
         }
     }

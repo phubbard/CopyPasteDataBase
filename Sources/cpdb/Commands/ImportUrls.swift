@@ -36,26 +36,10 @@ struct ImportUrls: ParsableCommand {
             throw ValidationError("can't read \(url.path) as UTF-8")
         }
 
-        // Parse: trim, drop blanks + #-comments, keep only http(s)/file.
-        let candidates: [String] = raw
-            .split(separator: "\n", omittingEmptySubsequences: false)
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty && !$0.hasPrefix("#") }
-
-        var accepted: [String] = []
-        var rejected: [(String, String)] = []
-        for line in candidates {
-            guard let u = URL(string: line), let scheme = u.scheme?.lowercased() else {
-                rejected.append((line, "unparseable"))
-                continue
-            }
-            guard scheme == "http" || scheme == "https" || scheme == "file" else {
-                rejected.append((line, "scheme '\(scheme)' not http/https/file"))
-                continue
-            }
-            accepted.append(line)
-        }
-
+        // Shared parse/ingest logic lives in UrlImporter (CpdbCore)
+        // so the Preferences "Import…" button and this command stay
+        // byte-for-byte identical in behaviour.
+        let (accepted, rejected) = UrlImporter.parse(raw)
         print("\(accepted.count) URL(s) to import, \(rejected.count) rejected")
         for (line, why) in rejected.prefix(10) {
             print("  reject: \(line.prefix(60)) — \(why)")
@@ -69,56 +53,16 @@ struct ImportUrls: ParsableCommand {
         }
 
         let store = try Store.open()
-        let deviceId = try DeviceIdentity.ensureLocalDevice(in: store)
-        let ingestor = Ingestor(store: store)
-
-        // Spread captured_at backwards from now so the import doesn't
-        // collapse into a single instant (which would make the popup
-        // ordering arbitrary). Oldest line → oldest timestamp.
-        let now = Date()
-        let step = accepted.isEmpty ? 0 : (spreadSeconds / Double(max(accepted.count, 1)))
-
-        var inserted = 0
-        var bumped = 0
-        var skipped = 0
-        for (idx, line) in accepted.enumerated() {
-            // captured_at: line 0 is oldest. With spread=0 they all
-            // land at `now` (insertion order still gives stable ids).
-            let offset = step * Double(accepted.count - 1 - idx)
-            let capturedAt = now.addingTimeInterval(-offset)
-            let snapshot = Self.snapshot(for: line, capturedAt: capturedAt)
-            let outcome = try ingestor.ingest(
-                snapshot,
-                sourceApp: .importer,
-                deviceId: deviceId
-            )
-            switch outcome {
-            case .inserted: inserted += 1
-            case .bumped:   bumped += 1
-            case .skipped:  skipped += 1
-            }
-        }
-        print("done: inserted=\(inserted) bumped=\(bumped) skipped=\(skipped)")
-        if inserted > 0 {
+        let result = try UrlImporter.run(
+            rawText: raw,
+            into: store,
+            spreadSeconds: spreadSeconds
+        )
+        print("done: inserted=\(result.inserted) bumped=\(result.bumped) skipped=\(result.skipped)")
+        if result.inserted > 0 {
             print("link entries will get titles + thumbnails on the next backfill cycle")
             print("(or run `cpdb fetch-link-titles` to enrich now)")
         }
-    }
-
-    /// Build a synthetic pasteboard snapshot for a URL string. We
-    /// attach both `public.url` (so the kind classifier resolves
-    /// it to .link) and `public.utf8-plain-text` (so search +
-    /// text_preview behave like a real browser copy).
-    static func snapshot(for urlString: String, capturedAt: Date) -> PasteboardSnapshot {
-        let bytes = Data(urlString.utf8)
-        let flavors = [
-            CanonicalHash.Flavor(uti: "public.url", data: bytes),
-            CanonicalHash.Flavor(uti: "public.utf8-plain-text", data: bytes),
-        ]
-        return PasteboardSnapshot(
-            items: [PasteboardSnapshot.Item(flavors: flavors)],
-            capturedAt: capturedAt
-        )
     }
 }
 #endif

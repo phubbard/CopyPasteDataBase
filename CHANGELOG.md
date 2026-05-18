@@ -10,6 +10,21 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+- **Import / Export in Preferences (GUI).** The v2.9.0 import/export
+  was CLI-only; most users never open a terminal. New
+  "Import / Export" section in the Preferences window:
+    - **Import URLs…** — NSOpenPanel for a text file; ingests via
+      the shared `UrlImporter` with a 1-hour `captured_at` spread.
+      Status line reports inserted / bumped / skipped / rejected.
+    - **Export…** — format picker (Markdown / CSV / HTML) +
+      NSSavePanel pre-filled with `cpdb-export-<date>.<ext>`.
+      Renders via the shared `HistoryExporter`.
+  Both run off the main thread so a big library doesn't beachball
+  the window. The import/export *logic* was factored out of the
+  CLI commands into `UrlImporter` (CpdbCore) and `HistoryExporter`
+  (CpdbShared) so the CLI and GUI are one implementation —
+  verified byte-identical output across both paths.
+
 ## [2.9.4] – 2026-05-18
 
 - **Accessibility (and all TCC grants) survive updates — stable
