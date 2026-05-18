@@ -10,6 +10,8 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+## [2.9.0] – 2026-05-18
+
 - **`cpdb import-urls <file>`.** Bulk-seed the database from a text
   file of one http(s):// or file:// URL per line. Each line is
   ingested through the normal capture path — so kind=link rows
