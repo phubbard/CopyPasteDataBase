@@ -14,10 +14,10 @@ dated `[1.X.Y]` heading and reset `[Unreleased]` to empty.
 
 ## [1.11.0] – 2026-05-11
 
-- **Client-side auto-update.** Functional parity with the macOS
-  Sparkle contract (`docs/parity.md § Auto-update`). Until now the
-  app only *shipped* a Velopack installer + delta `.nupkg`s — a
-  running cpdb-win never noticed a new release. New
+- **Client-side auto-update (x64 + arm64).** Functional parity
+  with the macOS Sparkle contract (`docs/parity.md § Auto-update`).
+  Until now the app only *shipped* a Velopack installer + delta
+  `.nupkg`s — a running cpdb-win never noticed a new release. New
   `UpdateService` (CpdbWin.App) over Velopack's
   `UpdateManager` + `GithubSource`:
   - Background check 30s after launch, then every 24h, plus an
@@ -33,23 +33,31 @@ dated `[1.X.Y]` heading and reset `[Unreleased]` to empty.
     `%LOCALAPPDATA%\cpdb\update.log`; a manual check also surfaces
     up-to-date / error in a message box so the menu item never
     looks dead.
-  - **x64 only.** Velopack 0.0.1298 emits an identically-named
-    `releases.win.json` + `CpdbWin-<ver>-full.nupkg` for both
-    win-x64 and win-arm64, so a single GitHub release can't carry
-    both arches' feeds. The arm64 build detects this
-    (`RuntimeInformation.ProcessArchitecture`) and tells the user
-    to re-download rather than apply an x64 package. Per-arch
-    Velopack channels are a tracked follow-up.
-- **`release-installer.ps1` publishes the update feed.** In
-  addition to the per-arch `Setup.exe` / `Portable.zip`, the
-  release now carries the x64 channel's `releases.win.json`,
-  every `.nupkg` (full + deltas), and the legacy `RELEASES`
-  manifest — the assets Velopack's `GithubSource` reads. Without
-  these the in-app updater had nothing to check against.
+- **Per-architecture Velopack channels.** `build-installer.ps1`
+  packs each rid with `--channel win-<arch>`, which makes every
+  emitted artifact architecture-qualified
+  (`releases.win-x64.json` / `releases.win-arm64.json`,
+  `CpdbWin-<ver>-win-<arch>-full.nupkg`,
+  `CpdbWin-win-<arch>-Setup.exe`, `RELEASES-win-<arch>`). Both
+  arches' installers AND both arches' auto-update feeds now
+  coexist on a single GitHub release with zero filename collision
+  (verified empirically against Velopack 0.0.1298 — the channel
+  is baked into the nupkg name, not just the manifest).
+  `release-installer.ps1` uploads both feeds; `UpdateService`
+  picks `ExplicitChannel` from
+  `RuntimeInformation.ProcessArchitecture`, so an x64 install only
+  ever downloads x64 packages and an arm64 install only arm64.
 - **Auto-update only sees published releases.** GitHub's
   unauthenticated API hides draft releases, so testers never
   auto-update to an unpublished draft — the desired behavior.
   Publish a release to make it offered.
+- **Migration note.** Builds before 1.11.0 were packed on
+  Velopack's default `win` channel. The in-app updater on a
+  pre-1.11.0 install looks for the old `releases.win.json`, which
+  1.11.0+ releases no longer carry (they ship
+  `releases.win-x64.json` / `-arm64`). Existing testers should
+  **re-install once from the 1.11.0 `Setup.exe`** for their arch;
+  from then on auto-update tracks the matching per-arch channel.
 
 ## [1.10.0] – 2026-05-11
 

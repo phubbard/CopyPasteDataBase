@@ -16,9 +16,14 @@ namespace CpdbWin.App;
 /// Velopack's <see cref="GithubSource"/> enumerates published GitHub
 /// releases (drafts are invisible to the unauthenticated API — that's
 /// the desired behavior, testers don't auto-update to an unpublished
-/// draft), reads the release's <c>releases.win.json</c> manifest, and
-/// downloads the <c>.nupkg</c>. <c>release-installer.ps1</c> uploads
-/// those assets alongside <c>Setup.exe</c> so this has a feed to read.
+/// draft), reads the channel manifest for the running architecture
+/// (<c>releases.win-x64.json</c> / <c>releases.win-arm64.json</c> —
+/// selected via <see cref="UpdateOptions.ExplicitChannel"/>), and
+/// downloads the matching <c>.nupkg</c>. <c>build-installer.ps1</c>
+/// packs each arch with <c>--channel win-&lt;arch&gt;</c> and
+/// <c>release-installer.ps1</c> uploads both arches' feeds, so x64 and
+/// arm64 installs each update against their own packages off one
+/// shared GitHub release.
 /// </para>
 ///
 /// <para>
@@ -70,24 +75,32 @@ public sealed class UpdateService
         }
         try
         {
-            // The published GitHub feed carries only the x64 channel
-            // (Velopack 0.0.1298 can't disambiguate two arches on one
-            // release — see release-installer.ps1). Applying an x64
-            // package on arm64 would corrupt the install, so arm64
-            // updates by re-download until per-arch channels land.
-            if (RuntimeInformation.ProcessArchitecture != Architecture.X64)
+            // Each architecture has its own Velopack channel
+            // (build-installer.ps1 packs with `--channel win-<arch>`),
+            // so an arm64 install only ever sees arm64 packages and
+            // vice-versa. Map the running process arch → channel.
+            // We only build x64 + arm64; anything else has no feed.
+            var channel = RuntimeInformation.ProcessArchitecture switch
             {
-                Log($"arch {RuntimeInformation.ProcessArchitecture} — auto-update feed is x64-only, skipping");
+                Architecture.X64   => "win-x64",
+                Architecture.Arm64 => "win-arm64",
+                _                  => null,
+            };
+            if (channel is null)
+            {
+                Log($"arch {RuntimeInformation.ProcessArchitecture} — no feed built for this arch, skipping");
                 if (userInitiated)
                 {
                     Info("Automatic updates aren't available for the "
-                       + $"{RuntimeInformation.ProcessArchitecture} build yet. "
+                       + $"{RuntimeInformation.ProcessArchitecture} build. "
                        + "Download the latest from the GitHub releases page.");
                 }
                 return;
             }
 
-            var mgr = new UpdateManager(new GithubSource(RepoUrl, null, false, null));
+            var mgr = new UpdateManager(
+                new GithubSource(RepoUrl, null, false, null),
+                new UpdateOptions { ExplicitChannel = channel });
 
             // Dev / debug / portable runs aren't Velopack-installed —
             // there's nothing to update in place. Don't nag the
