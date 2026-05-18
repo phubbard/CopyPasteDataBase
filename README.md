@@ -284,42 +284,81 @@ binaries with restricted entitlements need their own provisioning
 profile which isn't worth it for a debug tool); run the local
 `swift build -c release` output instead.
 
+`cpdb help <subcommand>` prints the full flag set for any command;
+the list below is the working reference.
+
+**Browse & restore**
+
 ```sh
-cpdb list                                 # 20 most recent
-cpdb list --kind image
-cpdb search 'github'                      # FTS5, with highlighted snippets
+cpdb list                                 # 20 most recent (default subcommand)
+cpdb list --kind image                    # filter by kind
+cpdb search 'github'                      # FTS5, highlighted snippets
 cpdb show 8439                            # full entry detail incl. every UTI
 cpdb copy 8439                            # rebuild back onto the pasteboard
 cpdb stats                                # counts + disk usage
+cpdb storage                              # tiered byte breakdown (metadata /
+                                          #   thumbnails / flavor bodies) + the
+                                          #   live / pinned / evicted counts
+cpdb --version
+```
 
-cpdb daemon                               # headless capture (use when the app isn't running)
+**Capture & import/export**
 
+```sh
+cpdb daemon                               # headless capture (when the app isn't running)
 cpdb import                               # ingest ~/Library/.../com.wiheads.paste/Paste.db
+cpdb import-urls FILE [--dry-run] [--spread-seconds N]
+                                          # seed from one http(s)://|file:// URL
+                                          #   per line; each treated as a clipboard
+                                          #   copy so links enrich in the background.
+                                          #   --spread-seconds backdates captured_at
+                                          #   so the import doesn't collapse to one
+                                          #   timestamp. #-comments + blanks skipped.
+cpdb export --format md|csv|html [--output PATH] [--limit N] [--include-evicted]
+                                          # portable dump (metadata + text, no
+                                          #   flavor bytes). stdout if no --output.
+```
 
+**Maintenance**
+
+```sh
 cpdb regenerate-thumbnails [--force]      # backfill image thumbnails; reclassifies
-                                          #   kind=file entries that have image payload
+                                          #   kind=file entries with image payload
 cpdb analyze-images [--force] [--languages en-US fr-FR]
                                           # OCR + classify every image entry
+cpdb fetch-link-titles [--limit N] [--force] [--retry-empty] [--dry-run]
+                                          # background link-title/thumbnail backfill.
+                                          #   --retry-empty re-tries only rows that
+                                          #   came back empty (no full re-fetch).
+cpdb reclassify-kinds [--dry-run]         # retro-fix kind=text rows that are
+                                          #   actually single URLs → kind=link
+cpdb dedupe [--dry-run] [--window 5.0] [--links-all-time]
+                                          # collapse near-dup captures (same kind +
+                                          #   trimmed text within window seconds).
+                                          #   --links-all-time ignores the window
+                                          #   for kind=link (catches loginwindow /
+                                          #   multi-Mac phantoms days apart).
+cpdb backfill-titles [--dry-run]          # one-off fix for the v2.5.0–2.5.2
+                                          #   bare-file://-URL title regression
 cpdb forget-source-app com.apple.Passwords [--dry-run]
                                           # hard-delete everything ever captured
-                                          # from a given app
-
+                                          #   from a given app
+cpdb evict --before-days N [--dry-run]    # discard flavor bodies older than N days
+                                          #   (metadata + thumbnails kept; pinned
+                                          #   entries skipped)
 cpdb gc                                   # VACUUM the database
-cpdb --version
+cpdb fixture {snapshot|list|env|path|delete} NAME
+                                          # snapshot the live data dir to a named
+                                          #   side copy for safe testing; `env`
+                                          #   prints the CPDB_SUPPORT_DIR override
+```
 
+**Sync (CloudKit, macOS only)**
+
+```sh
 cpdb sync status                          # push-queue depth + last pull time
 cpdb sync push-once                       # drain one batch to CloudKit
 cpdb sync pull-once [--reset]             # pull all remote changes
-
-cpdb dedupe [--dry-run] [--window 5.0]    # collapse near-duplicate captures
-                                          #   (same kind + trimmed text within
-                                          #   window seconds). Tombstones
-                                          #   losers; pushes via CloudKit so
-                                          #   iOS / sibling Macs catch up.
-cpdb backfill-titles [--dry-run]          # fix entries whose title got stored
-                                          #   as a bare file:// URL (a v2.5.0–
-                                          #   2.5.2 regression for some
-                                          #   screenshot tools).
 ```
 
 ## Preferences
