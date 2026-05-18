@@ -10,6 +10,8 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+## [2.9.4] – 2026-05-18
+
 - **Accessibility (and all TCC grants) survive updates — stable
   Designated Requirement.** Bug caught by the auto-update test: a
   running build showed Accessibility as not-granted even though the
