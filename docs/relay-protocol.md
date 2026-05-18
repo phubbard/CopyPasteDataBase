@@ -11,6 +11,17 @@ and Windows clients implement against it; the relay implements the
 server side. Changes here are versioned (the URL prefix is `/v1/`)
 and require corresponding client + server release.
 
+> **Heads-up — superseding design parked.** New product
+> requirements (user accounts, per-tier device limits, rate
+> limits, OAuth/SSO for enterprise) mean the blind-PSK model in
+> this doc is **not** the long-term target. The future direction
+> is captured in
+> [`relay-v2-accounts-roadmap.md`](relay-v2-accounts-roadmap.md)
+> (deferred, not started). This v1 doc + the `cpdb-relay/`
+> scaffold remain the current shipped state and a code reference;
+> don't begin a client implementation against v1 without
+> re-confirming scope.
+
 ---
 
 ## Threat model
