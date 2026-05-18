@@ -12,6 +12,21 @@ dated `[1.X.Y]` heading and reset `[Unreleased]` to empty.
 
 ## [Unreleased]
 
+- **Boot diagnostics + empty-DB circuit breaker.** Hardening
+  after an unexplained, unrecoverable history loss. Two parts:
+  - *Gc audit log.* `Gc.Run()` returns a `Stats` (tombstoned /
+    hard-deleted / orphaned) that was previously discarded — a
+    destructive sweep left no trace. It is now written to
+    `%LOCALAPPDATA%\cpdb\gc.log` (`liveBefore` → `liveAfter`)
+    alongside the other diagnostic logs.
+  - *Circuit breaker.* Each clean boot records the live-entry
+    count to a `.entrycount` sidecar. If the next boot finds the
+    DB went non-empty → zero, cpdb-win skips Gc, refuses to start
+    capture (the DB is frozen for inspection), writes a loud
+    `DATA-LOSS-WARNING.txt`, and tells the user. One-shot — the
+    marker is rewritten so a deliberate "clear history" doesn't
+    lock the app out.
+
 ## [1.11.0] – 2026-05-11
 
 - **Client-side auto-update (x64 + arm64).** Functional parity

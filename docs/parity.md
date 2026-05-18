@@ -89,6 +89,7 @@ Legend:
 | Size-budget eviction (LRU + size-weighted) | ⏳ planned | — | ⏳ | not yet implemented anywhere |
 | Per-kind quotas | ⏳ planned | — | ⏳ | optional advanced feature |
 | iOS hydrate-on-demand | — | ⏳ planned | — | iOS-specific: pull metadata + thumbnail eagerly, fetch flavor body on detail-view open |
+| Gc audit log + empty-DB circuit breaker | — | — | ✅ v1.12.0 | Windows-specific hardening after an unexplained history loss: Gc `Stats` written to `gc.log`; a non-empty→empty boot skips Gc, refuses to start capture, and warns. No Mac/iOS equivalent required |
 
 ## Data portability — import / export (v2.9 series)
 

@@ -26,6 +26,15 @@ public sealed class AppHost : IDisposable
     public LinkBackfillService LinkBackfill { get; }
     public AppPaths.Resolved Paths { get; }
 
+    /// <summary>
+    /// True when this boot tripped the empty-DB circuit breaker (the
+    /// previous clean run had live entries, this one has none). When set,
+    /// Gc was skipped and capture was <b>not</b> started — the DB is
+    /// frozen for forensics and a <c>DATA-LOSS-WARNING.txt</c> was
+    /// written. The UI layer surfaces this to the user.
+    /// </summary>
+    public bool SuspectedDataLoss { get; }
+
     private AppHost(
         AppPaths.Resolved paths,
         SqliteConnection db,
@@ -34,7 +43,8 @@ public sealed class AppHost : IDisposable
         EntryRepository entries,
         CaptureService capture,
         LinkMetadataFetcher linkFetcher,
-        LinkBackfillService linkBackfill)
+        LinkBackfillService linkBackfill,
+        bool suspectedDataLoss)
     {
         Paths = paths;
         Database = db;
@@ -44,6 +54,7 @@ public sealed class AppHost : IDisposable
         Capture = capture;
         LinkFetcher = linkFetcher;
         LinkBackfill = linkBackfill;
+        SuspectedDataLoss = suspectedDataLoss;
     }
 
     public static AppHost Bootstrap(string? rootOverride = null)
@@ -59,9 +70,39 @@ public sealed class AppHost : IDisposable
 
         var blobs = new BlobStore(paths.Blobs);
 
-        // Cheap startup sweep: caps the live entry count, hard-deletes
-        // 30-day-old tombstones, and removes blob files nothing references.
-        new Gc(db, blobs).Run();
+        // Empty-DB circuit breaker. Compare this boot's live-entry count
+        // against the count the last clean run recorded. A non-empty →
+        // empty transition is treated as suspected data loss: skip Gc
+        // (never compound a loss with a destructive sweep), don't start
+        // capture (freeze the DB for inspection), and write a loud
+        // DATA-LOSS-WARNING.txt. One-shot: the marker is rewritten below
+        // so a deliberate "clear history" doesn't lock the app forever.
+        var liveBefore = BootDiagnostics.LiveEntryCount(db);
+        var marker = BootDiagnostics.ReadEntryMarker(paths.Root);
+        var suspectedDataLoss = BootDiagnostics.IsSuspectedDataLoss(marker, liveBefore);
+
+        if (suspectedDataLoss)
+        {
+            BootDiagnostics.Log(paths.Root,
+                $"SUSPECTED DATA LOSS: previous marker={marker} liveNow={liveBefore} "
+              + "— Gc SKIPPED, capture WILL NOT START");
+            BootDiagnostics.WriteDataLossWarning(paths.Root, marker!.Value);
+        }
+        else
+        {
+            // Cheap startup sweep: caps the live entry count, hard-deletes
+            // 30-day-old tombstones, removes unreferenced blob files. The
+            // returned Stats used to be discarded — now audited to gc.log
+            // so a destructive sweep is never silent again.
+            var stats = new Gc(db, blobs).Run();
+            var liveAfter = BootDiagnostics.LiveEntryCount(db);
+            BootDiagnostics.LogGc(paths.Root, stats, liveBefore, liveAfter);
+        }
+
+        // Record the post-boot live count as the new baseline. After a
+        // suspected loss this rewrites the marker to the (zero) current
+        // count so the guard is one-shot — the next launch starts clean.
+        BootDiagnostics.WriteEntryMarker(paths.Root, BootDiagnostics.LiveEntryCount(db));
 
         var ingestor = new Ingestor(db, blobs);
         var entries = new EntryRepository(db, blobs);
@@ -82,10 +123,17 @@ public sealed class AppHost : IDisposable
                 linkBackfill.WakeForCapture();
             }
         };
-        capture.Start();
-        linkBackfill.Start();
+        // The guard: refuse to start capture (or its link backfill) when
+        // we suspect data loss, so the frozen DB is preserved exactly as
+        // found until the user has a chance to restore a backup.
+        if (!suspectedDataLoss)
+        {
+            capture.Start();
+            linkBackfill.Start();
+        }
 
-        return new AppHost(paths, db, blobs, ingestor, entries, capture, linkFetcher, linkBackfill);
+        return new AppHost(paths, db, blobs, ingestor, entries, capture,
+            linkFetcher, linkBackfill, suspectedDataLoss);
     }
 
     public void Dispose()
