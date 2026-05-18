@@ -10,6 +10,8 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+## [2.9.2] – 2026-05-18
+
 - **Auto-update end-to-end verification.** Trivial release cut
   solely to prove the v2.9.1 Sparkle pipeline works in the wild:
   a running 2.9.1 install detecting, downloading, EdDSA-verifying,
