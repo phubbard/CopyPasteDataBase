@@ -152,6 +152,16 @@ final class StatusItemController {
 
         menu.addItem(.separator())
 
+        let updateItem = NSMenuItem(
+            title: "Check for Updates…",
+            action: #selector(StatusItemActions.checkForUpdates),
+            keyEquivalent: ""
+        )
+        updateItem.target = StatusItemActions.shared
+        menu.addItem(updateItem)
+
+        menu.addItem(.separator())
+
         let quitItem = NSMenuItem(title: "Quit cpdb", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         menu.addItem(quitItem)
 
@@ -185,6 +195,10 @@ final class StatusItemController {
 
     @objc func pullNow() {
         NotificationCenter.default.post(name: .cpdbPullNow, object: nil)
+    }
+
+    @objc func checkForUpdates() {
+        UpdaterController.shared.checkForUpdates()
     }
 
     @objc func streamLogs() {

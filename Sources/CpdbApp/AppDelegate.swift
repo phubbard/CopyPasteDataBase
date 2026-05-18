@@ -67,6 +67,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         statusItem = StatusItemController()
 
+        // Arm Sparkle. Constructing `.shared` starts the daily
+        // background check timer; `start()` just logs the intent.
+        // No-op when launched from a non-bundle context (SPM run),
+        // which the headless CLI never does anyway.
+        UpdaterController.shared.start()
+
         // Register the global hotkey handler. KeyboardShortcuts handles the
         // actual key registration via Carbon / AppKit — we just hand it a
         // closure to run whenever the user's chosen combo fires.

@@ -21,9 +21,9 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>2.9.0</string>
+	<string>2.9.1</string>
 	<key>CFBundleVersion</key>
-	<string>2.9.0</string>
+	<string>2.9.1</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>14.0</string>
 	<key>LSUIElement</key>
@@ -40,5 +40,15 @@
 	<false/>
 	<key>NSSupportsSuddenTermination</key>
 	<false/>
+	<key>SUAutomaticallyUpdate</key>
+	<false/>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
+	<key>SUFeedURL</key>
+	<string>https://github.com/phubbard/CopyPasteDataBase/releases/latest/download/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>rOS7OWBPkZQu2jr7GJTM4BdA90ctqG0ffQeFDOaIa1g=</string>
+	<key>SUScheduledCheckInterval</key>
+	<integer>86400</integer>
 </dict>
 </plist>

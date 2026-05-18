@@ -10,6 +10,28 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+- **In-app auto-update via Sparkle 2.** The direct-download Mac
+  build now checks for updates on its own. A new "Check for
+  Updates…" item in the menu-bar menu triggers an on-demand check;
+  a background check also runs once a day (`SUScheduledCheckInterval
+  = 86400`). Updates are EdDSA-signed (`SUPublicEDKey` in
+  Info.plist, private key offline) and verified before install.
+  `SUAutomaticallyUpdate = false` — cpdb *prompts* rather than
+  silently swapping, which is right for a menu-bar app you rarely
+  quit (a silent install-on-quit could sit pending for weeks).
+    - Feed is the stable `releases/latest/download/appcast.xml`
+      GitHub URL, so every release just uploads its own appcast.
+    - `make appcast` generates + EdDSA-signs the appcast from the
+      notarized DMG; wired into `make publish` and the
+      `publish-github` asset upload.
+    - `Sparkle.framework` is embedded into `Contents/Frameworks/`
+      and signed inside-out (`scripts/sign-nested.sh`) — `codesign
+      --deep` mis-signs Sparkle's XPC helpers and fails notary, so
+      both the dev-sign and Developer-ID re-sign paths now do
+      explicit inside-out signing instead of `--deep`.
+    - Sparkle linked only by the GUI app; the headless CLI +
+      libraries stay dependency-free.
+
 ## [2.9.0] – 2026-05-18
 
 - **`cpdb import-urls <file>`.** Bulk-seed the database from a text

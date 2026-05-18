@@ -145,6 +145,21 @@ build-app: verify-version stamp-build
 	mkdir -p $(APP_BUNDLE_DIR)/Contents/MacOS
 	mkdir -p $(APP_BUNDLE_DIR)/Contents/Resources
 	cp $(SWIFT_BUILD_OUTPUT)/CpdbApp $(APP_BUNDLE_DIR)/Contents/MacOS/$(APP_NAME)
+	# Embed Sparkle.framework. SPM links it as `@rpath/Sparkle.framework`
+	# but only drops the framework next to the product binary in
+	# .build — it never bundles it. Copy it into the standard
+	# Contents/Frameworks/ location and add the matching rpath so
+	# the dynamic loader finds it at launch (without this the app
+	# crashes immediately with "Library not loaded: Sparkle").
+	@if [ -d "$(SWIFT_BUILD_OUTPUT)/Sparkle.framework" ]; then \
+	    mkdir -p $(APP_BUNDLE_DIR)/Contents/Frameworks; \
+	    cp -R "$(SWIFT_BUILD_OUTPUT)/Sparkle.framework" $(APP_BUNDLE_DIR)/Contents/Frameworks/; \
+	    install_name_tool -add_rpath @executable_path/../Frameworks \
+	        $(APP_BUNDLE_DIR)/Contents/MacOS/$(APP_NAME) 2>/dev/null || true; \
+	    echo "  embedded Sparkle.framework"; \
+	else \
+	    echo "warning: Sparkle.framework not found at $(SWIFT_BUILD_OUTPUT) — auto-update disabled"; \
+	fi
 	# App icon. Generated from SF Symbols via `scripts/make-icon.swift`.
 	# CFBundleIconFile in Info.plist names "AppIcon" (no extension); the
 	# resource must live at Contents/Resources/AppIcon.icns.
@@ -207,11 +222,11 @@ build-app: verify-version stamp-build
 	# assertion when KeyboardShortcuts (or any other resource-bearing
 	# package) tries to read its bundle. No --entitlements on these;
 	# resource bundles don't claim capabilities.
-	@for b in $(APP_BUNDLE_DIR)/*.bundle; do \
-	    if [ -d "$$b" ]; then \
-	        codesign --force --sign "$(SIGNING_IDENTITY)" --timestamp=none "$$b"; \
-	    fi; \
-	done
+	# Sign all nested code (Sparkle.framework inside-out + SPM
+	# resource bundles) before the outer app. The script handles
+	# the order codesign requires; `--deep` can't be used because
+	# it mis-signs Sparkle's helper tools.
+	scripts/sign-nested.sh $(APP_BUNDLE_DIR) "$(SIGNING_IDENTITY)" none
 	codesign --force --sign "$(SIGNING_IDENTITY)" \
 	         --entitlements $(ENTITLEMENTS) \
 	         --timestamp=none --options runtime $(APP_BUNDLE_DIR)
@@ -337,7 +352,12 @@ sign-release: verify-developer-id
 	@# matching profile.
 	@cp $(DEVELOPER_ID_PROFILE) $(APP_BUNDLE_DIR)/Contents/embedded.provisionprofile
 	@echo "Re-signing $(APP_BUNDLE_DIR) with Developer ID…"
-	@codesign --force --deep --sign "$(DEVELOPER_ID_IDENTITY)" \
+	@# Inside-out: Sparkle helpers + resource bundles first (the
+	@# script), then the outer app. NOT `--deep` — it mis-signs
+	@# Sparkle's XPC services / Updater.app / Autoupdate and
+	@# notarization rejects the result.
+	@scripts/sign-nested.sh $(APP_BUNDLE_DIR) "$(DEVELOPER_ID_IDENTITY)" tsa
+	@codesign --force --sign "$(DEVELOPER_ID_IDENTITY)" \
 	    --options=runtime --timestamp \
 	    --entitlements $(RELEASE_ENTITLEMENTS) \
 	    $(APP_BUNDLE_DIR)
@@ -396,9 +416,36 @@ notarize-dmg: dmg
 	@echo "✓ $(DMG_FILE) signed, notarized, stapled"
 	@shasum -a 256 $(DMG_FILE)
 
-# End-to-end: build universal release artefacts, then DMG + notarize.
+# Generate the Sparkle appcast.xml for the just-built DMG. The
+# EdDSA private key is read from the login keychain (created once
+# via Sparkle's generate_keys; the matching SUPublicEDKey is in
+# Info.plist). generate_appcast signs the archive + emits an
+# appcast whose <enclosure> points at the GitHub release asset URL
+# for THIS version. SUFeedURL in Info.plist is the stable
+# `releases/latest/download/appcast.xml`, so each release just
+# needs to upload its own appcast.xml (done by publish-github).
+#
+# We stage only the .dmg into a temp dir — generate_appcast scans
+# a directory and we don't want it to also enclose the .app.zip
+# (same version, would collide).
+APPCAST_TOOL = .build/artifacts/sparkle/Sparkle/bin/generate_appcast
+appcast:
+	@test -f $(APPCAST_TOOL) || { echo "error: $(APPCAST_TOOL) missing — run 'swift package resolve'"; exit 1; }
+	@test -f $(DMG_FILE) || { echo "error: $(DMG_FILE) not built — run 'make publish' first"; exit 1; }
+	@rm -rf $(BUILD_DIR)/appcast-stage
+	@mkdir -p $(BUILD_DIR)/appcast-stage
+	@cp $(DMG_FILE) $(BUILD_DIR)/appcast-stage/
+	@$(APPCAST_TOOL) \
+	    --download-url-prefix "https://github.com/phubbard/CopyPasteDataBase/releases/download/v$(VERSION)/" \
+	    $(BUILD_DIR)/appcast-stage
+	@cp $(BUILD_DIR)/appcast-stage/appcast.xml $(RELEASE_DIR)/appcast.xml
+	@echo "✓ appcast.xml → $(RELEASE_DIR)/appcast.xml"
+	@grep -o 'sparkle:version="[^"]*"' $(RELEASE_DIR)/appcast.xml | head -1
+
+# End-to-end: build universal release artefacts, then DMG +
+# notarize, then the Sparkle appcast.
 # This is what you run before tagging a public release.
-publish: release notarize-dmg
+publish: release notarize-dmg appcast
 	@echo
 	@echo "Publish complete. Artefacts in $(RELEASE_DIR):"
 	@ls -la $(RELEASE_DIR)
@@ -498,6 +545,7 @@ publish-github: verify-version
 	        $(RELEASE_DIR)/cpdb-v$(VERSION).app.zip \
 	        $(RELEASE_DIR)/cpdb \
 	        $(RELEASE_DIR)/SHA256SUMS \
+	        $(RELEASE_DIR)/appcast.xml \
 	        --clobber; \
 	else \
 	    gh release create "v$(VERSION)" \
@@ -506,7 +554,8 @@ publish-github: verify-version
 	        $(RELEASE_DIR)/cpdb-v$(VERSION).dmg \
 	        $(RELEASE_DIR)/cpdb-v$(VERSION).app.zip \
 	        $(RELEASE_DIR)/cpdb \
-	        $(RELEASE_DIR)/SHA256SUMS; \
+	        $(RELEASE_DIR)/SHA256SUMS \
+	        $(RELEASE_DIR)/appcast.xml; \
 	fi
 	@echo
 	@echo "✓ https://github.com/phubbard/CopyPasteDataBase/releases/tag/v$(VERSION)"
