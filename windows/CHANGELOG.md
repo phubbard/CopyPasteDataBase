@@ -12,6 +12,58 @@ dated `[1.X.Y]` heading and reset `[Unreleased]` to empty.
 
 ## [Unreleased]
 
+## [1.10.0] – 2026-05-11
+
+- **Data portability — URL-list import + history export.** Parity
+  with macOS v2.9.0 / v2.9.5 (`docs/parity.md § Data portability`).
+  One engine implementation per feature, shared by the CLI and the
+  WinUI Preferences pane (not duplicated):
+  - `CpdbWin.Core.Portability.UrlImporter` — parse a URL list
+    (trim, drop blank + `#`-comment lines, accept only
+    `http`/`https`/`file`, reject others with a reason). Each
+    accepted line becomes a synthetic `public.url` +
+    `public.utf8-plain-text` snapshot ingested via the normal path
+    so it lands kind=link and enriches through the backfill loop.
+    Attributed to a synthetic "cpdb import" source app
+    (`cpdb.import`) so seeded rows are distinguishable.
+    `spreadSeconds` backdates `captured_at` (oldest line = oldest)
+    so a bulk import doesn't collapse to one timestamp.
+  - `CpdbWin.Core.Portability.HistoryExporter` — newest-first by
+    `created_at`, metadata + text only (no flavor bytes). Three
+    formats: **md** (paragraph per entry), **csv** (RFC-4180,
+    exactly 12 columns: `id,kind,pinned,evicted,created_at,
+    captured_at,source_app,device,headline,text_preview,ocr_text,
+    image_tags`), **html** (self-contained, dark-mode `@media`, no
+    external assets). `headline` = link_title › title ›
+    text_preview › `(kind)`. Timestamps ISO-8601. `--limit` and
+    `--include-evicted` honored.
+- **CLI: `cpdb-win import-urls` + `cpdb-win export`.**
+  - `cpdb-win import-urls FILE [--dry-run] [--spread-seconds N]`
+    — `--dry-run` prints the accept/reject plan without touching
+    the store.
+  - `cpdb-win export --format md|csv|html [--output FILE]
+    [--limit N] [--include-evicted]` — no `--output` streams the
+    document to stdout (pipes / redirects), so
+    `cpdb-win export --format csv > history.csv` works.
+- **Preferences "Import / Export" section.** File-open picker →
+  import (1-hour spread); format combo + file-save picker
+  (pre-named `cpdb-export-<yyyy-MM-dd>.<ext>`) → export. Both run
+  on a worker thread with a private `SqliteConnection` (WAL
+  coexists with the live capture connection — never touch the
+  shared `_host.Database` cross-thread); a status line reports the
+  result. File pickers use `InitializeWithWindow` since the app is
+  unpackaged WinUI 3.
+
+Tests: +33 (410 total green; was 377). `UrlImporterTests`:
+scheme-filter Theory, comment/blank stripping, importer-app
+attribution, dup→bump, empty set, `spreadSeconds` oldest-first
+backdating, snapshot flavor shape. `HistoryExporterTests`:
+format parsing + extension, newest-first ordering + limit +
+tombstone exclusion, headline precedence, CSV 12-column header +
+RFC-4180 escaping + ISO-8601 timestamps + pinned/evicted flags,
+Markdown shape, HTML self-contained + dark-mode + escaping, "no
+flavor bytes" guard.
+
 ## [1.9.0] – 2026-05-01
 
 - **Paste-back actually works now.** Picking an entry in the popup

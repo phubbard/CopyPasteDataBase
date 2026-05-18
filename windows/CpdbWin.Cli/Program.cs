@@ -1,4 +1,7 @@
+using CpdbWin.Core.Identity;
+using CpdbWin.Core.Ingest;
 using CpdbWin.Core.Maintenance;
+using CpdbWin.Core.Portability;
 using CpdbWin.Core.Store;
 using Microsoft.Data.Sqlite;
 using DbHelper = CpdbWin.Core.Store.Database;
@@ -62,8 +65,111 @@ public static class Program
             "reclassify-kinds"   => RunReclassify(db),
             "backfill-titles"    => RunBackfillTitles(db, args[1..]),
             "dedupe"             => RunDedupe(db, args[1..]),
+            "import-urls"        => RunImportUrls(db, paths, args[1..]),
+            "export"             => RunExport(db, args[1..]),
             _                    => UnknownCommand(args[0]),
         };
+    }
+
+    private static int RunImportUrls(SqliteConnection db, AppPaths.Resolved paths, string[] rest)
+    {
+        // First positional that isn't a flag is the file path.
+        var file = rest.FirstOrDefault(a => !a.StartsWith("--"));
+        if (file is null)
+        {
+            Console.Error.WriteLine("cpdb-win import-urls: missing FILE argument");
+            Console.Error.WriteLine("  usage: cpdb-win import-urls FILE [--dry-run] [--spread-seconds N]");
+            return 2;
+        }
+        if (!File.Exists(file))
+        {
+            Console.Error.WriteLine($"cpdb-win import-urls: file not found: {file}");
+            return 1;
+        }
+
+        var dryRun = rest.Contains("--dry-run");
+        double spread = 0;
+        var spreadIdx = Array.IndexOf(rest, "--spread-seconds");
+        if (spreadIdx >= 0 && spreadIdx + 1 < rest.Length
+            && double.TryParse(rest[spreadIdx + 1],
+                System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out var s))
+        {
+            spread = s;
+        }
+
+        var raw = File.ReadAllText(file);
+
+        if (dryRun)
+        {
+            var (accepted, rejected) = UrlImporter.Parse(raw);
+            Console.WriteLine($"import-urls --dry-run: {accepted.Count} URL(s) would be imported"
+                + (spread > 0 ? $", spread over {spread:0}s" : "")
+                + $"; {rejected.Count} line(s) rejected");
+            foreach (var rj in rejected.Take(20))
+                Console.WriteLine($"  rejected: {rj.Line}  ({rj.Reason})");
+            if (rejected.Count > 20)
+                Console.WriteLine($"  … and {rejected.Count - 20} more");
+            return 0;
+        }
+
+        var blobs = new BlobStore(paths.Blobs);
+        var ingestor = new Ingestor(db, blobs);
+        var device = DeviceIdentity.Read();
+        var result = UrlImporter.Run(raw, ingestor, device, spread);
+        Console.WriteLine(
+            $"import-urls: {result.AcceptedCount} accepted "
+            + $"({result.Inserted} new, {result.Bumped} re-copied, {result.Skipped} skipped); "
+            + $"{result.Rejected.Count} rejected");
+        foreach (var rj in result.Rejected.Take(20))
+            Console.WriteLine($"  rejected: {rj.Line}  ({rj.Reason})");
+        if (result.Rejected.Count > 20)
+            Console.WriteLine($"  … and {result.Rejected.Count - 20} more");
+        return 0;
+    }
+
+    private static int RunExport(SqliteConnection db, string[] rest)
+    {
+        var fmtIdx = Array.IndexOf(rest, "--format");
+        if (fmtIdx < 0 || fmtIdx + 1 >= rest.Length)
+        {
+            Console.Error.WriteLine("cpdb-win export: --format md|csv|html required");
+            Console.Error.WriteLine("  usage: cpdb-win export --format md|csv|html "
+                + "[--output FILE] [--limit N] [--include-evicted]");
+            return 2;
+        }
+        if (!HistoryExporter.TryParseFormat(rest[fmtIdx + 1], out var format))
+        {
+            Console.Error.WriteLine($"cpdb-win export: unknown format '{rest[fmtIdx + 1]}' (md|csv|html)");
+            return 2;
+        }
+
+        int limit = int.MaxValue;
+        var limitIdx = Array.IndexOf(rest, "--limit");
+        if (limitIdx >= 0 && limitIdx + 1 < rest.Length
+            && int.TryParse(rest[limitIdx + 1], out var l) && l > 0)
+        {
+            limit = l;
+        }
+
+        var includeEvicted = rest.Contains("--include-evicted");
+
+        var (doc, count) = HistoryExporter.Export(db, format, limit, includeEvicted);
+
+        var outIdx = Array.IndexOf(rest, "--output");
+        if (outIdx >= 0 && outIdx + 1 < rest.Length)
+        {
+            var path = rest[outIdx + 1];
+            File.WriteAllText(path, doc);
+            Console.Error.WriteLine($"export: wrote {count} entries to {path}");
+        }
+        else
+        {
+            // No --output: stream to stdout so it pipes / redirects.
+            Console.Out.Write(doc);
+            Console.Error.WriteLine($"export: {count} entries");
+        }
+        return 0;
     }
 
     private static int RunReclassify(SqliteConnection db)
@@ -138,6 +244,21 @@ public static class Program
                   kind=link rows, keep the newest and tombstone the
                   rest. Salvages link_title from a sibling first if
                   the survivor lacks one.
+
+              cpdb-win import-urls FILE [--dry-run] [--spread-seconds N]
+                  Bulk-seed from a URL list (one per line; blank +
+                  #-comment lines skipped; http/https/file only).
+                  Each accepted line is ingested as a synthetic
+                  clipboard capture so links enrich via the normal
+                  backfill. --spread-seconds backdates captured_at
+                  so the import doesn't collapse to one timestamp.
+
+              cpdb-win export --format md|csv|html [--output FILE]
+                              [--limit N] [--include-evicted]
+                  Render clipboard history (metadata + text, no
+                  flavor bytes), newest-first. Without --output the
+                  document streams to stdout. --include-evicted
+                  keeps body-evicted rows.
 
               cpdb-win --help
                   Print this message.
