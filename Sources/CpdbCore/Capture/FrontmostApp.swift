@@ -8,6 +8,23 @@ public struct FrontmostAppInfo: Sendable {
     public var name: String
     /// Raw icon bytes, PNG-encoded. Nil if we couldn't resolve.
     public var iconPng: Data?
+
+    public init(bundleId: String, name: String, iconPng: Data? = nil) {
+        self.bundleId = bundleId
+        self.name = name
+        self.iconPng = iconPng
+    }
+
+    /// Synthetic source-app identity used by non-clipboard ingest
+    /// paths (the `cpdb import` command, future scripted seeders).
+    /// Entries attributed to this show "cpdb import" as their
+    /// source app in the popup + tooltips, distinguishing seeded
+    /// data from real captures.
+    public static let importer = FrontmostAppInfo(
+        bundleId: "net.phfactor.cpdb.importer",
+        name: "cpdb import",
+        iconPng: nil
+    )
 }
 
 public enum FrontmostApp {

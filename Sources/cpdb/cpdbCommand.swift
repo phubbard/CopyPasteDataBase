@@ -36,6 +36,8 @@ struct CpdbCommand: ParsableCommand {
             Fixture.self,
             FetchLinkTitles.self,
             ReclassifyKinds.self,
+            ImportUrls.self,
+            Export.self,
         ],
         defaultSubcommand: ListCommand.self
     )

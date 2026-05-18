@@ -10,6 +10,29 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+- **`cpdb import-urls <file>`.** Bulk-seed the database from a text
+  file of one http(s):// or file:// URL per line. Each line is
+  ingested through the normal capture path — so kind=link rows
+  enter the link-metadata backfill queue and get titles +
+  thumbnails enriched in the background just like a real copy.
+  Entries are attributed to a synthetic "cpdb import" source app
+  (new `FrontmostAppInfo.importer`) so seeded data is
+  distinguishable from real captures. Blank lines and `#`-comments
+  skipped; non-http(s)/file schemes rejected with a reason.
+  `--dry-run` previews; `--spread-seconds N` spreads `captured_at`
+  backwards over N seconds (oldest line = oldest) so an import
+  doesn't collapse into a single timestamp. Use cases: seeding a
+  fresh install from a bookmarks export, migrating a read-later
+  list, scripted ingestion.
+- **`cpdb export --format {md,csv,html}`.** Dump live history to a
+  portable document. Markdown is a paragraph per entry (headline +
+  source/device/timestamp badges + full text in a code block +
+  OCR/tags). CSV is RFC-4180 with 12 columns. HTML is a
+  self-contained styled page with dark-mode support, no external
+  assets. Newest-first by `created_at`, mirrors the popup. `--output`
+  writes to a file (else stdout), `--limit N` caps, evicted-body
+  entries included by default (metadata still present).
+
 ## [2.8.6] – 2026-05-01
 
 - **Reject CAPTCHA / bot-check pages as transient failures.** Reddit
