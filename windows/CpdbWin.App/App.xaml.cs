@@ -65,6 +65,27 @@ public partial class App : Application
         VelopackApp.Build().Run();
 
         Host = AppHost.Bootstrap();
+
+        // Empty-DB circuit breaker tripped: the previous clean run had
+        // clipboard history, this boot found none. AppHost has already
+        // skipped Gc + capture and written DATA-LOSS-WARNING.txt; tell
+        // the user loudly so a silent loss is never a mystery again.
+        if (Host.SuspectedDataLoss)
+        {
+            const uint mbFlags = 0x0 | 0x30 | 0x10000 | 0x40000; // OK | WARN | SETFG | TOPMOST
+            MessageBoxW(IntPtr.Zero,
+                "cpdb-win started with an EMPTY clipboard history, but the "
+              + "previous run had saved entries.\n\n"
+              + "As a precaution, garbage collection and clipboard capture "
+              + "have been turned OFF for this launch so the database is "
+              + "preserved untouched.\n\n"
+              + $"See DATA-LOSS-WARNING.txt in:\n{Host.Paths.Root}\n\n"
+              + "If you have a backup, quit now and restore it before "
+              + "relaunching. If you cleared history on purpose, just "
+              + "relaunch — capture resumes normally.",
+                "cpdb-win — suspected data loss", mbFlags);
+        }
+
         _settingsPath = Path.Combine(Host.Paths.Root, "settings.json");
         _settings = UserSettings.Load(_settingsPath);
 
@@ -493,6 +514,9 @@ public partial class App : Application
     [DllImport("user32.dll", SetLastError = true)]
     private static extern uint SendInput(uint nInputs,
         [MarshalAs(UnmanagedType.LPArray)] INPUT[] pInputs, int cbSize);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern int MessageBoxW(IntPtr hWnd, string text, string caption, uint type);
 
     private static void ForceForeground(IntPtr hwnd)
     {
