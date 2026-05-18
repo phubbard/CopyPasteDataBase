@@ -132,7 +132,7 @@ public partial class App : Application
             _prefsWindow.Activate();
             return;
         }
-        _prefsWindow = new PreferencesWindow(_settings, _settingsPath, RegisterHotkey);
+        _prefsWindow = new PreferencesWindow(_settings, _settingsPath, RegisterHotkey, Host!);
         _prefsWindow.Closed += (_, _) => _prefsWindow = null;
         _prefsWindow.Activate();
     }

@@ -1,10 +1,14 @@
 using System.Runtime.InteropServices;
 using CpdbWin.Core;
+using CpdbWin.Core.Identity;
+using CpdbWin.Core.Portability;
 using CpdbWin.Core.Service;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
+using Windows.Storage.Pickers;
 using Windows.System;
+using WinRT.Interop;
 
 namespace CpdbWin.App;
 
@@ -13,19 +17,22 @@ public sealed partial class PreferencesWindow : Window
     private readonly UserSettings _settings;
     private readonly string _settingsPath;
     private readonly Action<HotkeyConfig> _onHotkeyChanged;
+    private readonly AppHost _host;
     private HotkeyConfig _pending;
     private bool _recording;
 
     public PreferencesWindow(
         UserSettings settings,
         string settingsPath,
-        Action<HotkeyConfig> onHotkeyChanged)
+        Action<HotkeyConfig> onHotkeyChanged,
+        AppHost host)
     {
         InitializeComponent();
         Title = $"{CpdbVersion.Description} preferences";
         _settings = settings;
         _settingsPath = settingsPath;
         _onHotkeyChanged = onHotkeyChanged;
+        _host = host;
         _pending = settings.Hotkey;
         HotkeyBox.Text = HotkeyFormatter.Format(_pending);
 
@@ -108,6 +115,116 @@ public sealed partial class PreferencesWindow : Window
     }
 
     private void Cancel_Click(object sender, RoutedEventArgs e) => this.Close();
+
+    // ─── Import / Export (docs/parity.md § Data portability) ─────────────
+    //
+    // Both buttons call the same engine helpers the CLI uses
+    // (CpdbWin.Core.Portability.UrlImporter / HistoryExporter) — one
+    // implementation, not two. The store work runs on a background
+    // thread (Task.Run) so a big import / export doesn't freeze the
+    // window; the status line is updated back on the UI thread.
+
+    private async void ImportUrls_Click(object sender, RoutedEventArgs e)
+    {
+        var picker = new FileOpenPicker
+        {
+            SuggestedStartLocation = PickerLocationId.DocumentsLibrary,
+        };
+        picker.FileTypeFilter.Add(".txt");
+        picker.FileTypeFilter.Add(".md");
+        picker.FileTypeFilter.Add("*");
+        // Unpackaged WinUI 3: pickers need an owner HWND or they throw.
+        InitializeWithWindow.Initialize(picker, WindowNative.GetWindowHandle(this));
+
+        var file = await picker.PickSingleFileAsync();
+        if (file is null) return;
+
+        SetPortabilityBusy(true, $"Importing {file.Name}…");
+        try
+        {
+            var raw = await Windows.Storage.FileIO.ReadTextAsync(file);
+            // Contract: the GUI uses a 1-hour spread so a bulk import
+            // doesn't collapse to a single timestamp + scramble order.
+            //
+            // Open a private SqliteConnection on the worker thread rather
+            // than reusing _host.Database / _host.Ingestor — a
+            // SqliteConnection isn't safe to touch from a thread other
+            // than the one driving the capture pipeline. WAL mode lets
+            // this second connection coexist with the live one. Same
+            // shape the CLI uses.
+            var paths = _host.Paths;
+            var result = await Task.Run(() =>
+            {
+                using var db = CpdbWin.Core.Store.Database.Open(paths.Database);
+                var blobs = new CpdbWin.Core.Store.BlobStore(paths.Blobs);
+                var ingestor = new CpdbWin.Core.Ingest.Ingestor(db, blobs);
+                var device = DeviceIdentity.Read();
+                return UrlImporter.Run(raw, ingestor, device, spreadSeconds: 3600);
+            });
+
+            var msg = $"Imported {result.AcceptedCount} URL(s): "
+                    + $"{result.Inserted} new, {result.Bumped} re-copied, "
+                    + $"{result.Skipped} skipped";
+            if (result.Rejected.Count > 0)
+                msg += $"; {result.Rejected.Count} line(s) rejected";
+            SetPortabilityBusy(false, msg);
+        }
+        catch (Exception ex)
+        {
+            SetPortabilityBusy(false, $"Import failed: {ex.Message}");
+        }
+    }
+
+    private async void ExportHistory_Click(object sender, RoutedEventArgs e)
+    {
+        var tag = (ExportFormatBox.SelectedItem as ComboBoxItem)?.Tag as string ?? "md";
+        if (!HistoryExporter.TryParseFormat(tag, out var format)) format = HistoryExporter.Format.Md;
+        var ext = HistoryExporter.FileExtension(format);
+
+        var picker = new FileSavePicker
+        {
+            SuggestedStartLocation = PickerLocationId.DocumentsLibrary,
+            SuggestedFileName = $"cpdb-export-{DateTime.Now:yyyy-MM-dd}",
+        };
+        picker.FileTypeChoices.Add(
+            format switch
+            {
+                HistoryExporter.Format.Md   => "Markdown",
+                HistoryExporter.Format.Csv  => "CSV",
+                HistoryExporter.Format.Html => "HTML",
+                _                           => "Text",
+            },
+            new List<string> { "." + ext });
+        InitializeWithWindow.Initialize(picker, WindowNative.GetWindowHandle(this));
+
+        var file = await picker.PickSaveFileAsync();
+        if (file is null) return;
+
+        SetPortabilityBusy(true, "Exporting…");
+        try
+        {
+            var paths = _host.Paths;
+            var (doc, count) = await Task.Run(() =>
+            {
+                using var db = CpdbWin.Core.Store.Database.Open(paths.Database);
+                return HistoryExporter.Export(db, format);
+            });
+            await Windows.Storage.FileIO.WriteTextAsync(file, doc);
+            SetPortabilityBusy(false, $"Exported {count} entries to {file.Name}");
+        }
+        catch (Exception ex)
+        {
+            SetPortabilityBusy(false, $"Export failed: {ex.Message}");
+        }
+    }
+
+    private void SetPortabilityBusy(bool busy, string status)
+    {
+        ImportButton.IsEnabled = !busy;
+        ExportButton.IsEnabled = !busy;
+        ExportFormatBox.IsEnabled = !busy;
+        PortabilityStatus.Text = status;
+    }
 
     private static bool IsModifierKey(VirtualKey k) => k is
         VirtualKey.Control or VirtualKey.LeftControl or VirtualKey.RightControl
