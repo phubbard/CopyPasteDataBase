@@ -90,6 +90,20 @@ Legend:
 | Per-kind quotas | ⏳ planned | — | ⏳ | optional advanced feature |
 | iOS hydrate-on-demand | — | ⏳ planned | — | iOS-specific: pull metadata + thumbnail eagerly, fetch flavor body on detail-view open |
 
+## Data portability — import / export (v2.9 series)
+
+Both a CLI surface (above) and a GUI surface (Preferences →
+"Import / Export"). The logic is factored into reusable types so
+CLI and GUI are one implementation — Windows should mirror that
+(one engine helper, called by both `cpdb-win.exe` and the WinUI
+Preferences pane) rather than duplicating.
+
+| Feature | macOS | iOS | Windows | Contract / notes |
+|---|---|---|---|---|
+| URL-list import | ✅ v2.9.0 | — | ⏳ | `UrlImporter` (CpdbCore). Parse: trim, drop blank + `#`-comment lines, accept only `http`/`https`/`file` schemes (reject others with a reason). Each accepted line → synthetic clipboard snapshot with `public.url` + `public.utf8-plain-text` flavors → normal ingest path → kind=link → background enrichment. Source app = synthetic "cpdb import" identity so seeded rows are distinguishable. `spreadSeconds` backdates `captured_at` (oldest line = oldest) so the import doesn't collapse to one timestamp |
+| History export | ✅ v2.9.0 | — | ⏳ | `HistoryExporter` (CpdbShared). Newest-first by `created_at`, metadata + text only (no flavor bytes — an archive is for reading/search, not restore). Three formats: **md** = `#` header + paragraph-per-entry (headline · source · device · ts, body in fenced block, OCR/tags as blockquotes); **csv** = RFC-4180, exactly these 12 columns in order: `id,kind,pinned,evicted,created_at,captured_at,source_app,device,headline,text_preview,ocr_text,image_tags`; **html** = self-contained styled page, dark-mode `@media`, no external assets. `headline` = link_title › title › text_preview › `(kind)`. Timestamps ISO-8601 |
+| Import/Export GUI (Preferences) | ✅ v2.9.5 | — | ⏳ | Windows: WinUI Preferences pane — file-open dialog → import engine helper (1-hour spread); format combo + file-save dialog (pre-named `cpdb-export-<date>.<ext>`) → export engine helper. Run off the UI thread; status line for the result |
+
 ## CLI surface
 
 The Mac CLI has accumulated subcommands as the data layer grew. The
@@ -112,6 +126,9 @@ since the GUI covers them.
 | `cpdb dedupe --links-all-time` | ✅ v2.7.9 | ✅ v1.7.0 | Windows: `cpdb-win dedupe --links-all-time`. Mac v2.5.2 also had a Universal-Clipboard-echo dedup; that variant is Apple-specific |
 | `cpdb backfill-titles --retry-empty` | ✅ v2.7.8 | ✅ v1.7.0 | Windows: `cpdb-win backfill-titles --retry-empty` |
 | `cpdb reclassify-kinds` | ✅ v2.7.14 | ✅ v1.7.0 | Windows: `cpdb-win reclassify-kinds` |
+| `cpdb fetch-link-titles [--limit][--force][--retry-empty][--dry-run]` | ✅ v2.7.0 / 2.7.8 | ✅ v1.7.0 | Windows: `cpdb-win backfill-titles` family covers this |
+| `cpdb import-urls FILE [--dry-run][--spread-seconds N]` | ✅ v2.9.0 | ⏳ | one URL per line, http(s)/file only, `#`-comments + blanks skipped; ingest as synthetic clipboard captures attributed to a "cpdb import" source app so links enrich via the normal backfill. Logic in `UrlImporter` (shared by CLI + GUI) |
+| `cpdb export --format md\|csv\|html [--output][--limit][--include-evicted]` | ✅ v2.9.0 | ⏳ | metadata + text only (no flavor bytes); newest-first. Logic in `HistoryExporter` (shared by CLI + GUI). CSV is RFC-4180 12-col; HTML self-contained w/ dark mode; MD = paragraph-per-entry |
 | `cpdb sync {push-once, pull-once}` | ✅ v2.0 | — | CloudKit, Apple-only |
 
 ## Build / packaging
@@ -120,7 +137,8 @@ since the GUI covers them.
 |---|---|---|---|---|
 | Universal arm64 + x86_64 release | ✅ v2.5.7 | — | ✅ x64 | iOS is arm64-only by hardware |
 | Code signing for distribution | ✅ Developer ID | ✅ App Store team | ✅ Authenticode (planned) | Mac: notarized DMG via `make publish`; Windows: Velopack-signed MSIX |
-| Auto-update | ⏳ planned | — | ✅ Velopack | Mac path TBD (Sparkle?) |
+| Stable identity across updates | ✅ v2.9.4 | — | n/a | Mac: codesign `--requirements` pins the Team ID (`subject.OU`) not the leaf cert, so macOS TCC grants (Accessibility/Local Network) survive cert rotation + Apple-Dev↔Developer-ID swaps. Windows has no TCC-equivalent that's identity-keyed; not applicable |
+| Auto-update | ✅ Sparkle 2 (v2.9.1) | — | ✅ Velopack | Mac: EdDSA-signed appcast at `releases/latest/download/appcast.xml`, daily background check + "Check for Updates…" menu item, prompt-not-silent. e2e + consecutive-hop verified. Windows: Velopack (already shipping). Functionally at parity — different framework per platform |
 | GitHub Releases publication | ✅ via `make publish-github` | — | ✅ via `windows/release-installer.ps1` | both write to the same repo's releases page |
 
 ## How to use this table when picking up a thread
