@@ -100,6 +100,33 @@ foreach ($rid in $Rids) {
     $artifacts += $renamedPortable
 }
 
+# Velopack auto-update feed. The running app's UpdateService talks to
+# GithubSource, which reads `releases.win.json` (the default-"win"
+# channel manifest) + the `.nupkg` packages off the published release.
+# Without these on the release the in-app updater has nothing to read.
+#
+# Multi-arch caveat (Velopack 0.0.1298): both win-x64 and win-arm64
+# emit an identically-named `releases.win.json` + `CpdbWin-<ver>-
+# full.nupkg`, so a single GitHub release can only carry one arch's
+# feed. We publish the x64 feed (the majority arch); arm64 testers
+# update by re-downloading until per-arch channels are wired (tracked
+# in docs/parity.md). The x64 feed files live under the win-x64 rid
+# dir; uploaded under their canonical names so GithubSource finds them.
+$feedRid = 'win-x64'
+$feedDir = Join-Path $releasesRoot $feedRid
+if (Test-Path $feedDir) {
+    $feedManifest = Join-Path $feedDir 'releases.win.json'
+    if (Test-Path $feedManifest) { $artifacts += $feedManifest }
+    # Every .nupkg this cut produced (full + any deltas). Stale older-
+    # version nupkgs in the dir are fine to ship — Velopack picks the
+    # newest from the manifest; the manifest is the source of truth.
+    Get-ChildItem $feedDir -Filter '*.nupkg' -File |
+        ForEach-Object { $artifacts += $_.FullName }
+    # Legacy Squirrel manifest — harmless to include; older clients use it.
+    $feedReleases = Join-Path $feedDir 'RELEASES'
+    if (Test-Path $feedReleases) { $artifacts += $feedReleases }
+}
+
 if ($artifacts.Count -eq 0) {
     throw "No installer artifacts found under $releasesRoot. Run with -SkipBuild:false (default) or build them via build-installer.ps1 first."
 }

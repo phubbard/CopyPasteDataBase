@@ -12,6 +12,45 @@ dated `[1.X.Y]` heading and reset `[Unreleased]` to empty.
 
 ## [Unreleased]
 
+## [1.11.0] – 2026-05-11
+
+- **Client-side auto-update.** Functional parity with the macOS
+  Sparkle contract (`docs/parity.md § Auto-update`). Until now the
+  app only *shipped* a Velopack installer + delta `.nupkg`s — a
+  running cpdb-win never noticed a new release. New
+  `UpdateService` (CpdbWin.App) over Velopack's
+  `UpdateManager` + `GithubSource`:
+  - Background check 30s after launch, then every 24h, plus an
+    on-demand **"Check for Updates…"** tray menu item.
+  - **Prompt, not silent**: an available update is downloaded in
+    the background, then a Yes/No box offers restart-to-apply.
+    cpdb-win never restarts unasked.
+  - Skips dev / debug / portable runs (`UpdateManager.IsInstalled`
+    is false) — a manual check says so; the background cadence
+    stays quiet.
+  - Reentry-guarded so startup / daily-timer / manual triggers
+    coalesce. All failure swallowed + logged to
+    `%LOCALAPPDATA%\cpdb\update.log`; a manual check also surfaces
+    up-to-date / error in a message box so the menu item never
+    looks dead.
+  - **x64 only.** Velopack 0.0.1298 emits an identically-named
+    `releases.win.json` + `CpdbWin-<ver>-full.nupkg` for both
+    win-x64 and win-arm64, so a single GitHub release can't carry
+    both arches' feeds. The arm64 build detects this
+    (`RuntimeInformation.ProcessArchitecture`) and tells the user
+    to re-download rather than apply an x64 package. Per-arch
+    Velopack channels are a tracked follow-up.
+- **`release-installer.ps1` publishes the update feed.** In
+  addition to the per-arch `Setup.exe` / `Portable.zip`, the
+  release now carries the x64 channel's `releases.win.json`,
+  every `.nupkg` (full + deltas), and the legacy `RELEASES`
+  manifest — the assets Velopack's `GithubSource` reads. Without
+  these the in-app updater had nothing to check against.
+- **Auto-update only sees published releases.** GitHub's
+  unauthenticated API hides draft releases, so testers never
+  auto-update to an unpublished draft — the desired behavior.
+  Publish a release to make it offered.
+
 ## [1.10.0] – 2026-05-11
 
 - **Data portability — URL-list import + history export.** Parity
