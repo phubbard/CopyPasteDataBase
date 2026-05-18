@@ -68,6 +68,19 @@ NOTARY_PROFILE        ?= cpdb-notary
 # CloudKit requests fail with "Missing application-identifier entitlement".
 ENTITLEMENTS         = Sources/CpdbApp/Resources/cpdb.entitlements
 
+# Stable Designated Requirement. macOS TCC (Accessibility, Local
+# Network, etc.) records the app's DR when the user grants a
+# permission, and silently revokes the grant if a later build's DR
+# doesn't match. codesign's *default* DR pins the exact signing
+# leaf certificate — so an Apple-Development-signed dev build, a
+# Developer-ID-signed release, and any post-cert-rotation build all
+# get different DRs and each loses every TCC grant. Pinning the
+# Team ID (subject.OU = NSR65JVW9F, stable across cert kind +
+# rotation) instead keeps one DR for every build we ever ship, so
+# Accessibility survives updates. Passed to every outer codesign
+# via --requirements.
+DESIGNATED_REQ       = Sources/CpdbApp/Resources/cpdb.designated-requirement
+
 # Release entitlements — same shape but with aps-environment=production
 # and no get-task-allow. Used by the dmg / notarize path because the
 # Apple notary rejects development APNs and debug entitlements.
@@ -233,6 +246,7 @@ build-app: verify-version stamp-build
 	scripts/sign-nested.sh $(APP_BUNDLE_DIR) "$(SIGNING_IDENTITY)" none
 	codesign --force --sign "$(SIGNING_IDENTITY)" \
 	         --entitlements $(ENTITLEMENTS) \
+	         --requirements "=$$(cat $(DESIGNATED_REQ))" \
 	         --timestamp=none --options runtime $(APP_BUNDLE_DIR)
 	@echo
 	@echo "Built $(APP_BUNDLE_DIR) (v$(VERSION))"
@@ -367,9 +381,15 @@ sign-release: verify-developer-id
 	    --entitlements $(RELEASE_ENTITLEMENTS) \
 	    $(APP_BUNDLE_DIR)
 	@scripts/sign-nested.sh $(APP_BUNDLE_DIR) "$(DEVELOPER_ID_IDENTITY)" tsa
+	@# Final outer seal carries the stable Team-ID-pinned DR so
+	@# TCC grants (Accessibility, Local Network) survive the
+	@# Apple-Development → Developer-ID transition and future cert
+	@# rotation. Only the outermost sign gets --requirements; the
+	@# nested helpers keep their own default DRs.
 	@codesign --force --sign "$(DEVELOPER_ID_IDENTITY)" \
 	    --options=runtime --timestamp \
 	    --entitlements $(RELEASE_ENTITLEMENTS) \
+	    --requirements "=$$(cat $(DESIGNATED_REQ))" \
 	    $(APP_BUNDLE_DIR)
 	@echo "Verifying signature…"
 	@codesign --verify --deep --strict --verbose=2 $(APP_BUNDLE_DIR) 2>&1 | tail -3

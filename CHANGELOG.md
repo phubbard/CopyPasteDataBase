@@ -10,6 +10,26 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+- **Accessibility (and all TCC grants) survive updates — stable
+  Designated Requirement.** Bug caught by the auto-update test: a
+  running build showed Accessibility as not-granted even though the
+  System Settings toggle was on. Root cause — codesign's *default*
+  Designated Requirement pins the exact signing leaf certificate,
+  and macOS TCC records that DR when you grant a permission. An
+  Apple-Development-signed dev build, a Developer-ID-signed release,
+  and any post-cert-rotation build each get a *different* DR, so
+  every signing-identity change silently revokes Accessibility /
+  Local Network / etc. Fix: every outer codesign now passes an
+  explicit `--requirements` pinning the Team ID
+  (`certificate leaf[subject.OU] = NSR65JVW9F`, stable across cert
+  kind and rotation) instead of the leaf cert. All builds cpdb will
+  ever ship now share one DR, so a grant persists across dev
+  deploys, Developer-ID releases, Sparkle updates, and cert
+  renewals. **One-time action:** because the DR itself changed, you
+  must re-grant Accessibility once after installing 2.9.4+ (System
+  Settings → Privacy & Security → Accessibility — remove the stale
+  cpdb entry, re-add); from then on it sticks forever.
+
 ## [2.9.3] – 2026-05-18
 
 - **Auto-update robustness verification + honest documentation.**
