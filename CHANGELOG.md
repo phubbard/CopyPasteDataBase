@@ -10,6 +10,8 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+## [2.9.1] – 2026-05-18
+
 - **In-app auto-update via Sparkle 2.** The direct-download Mac
   build now checks for updates on its own. A new "Check for
   Updates…" item in the menu-bar menu triggers an on-demand check;
