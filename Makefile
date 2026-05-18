@@ -222,10 +222,14 @@ build-app: verify-version stamp-build
 	# assertion when KeyboardShortcuts (or any other resource-bearing
 	# package) tries to read its bundle. No --entitlements on these;
 	# resource bundles don't claim capabilities.
-	# Sign all nested code (Sparkle.framework inside-out + SPM
-	# resource bundles) before the outer app. The script handles
-	# the order codesign requires; `--deep` can't be used because
-	# it mis-signs Sparkle's helper tools.
+	@for b in $(APP_BUNDLE_DIR)/*.bundle; do \
+	    if [ -d "$$b" ]; then \
+	        codesign --force --sign "$(SIGNING_IDENTITY)" --timestamp=none "$$b"; \
+	    fi; \
+	done
+	# Sparkle.framework inside-out (XPC services → Autoupdate →
+	# Updater.app → framework). Done before the outer seal; the
+	# outer sign is not --deep so it won't clobber these.
 	scripts/sign-nested.sh $(APP_BUNDLE_DIR) "$(SIGNING_IDENTITY)" none
 	codesign --force --sign "$(SIGNING_IDENTITY)" \
 	         --entitlements $(ENTITLEMENTS) \
@@ -352,10 +356,16 @@ sign-release: verify-developer-id
 	@# matching profile.
 	@cp $(DEVELOPER_ID_PROFILE) $(APP_BUNDLE_DIR)/Contents/embedded.provisionprofile
 	@echo "Re-signing $(APP_BUNDLE_DIR) with Developer ID…"
-	@# Inside-out: Sparkle helpers + resource bundles first (the
-	@# script), then the outer app. NOT `--deep` — it mis-signs
-	@# Sparkle's XPC services / Updater.app / Autoupdate and
-	@# notarization rejects the result.
+	@# --deep correctly signs the GRDB / KeyboardShortcuts resource
+	@# bundles (it always has). It ALSO signs Sparkle's helpers but
+	@# mis-signs them (strips per-helper requirements), so we re-sign
+	@# Sparkle inside-out immediately AFTER --deep — last signature
+	@# wins — then re-seal the outer app so its seal covers the
+	@# corrected Sparkle signatures.
+	@codesign --force --deep --sign "$(DEVELOPER_ID_IDENTITY)" \
+	    --options=runtime --timestamp \
+	    --entitlements $(RELEASE_ENTITLEMENTS) \
+	    $(APP_BUNDLE_DIR)
 	@scripts/sign-nested.sh $(APP_BUNDLE_DIR) "$(DEVELOPER_ID_IDENTITY)" tsa
 	@codesign --force --sign "$(DEVELOPER_ID_IDENTITY)" \
 	    --options=runtime --timestamp \
