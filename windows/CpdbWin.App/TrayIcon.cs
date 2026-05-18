@@ -17,6 +17,7 @@ public sealed class TrayIcon : IDisposable
     public event Action? ShowRequested;
     public event Action? PreferencesRequested;
     public event Action? QuitRequested;
+    public event Action? CheckForUpdatesRequested;
     public event Action<bool>? AutoLaunchToggled;
 
     public string Tooltip { get; init; } = "cpdb-win";
@@ -42,10 +43,11 @@ public sealed class TrayIcon : IDisposable
     private const uint TPM_RIGHTBUTTON = 0x0002;
     private const ushort IDI_APPLICATION = 32512;
 
-    private const int IDM_SHOW         = 1001;
-    private const int IDM_AUTO_LAUNCH  = 1002;
-    private const int IDM_PREFERENCES  = 1003;
-    private const int IDM_QUIT         = 1004;
+    private const int IDM_SHOW          = 1001;
+    private const int IDM_AUTO_LAUNCH   = 1002;
+    private const int IDM_PREFERENCES   = 1003;
+    private const int IDM_QUIT          = 1004;
+    private const int IDM_CHECK_UPDATES = 1005;
 
     private static readonly IntPtr HWND_MESSAGE = new(-3);
 
@@ -165,6 +167,8 @@ public sealed class TrayIcon : IDisposable
         Native.AppendMenuW(menu, MF_STRING | (AutoLaunchChecked ? MF_CHECKED : 0),
                                                               (UIntPtr)IDM_AUTO_LAUNCH, "Launch on login");
         Native.AppendMenuW(menu, MF_SEPARATOR,                UIntPtr.Zero,             null);
+        Native.AppendMenuW(menu, MF_STRING,                  (UIntPtr)IDM_CHECK_UPDATES, "Check for Updates…");
+        Native.AppendMenuW(menu, MF_SEPARATOR,                UIntPtr.Zero,             null);
         Native.AppendMenuW(menu, MF_STRING,                  (UIntPtr)IDM_QUIT,        "Quit");
 
         Native.GetCursorPos(out var pt);
@@ -180,10 +184,11 @@ public sealed class TrayIcon : IDisposable
         {
             switch (cmd)
             {
-                case IDM_SHOW:        ShowRequested?.Invoke(); break;
-                case IDM_PREFERENCES: PreferencesRequested?.Invoke(); break;
-                case IDM_AUTO_LAUNCH: AutoLaunchToggled?.Invoke(!AutoLaunchChecked); break;
-                case IDM_QUIT:        QuitRequested?.Invoke(); break;
+                case IDM_SHOW:          ShowRequested?.Invoke(); break;
+                case IDM_PREFERENCES:   PreferencesRequested?.Invoke(); break;
+                case IDM_AUTO_LAUNCH:   AutoLaunchToggled?.Invoke(!AutoLaunchChecked); break;
+                case IDM_CHECK_UPDATES: CheckForUpdatesRequested?.Invoke(); break;
+                case IDM_QUIT:          QuitRequested?.Invoke(); break;
             }
         }
         catch { }

@@ -24,6 +24,7 @@ public partial class App : Application
     private PreferencesWindow? _prefsWindow;
     private TrayIcon? _tray;
     private GlobalHotkey? _hotkey;
+    private readonly UpdateService _updates = new();
     private UserSettings _settings = new();
     private string _settingsPath = string.Empty;
 
@@ -93,6 +94,7 @@ public partial class App : Application
         _tray.ShowRequested        += () => _mainWindow.DispatcherQueue.TryEnqueue(BringMainToFront);
         _tray.PreferencesRequested += () => _mainWindow.DispatcherQueue.TryEnqueue(OpenPreferences);
         _tray.QuitRequested        += () => _mainWindow.DispatcherQueue.TryEnqueue(QuitApp);
+        _tray.CheckForUpdatesRequested += () => _ = _updates.CheckAsync(userInitiated: true);
         _tray.AutoLaunchToggled    += enabled =>
         {
             AutoLaunch.SetEnabled(enabled);
@@ -101,6 +103,10 @@ public partial class App : Application
         _tray.Start();
 
         RegisterHotkey(_settings.Hotkey);
+
+        // Background auto-update: a check 30s after launch, then daily.
+        // Prompt-not-silent — UpdateService never restarts unasked.
+        _updates.StartBackgroundChecks();
     }
 
     private void RegisterHotkey(HotkeyConfig cfg)
@@ -527,6 +533,7 @@ public partial class App : Application
     {
         _hotkey?.Dispose();
         _tray?.Dispose();
+        _updates.Dispose();
         Host?.Dispose();
         Exit();
     }

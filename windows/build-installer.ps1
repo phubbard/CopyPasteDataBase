@@ -69,6 +69,15 @@ Write-Host "==> Publishing $Rid ($platform), version $Version" -ForegroundColor 
 if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed (exit $LASTEXITCODE)" }
 
 Write-Host "==> Packing Setup.exe with Velopack" -ForegroundColor Cyan
+# `--channel $Rid` makes every emitted artifact architecture-qualified:
+#   releases.win-x64.json / releases.win-arm64.json
+#   CpdbWin-<ver>-win-x64-full.nupkg / -win-arm64-full.nupkg
+#   CpdbWin-win-x64-Setup.exe / -win-arm64-Setup.exe
+#   RELEASES-win-x64 / RELEASES-win-arm64
+# so both architectures' Velopack feeds coexist on a single GitHub
+# release with zero filename collision (verified against Velopack
+# 0.0.1298). The in-app updater (UpdateService) passes the matching
+# ExplicitChannel so an arm64 install only ever sees arm64 packages.
 & vpk pack `
     --packId       CpdbWin `
     --packTitle    'cpdb-win' `
@@ -77,6 +86,7 @@ Write-Host "==> Packing Setup.exe with Velopack" -ForegroundColor Cyan
     --packDir      $publishDir `
     --mainExe      CpdbWin.App.exe `
     --runtime      $Rid `
+    --channel      $Rid `
     --shortcuts    'StartMenu,Desktop' `
     --outputDir    $releaseDir
 # `--shortcuts` is explicit because Velopack's default ("None" for some
@@ -87,7 +97,7 @@ if ($LASTEXITCODE -ne 0) { throw "vpk pack failed (exit $LASTEXITCODE)" }
 
 Write-Host ""
 Write-Host "Done." -ForegroundColor Green
-$setup = Join-Path $releaseDir "$Rid-Setup.exe"
+$setup = Join-Path $releaseDir "CpdbWin-$Rid-Setup.exe"
 if (Test-Path $setup) {
     $size = [math]::Round((Get-Item $setup).Length / 1MB, 1)
     Write-Host "  Installer: $setup  ($size MB)"

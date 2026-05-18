@@ -80,11 +80,17 @@ if ($tagExists) {
 # cuts (e.g. 'CpdbWin-1.0.0-beta.1-win-x64-Setup.exe' lingering in the
 # rid dir) and rewrote them to the same target path, producing duplicate
 # entries that 404'd on the second upload.
+# build-installer.ps1 packs each rid with `--channel $rid`, so every
+# emitted artifact is architecture-qualified
+# (CpdbWin-<rid>-Setup.exe, releases.<rid>.json,
+# CpdbWin-<ver>-<rid>-full.nupkg, RELEASES-<rid>). That means both
+# arches' installers AND both arches' Velopack auto-update feeds
+# coexist on one GitHub release with zero filename collision.
 $artifacts = @()
 foreach ($rid in $Rids) {
     $ridDir = Join-Path $releasesRoot $rid
-    $emittedSetup    = Join-Path $ridDir 'CpdbWin-win-Setup.exe'
-    $emittedPortable = Join-Path $ridDir 'CpdbWin-win-Portable.zip'
+    $emittedSetup    = Join-Path $ridDir "CpdbWin-$rid-Setup.exe"
+    $emittedPortable = Join-Path $ridDir "CpdbWin-$rid-Portable.zip"
     foreach ($p in @($emittedSetup, $emittedPortable)) {
         if (-not (Test-Path $p)) {
             throw "Expected Velopack artifact missing: $p. Re-run without -SkipBuild."
@@ -98,6 +104,24 @@ foreach ($rid in $Rids) {
     Copy-Item -LiteralPath $emittedPortable -Destination $renamedPortable -Force
     $artifacts += $renamedSetup
     $artifacts += $renamedPortable
+
+    # Per-arch Velopack auto-update feed. The running app's
+    # UpdateService talks to GithubSource with
+    # ExplicitChannel = "win-<arch>", which reads releases.<rid>.json
+    # + the matching .nupkg off the published release. Without these
+    # the in-app updater has nothing to check against. Channel-
+    # qualified names mean x64 and arm64 feeds never collide.
+    $feedManifest = Join-Path $ridDir "releases.$rid.json"
+    if (Test-Path $feedManifest) { $artifacts += $feedManifest }
+    # Every .nupkg this cut produced for this rid (full + any deltas).
+    # Stale older-version nupkgs in the dir are fine to ship —
+    # Velopack picks the newest from the manifest; the manifest is the
+    # source of truth.
+    Get-ChildItem $ridDir -Filter '*.nupkg' -File |
+        ForEach-Object { $artifacts += $_.FullName }
+    # Legacy Squirrel manifest — harmless; older clients use it.
+    $feedReleases = Join-Path $ridDir "RELEASES-$rid"
+    if (Test-Path $feedReleases) { $artifacts += $feedReleases }
 }
 
 if ($artifacts.Count -eq 0) {
