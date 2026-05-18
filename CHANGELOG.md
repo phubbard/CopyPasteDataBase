@@ -10,6 +10,8 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+## [2.9.5] – 2026-05-18
+
 - **Import / Export in Preferences (GUI).** The v2.9.0 import/export
   was CLI-only; most users never open a terminal. New
   "Import / Export" section in the Preferences window:
