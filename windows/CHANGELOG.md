@@ -12,6 +12,20 @@ dated `[1.X.Y]` heading and reset `[Unreleased]` to empty.
 
 ## [Unreleased]
 
+- **Persistent tray-icon visibility across updates.** The
+  notification-area icon now registers with a fixed `guidItem`
+  (`NIF_GUID`). Windows keys the user's "show this icon on the
+  taskbar" preference by icon identity; without a GUID that
+  identity is the executable path, and Velopack installs each
+  version in its own folder — so every auto-update looked like a
+  new icon and silently dumped it back into the hidden overflow.
+  With a stable GUID the choice survives updates. Includes a
+  fallback (release stale GUID binding → retry → drop GUID) for
+  the known Velopack path-rebinding edge case so the icon can
+  never fail to appear.
+
+## [1.14.0] – 2026-05-19
+
 - **Single-instance guard.** Launching cpdb-win while it's already
   running (e.g. "Launch on login" started it at boot, then the user
   double-clicks the shortcut) used to spin up a second process —
@@ -26,6 +40,11 @@ dated `[1.X.Y]` heading and reset `[Unreleased]` to empty.
   tray icon — undiscoverable. Added a gear button to the main
   window's top bar that opens the same Preferences window; the
   tray menu item stays as a secondary path.
+
+## [1.13.0] – 2026-05-19
+
+- Internal version bump folded forward into v1.14.0 (no separate
+  release cut).
 
 ## [1.12.0] – 2026-05-18
 

@@ -10,6 +10,6 @@
       AssemblyInformationalVersionAttribute and surfaces it in the window
       title, tray tooltip, and (later) preferences/About surface.
     -->
-    <Version>1.14.0</Version>
+    <Version>1.15.0</Version>
   </PropertyGroup>
 </Project>

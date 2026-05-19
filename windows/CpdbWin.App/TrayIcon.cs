@@ -36,6 +36,19 @@ public sealed class TrayIcon : IDisposable
     private const uint NIF_MESSAGE = 0x01;
     private const uint NIF_ICON    = 0x02;
     private const uint NIF_TIP     = 0x04;
+    private const uint NIF_GUID    = 0x20;
+
+    /// <summary>
+    /// Stable identity for the tray icon. Windows persists the user's
+    /// "show this icon on the taskbar" choice keyed by icon identity.
+    /// Without a GUID that identity is the executable <i>path</i> — and
+    /// Velopack installs every version in its own folder, so each
+    /// auto-update would look like a brand-new icon and silently revert
+    /// the user back into the hidden overflow. A fixed GUID makes the
+    /// preference survive updates. Never change this value once shipped.
+    /// </summary>
+    private static readonly Guid TrayIconGuid =
+        new("CB7A1E9C-3D2F-4A85-9E0B-6F4D8C2A7B11");
     private const uint MF_STRING    = 0x000;
     private const uint MF_SEPARATOR = 0x800;
     private const uint MF_CHECKED   = 0x008;
@@ -115,15 +128,15 @@ public sealed class TrayIcon : IDisposable
             cbSize           = (uint)Marshal.SizeOf<NotifyIconData>(),
             hWnd             = _hwnd,
             uID              = 1,
-            uFlags           = NIF_MESSAGE | NIF_ICON | NIF_TIP,
+            uFlags           = NIF_MESSAGE | NIF_ICON | NIF_TIP | NIF_GUID,
             uCallbackMessage = WM_TRAYICON,
             hIcon            = hIcon,
             szTip            = Tooltip,
             szInfo           = string.Empty,
             szInfoTitle      = string.Empty,
+            guidItem         = TrayIconGuid,
         };
-        if (!Native.Shell_NotifyIconW(NIM_ADD, ref _data))
-            ThrowLast(nameof(Native.Shell_NotifyIconW));
+        AddIconWithGuidFallback();
 
         ready.Set();
 
@@ -192,6 +205,30 @@ public sealed class TrayIcon : IDisposable
             }
         }
         catch { }
+    }
+
+    /// <summary>
+    /// Register the icon, recovering from the one failure a fixed GUID
+    /// introduces: Windows binds the GUID to the binary path on first
+    /// registration, so after a Velopack update (new version folder →
+    /// new path) <c>NIM_ADD</c> fails because the GUID is still bound to
+    /// the previous install's path. Releasing the stale registration
+    /// (<c>NIM_DELETE</c> by GUID) and retrying re-binds it to the new
+    /// path while Windows keeps the user's visibility preference (stored
+    /// against the GUID, not the path). If even that fails we drop the
+    /// GUID entirely — a visible-in-overflow icon beats no icon at all.
+    /// </summary>
+    private void AddIconWithGuidFallback()
+    {
+        if (Native.Shell_NotifyIconW(NIM_ADD, ref _data)) return;
+
+        Native.Shell_NotifyIconW(NIM_DELETE, ref _data);
+        if (Native.Shell_NotifyIconW(NIM_ADD, ref _data)) return;
+
+        _data.uFlags &= ~NIF_GUID;
+        _data.guidItem = Guid.Empty;
+        if (!Native.Shell_NotifyIconW(NIM_ADD, ref _data))
+            ThrowLast(nameof(Native.Shell_NotifyIconW));
     }
 
     private static void ThrowLast(string what)
