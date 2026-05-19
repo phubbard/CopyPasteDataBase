@@ -147,6 +147,15 @@ public sealed partial class MainWindow : Window
         });
     }
 
+    /// <summary>
+    /// Re-query the list in response to a store change that did NOT go
+    /// through the capture pipeline — specifically a GUI URL-import,
+    /// which writes via its own worker-thread connection and therefore
+    /// never raises <see cref="CaptureService.Ingested"/>. Safe to call
+    /// from any thread; marshals onto the UI dispatcher.
+    /// </summary>
+    public void RequestRefresh() => DispatcherQueue.TryEnqueue(Refresh);
+
     private void Refresh()
     {
         // Guard against the InitializeComponent firing path: when XAML

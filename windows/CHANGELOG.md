@@ -12,6 +12,18 @@ dated `[1.X.Y]` heading and reset `[Unreleased]` to empty.
 
 ## [Unreleased]
 
+- **GUI URL-import now refreshes the main window.** The
+  Preferences "Import" path writes via its own worker-thread
+  SqliteConnection (so a big import doesn't freeze the UI and
+  doesn't touch the capture connection cross-thread). The side
+  effect: it never raises `CaptureService.Ingested`, so the main
+  window — which only re-queries on a capture / backfill-settle /
+  search-box change — kept showing the pre-import list and the
+  freshly-imported rows looked missing (they were in the DB the
+  whole time). A successful import with new/bumped rows now pokes
+  the main window to re-query (new `MainWindow.RequestRefresh()`,
+  wired via an `onStoreChanged` callback through `PreferencesWindow`).
+
 - **Autostart can no longer be hijacked by a non-installed build.**
   Autostart is one shared `HKCU\…\Run\CpdbWin` value. A dev / Debug
   / portable run (e.g. a `bin\Debug` build used for testing) called
