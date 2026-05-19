@@ -29,6 +29,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $repoRoot      = Split-Path -Parent $PSCommandPath
 $projectFile   = Join-Path $repoRoot 'CpdbWin.App\CpdbWin.App.csproj'
+$cliProject    = Join-Path $repoRoot 'CpdbWin.Cli\CpdbWin.Cli.csproj'
 $publishRoot   = Join-Path $repoRoot 'publish'
 $releasesRoot  = Join-Path $repoRoot 'Releases'
 $publishDir    = Join-Path $publishRoot $Rid
@@ -67,6 +68,28 @@ Write-Host "==> Publishing $Rid ($platform), version $Version" -ForegroundColor 
     -p:PublishSingleFile=false `
     -o $publishDir
 if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed (exit $LASTEXITCODE)" }
+
+# Publish the maintenance CLI (cpdb-win.exe) into the SAME folder so
+# Velopack packs it alongside the GUI. It lands at
+# %LOCALAPPDATA%\CpdbWin\current\cpdb-win.exe, giving users the
+# documented `cpdb-win reclassify-kinds` / `backfill-titles
+# --retry-empty` / `dedupe` / `import-urls` / `export` surface
+# without a separate download. Must be self-contained too: the App
+# publish is self-contained, so there's no registered shared runtime
+# for a framework-dependent CLI apphost to find — it would fail with
+# "You must install .NET". Self-contained writes the same (identical)
+# runtime files already in the folder plus cpdb-win.{exe,dll,
+# deps.json,runtimeconfig.json}. No -p:Platform: the CLI is a plain
+# console app (no WindowsAppSDK AnyCPU restriction); the RID drives
+# the architecture.
+Write-Host "==> Publishing maintenance CLI ($Rid) into the same folder" -ForegroundColor Cyan
+& dotnet publish $cliProject `
+    -c Release `
+    -r $Rid `
+    -p:PublishSingleFile=false `
+    --self-contained true `
+    -o $publishDir
+if ($LASTEXITCODE -ne 0) { throw "dotnet publish (CLI) failed (exit $LASTEXITCODE)" }
 
 Write-Host "==> Packing Setup.exe with Velopack" -ForegroundColor Cyan
 # `--channel $Rid` makes every emitted artifact architecture-qualified:
