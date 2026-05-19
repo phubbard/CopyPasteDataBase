@@ -314,6 +314,8 @@ cpdb import-urls FILE [--dry-run] [--spread-seconds N]
                                           #   --spread-seconds backdates captured_at
                                           #   so the import doesn't collapse to one
                                           #   timestamp. #-comments + blanks skipped.
+                                          #   Per-line isolated: a bad row counts as
+                                          #   failed= and the batch continues.
 cpdb export --format md|csv|html [--output PATH] [--limit N] [--include-evicted]
                                           # portable dump (metadata + text, no
                                           #   flavor bytes). stdout if no --output.

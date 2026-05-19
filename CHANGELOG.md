@@ -10,6 +10,8 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+## [2.9.7] – 2026-05-18
+
 - **Import no longer aborts after the first URL.** Reported: GUI
   "Import URLs…" on an 11-line file only imported the first entry.
   Root cause — `Configuration()` set no SQLite busy timeout, so the
