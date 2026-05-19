@@ -317,6 +317,12 @@ cpdb import-urls FILE [--dry-run] [--spread-seconds N]
 cpdb export --format md|csv|html [--output PATH] [--limit N] [--include-evicted]
                                           # portable dump (metadata + text, no
                                           #   flavor bytes). stdout if no --output.
+                                          #   Carries every enrichment field —
+                                          #   fetched link/YouTube title, full
+                                          #   (untruncated) OCR text, image tags —
+                                          #   as explicit labelled fields. CSV is
+                                          #   13-col RFC-4180. All embedded text is
+                                          #   LF-normalised (no mixed endings).
 ```
 
 **Maintenance**

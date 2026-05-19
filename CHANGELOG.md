@@ -10,6 +10,8 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+## [2.9.6] – 2026-05-18
+
 - **Export now carries every enrichment field + is LF-clean.** Two
   bugs in the v2.9.0 exporter:
     - It dropped/buried the metadata cpdb *derives* — fetched
