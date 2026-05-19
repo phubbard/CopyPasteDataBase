@@ -24,6 +24,28 @@ dated `[1.X.Y]` heading and reset `[Unreleased]` to empty.
   the main window to re-query (new `MainWindow.RequestRefresh()`,
   wired via an `onStoreChanged` callback through `PreferencesWindow`).
 
+- **Main-window interaction: click selects, double-click / Enter
+  activates.** Previously a single click *activated* an entry
+  (copied it, hid the window, pasted back) — so you couldn't
+  browse or multi-select without triggering a paste. Now a single
+  click only selects (native Shift/Ctrl range + toggle, preview
+  pane updates); **double-click or Enter** copies the entry to the
+  clipboard, hides the window, and pastes it back to the app you
+  came from. Right-click menu (Pin / Delete) unchanged.
+
+- **Delete keeps your place in the list.** After deleting the
+  selected entry the cursor snapped back to the top *and* keyboard
+  focus fell back to the search box (the list re-query rebuilds the
+  ItemsSource, destroying the focused row), so clearing several
+  rows meant re-navigating every single time. Delete now re-selects
+  the row that slid into the deleted slot (or the new last row if
+  you deleted the tail) **and** restores keyboard focus to that row
+  when the delete came from the list — so you can sit there and hit
+  Delete repeatedly to walk straight down the list. A delete driven
+  from the search box (type-to-filter + arrow nav) deliberately
+  keeps focus in the box. The preview pane follows the new
+  selection.
+
 - **Autostart can no longer be hijacked by a non-installed build.**
   Autostart is one shared `HKCU\…\Run\CpdbWin` value. A dev / Debug
   / portable run (e.g. a `bin\Debug` build used for testing) called

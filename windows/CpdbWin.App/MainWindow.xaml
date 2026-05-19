@@ -32,9 +32,8 @@
         <Grid Grid.Row="1" ColumnDefinitions="2*,3*" ColumnSpacing="12">
             <ListView x:Name="EntryList"
                       Grid.Column="0"
-                      IsItemClickEnabled="True"
-                      ItemClick="EntryList_ItemClick"
                       SelectionChanged="EntryList_SelectionChanged"
+                      DoubleTapped="EntryList_DoubleTapped"
                       SelectionMode="Extended">
                 <ListView.ItemTemplate>
                     <DataTemplate x:DataType="local:EntryViewModel">
