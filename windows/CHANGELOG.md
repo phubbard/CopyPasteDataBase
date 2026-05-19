@@ -12,6 +12,17 @@ dated `[1.X.Y]` heading and reset `[Unreleased]` to empty.
 
 ## [Unreleased]
 
+- **OCR is visible in the UI.** Image entries that have been
+  OCR'd now show a small **OCR** chip on the list row, and the
+  preview pane gets a **Show OCR text** button under the image.
+  Click it to expand a scrollable, **selectable** text block —
+  mouse-select any subset and Ctrl+C copies just that portion (the
+  whole text isn't pushed back into the clipboard, you choose what
+  to take). The `EntryRepository` list query carries only a cheap
+  `has_ocr` non-empty flag so 100-row lists don't lug full OCR
+  strings; the panel fetches the actual text on demand via a new
+  `GetOcrText(id)`.
+
 - **On-device OCR for image entries.** The Windows analogue of the
   macOS Vision text pass — screenshots become searchable by their
   contents. `ImageOcr` wraps Windows' built-in
