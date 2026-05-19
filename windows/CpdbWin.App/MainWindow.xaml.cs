@@ -27,6 +27,17 @@ public sealed partial class MainWindow : Window
     /// </summary>
     private int _cursorIndex = -1;
 
+    /// <summary>
+    /// Raised when the user clicks the gear button in the top bar. App
+    /// wires this to the same OpenPreferences path the tray menu uses —
+    /// the in-window button is just a discoverable second entry point so
+    /// Preferences isn't hidden behind a tray right-click.
+    /// </summary>
+    public event Action? SettingsRequested;
+
+    private void SettingsButton_Click(object sender, RoutedEventArgs e)
+        => SettingsRequested?.Invoke();
+
     [DllImport("user32.dll")] private static extern short GetKeyState(int vKey);
     private const int VK_SHIFT   = 0x10;
     private const int VK_CONTROL = 0x11;

@@ -102,6 +102,10 @@ public partial class App : Application
         }
 
         _mainWindow = new MainWindow(Host);
+        // Visible, discoverable entry point to Preferences (the tray
+        // right-click menu is the only other path). Same handler.
+        _mainWindow.SettingsRequested += () =>
+            _mainWindow.DispatcherQueue.TryEnqueue(OpenPreferences);
         _ourMainHwnd = WindowNative.GetWindowHandle(_mainWindow);
         InstallForegroundHook();
         _mainWindow.Activate();
