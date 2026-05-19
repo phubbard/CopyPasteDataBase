@@ -189,7 +189,8 @@ public partial class App : Application
         }
         _prefsWindow = new PreferencesWindow(
             _settings, _settingsPath, RegisterHotkey, Host!,
-            onStoreChanged: () => _mainWindow?.RequestRefresh());
+            onStoreChanged: () => _mainWindow?.RequestRefresh(),
+            onCheckUpdates: () => _ = _updates.CheckAsync(userInitiated: true));
         _prefsWindow.Closed += (_, _) => _prefsWindow = null;
         _prefsWindow.Activate();
     }

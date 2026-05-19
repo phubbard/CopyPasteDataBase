@@ -1,6 +1,7 @@
 using System.Runtime.InteropServices;
 using CpdbWin.Core;
 using CpdbWin.Core.Identity;
+using CpdbWin.Core.Maintenance;
 using CpdbWin.Core.Portability;
 using CpdbWin.Core.Service;
 using Microsoft.UI.Xaml;
@@ -19,6 +20,7 @@ public sealed partial class PreferencesWindow : Window
     private readonly Action<HotkeyConfig> _onHotkeyChanged;
     private readonly AppHost _host;
     private readonly Action? _onStoreChanged;
+    private readonly Action? _onCheckUpdates;
     private HotkeyConfig _pending;
     private bool _recording;
 
@@ -27,7 +29,8 @@ public sealed partial class PreferencesWindow : Window
         string settingsPath,
         Action<HotkeyConfig> onHotkeyChanged,
         AppHost host,
-        Action? onStoreChanged = null)
+        Action? onStoreChanged = null,
+        Action? onCheckUpdates = null)
     {
         InitializeComponent();
         Title = $"{CpdbVersion.Description} preferences";
@@ -36,6 +39,7 @@ public sealed partial class PreferencesWindow : Window
         _onHotkeyChanged = onHotkeyChanged;
         _host = host;
         _onStoreChanged = onStoreChanged;
+        _onCheckUpdates = onCheckUpdates;
         _pending = settings.Hotkey;
         HotkeyBox.Text = HotkeyFormatter.Format(_pending);
 
@@ -43,6 +47,23 @@ public sealed partial class PreferencesWindow : Window
         // keys like Tab that TextBox would otherwise consume internally.
         HotkeyBox.AddHandler(UIElement.KeyDownEvent,
             new KeyEventHandler(HotkeyBox_KeyDown), handledEventsToo: true);
+
+        // Startup section reflects the live Run-key state. A non-Velopack
+        // build can't legally write it (AutoLaunch refuses to let a dev
+        // build hijack the shared key), so disable the toggle + explain.
+        StartupCheck.IsChecked = AutoLaunch.IsEnabled();
+        if (!AutoLaunch.IsManagedInstall())
+        {
+            StartupCheck.IsEnabled = false;
+            StartupHint.Text = "Autostart is only configurable from an installed "
+                             + "build (this looks like a dev / portable run).";
+        }
+
+        UpdatesInfo.Text = $"Current version: {CpdbVersion.Full}. "
+                         + "Updates are checked automatically ~30s after launch "
+                         + "and once a day; you're prompted before anything restarts.";
+
+        _ = LoadStorageInfoAsync();
     }
 
     private void HotkeyBox_GotFocus(object sender, RoutedEventArgs e)
@@ -234,6 +255,155 @@ public sealed partial class PreferencesWindow : Window
         ExportButton.IsEnabled = !busy;
         ExportFormatBox.IsEnabled = !busy;
         PortabilityStatus.Text = status;
+    }
+
+    // ─── Startup (parity: macOS Preferences → Startup) ───────────────────
+
+    private void StartupCheck_Click(object sender, RoutedEventArgs e)
+    {
+        AutoLaunch.SetEnabled(StartupCheck.IsChecked == true);
+        // Re-read: SetEnabled is a no-op on a non-managed build, so the
+        // checkbox must reflect what actually stuck, not what was clicked.
+        StartupCheck.IsChecked = AutoLaunch.IsEnabled();
+    }
+
+    // ─── Library maintenance (parity: macOS → Link metadata buttons) ─────
+    //
+    // Same engine the CLI uses (CpdbWin.Core.Maintenance) — one
+    // implementation. Runs on a worker with its own SqliteConnection
+    // (never touch the capture connection cross-thread; WAL +
+    // busy_timeout coexist with the live app). After mutating link
+    // state we poke the main window so the now-candidate rows show, and
+    // the running LinkBackfillService picks them up on its next cycle.
+
+    private void Reclassify_Click(object sender, RoutedEventArgs e) =>
+        _ = RunMaintenanceAsync("reclassify", db =>
+        {
+            var r = MaintenanceCommands.ReclassifyKinds(db);
+            return $"Reclassified {r.Reclassified} of {r.Scanned} "
+                 + $"(link state reset on {r.LinkStateReset}).";
+        });
+
+    private void RetryEmpty_Click(object sender, RoutedEventArgs e) =>
+        _ = RunMaintenanceAsync("retry-empty", db =>
+        {
+            var r = MaintenanceCommands.RetryEmptyLinks(db);
+            return $"Queued {r.LinkStateReset} title-less link(s) for refetch.";
+        });
+
+    private void ReEnrich_Click(object sender, RoutedEventArgs e) =>
+        _ = RunMaintenanceAsync("re-enrich", db =>
+        {
+            var rc = MaintenanceCommands.ReclassifyKinds(db);
+            var re = MaintenanceCommands.RetryEmptyLinks(db);
+            return $"Reclassified {rc.Reclassified} → link; queued "
+                 + $"{rc.LinkStateReset + re.LinkStateReset} link(s) for "
+                 + "title/thumbnail refetch. Fetching in the background…";
+        });
+
+    private async Task RunMaintenanceAsync(string label, Func<Microsoft.Data.Sqlite.SqliteConnection, string> work)
+    {
+        SetMaintenanceBusy(true, $"Running {label}…");
+        try
+        {
+            var dbPath = _host.Paths.Database;
+            var msg = await Task.Run(() =>
+            {
+                using var db = CpdbWin.Core.Store.Database.Open(dbPath);
+                return work(db);
+            });
+            SetMaintenanceBusy(false, msg);
+            // Link state changed on a side connection — refresh the main
+            // window and let the backfill loop notice the candidates.
+            _onStoreChanged?.Invoke();
+        }
+        catch (Exception ex)
+        {
+            SetMaintenanceBusy(false, $"{label} failed: {ex.Message}");
+        }
+    }
+
+    private void SetMaintenanceBusy(bool busy, string status)
+    {
+        ReEnrichButton.IsEnabled    = !busy;
+        ReclassifyButton.IsEnabled  = !busy;
+        RetryEmptyButton.IsEnabled  = !busy;
+        MaintenanceStatus.Text = status;
+    }
+
+    // ─── Storage diagnostic (parity: macOS → Storage) ────────────────────
+
+    private async Task LoadStorageInfoAsync()
+    {
+        try
+        {
+            var paths = _host.Paths;
+            var text = await Task.Run(() =>
+            {
+                static long Len(string p)
+                {
+                    try { return new FileInfo(p).Exists ? new FileInfo(p).Length : 0; }
+                    catch { return 0; }
+                }
+                static long DirSize(string d)
+                {
+                    try
+                    {
+                        return Directory.Exists(d)
+                            ? Directory.EnumerateFiles(d, "*", SearchOption.AllDirectories)
+                                       .Sum(f => { try { return new FileInfo(f).Length; } catch { return 0L; } })
+                            : 0;
+                    }
+                    catch { return 0; }
+                }
+                static string MB(long b) => $"{b / 1024.0 / 1024.0:N1} MB";
+
+                long db   = Len(paths.Database);
+                long wal  = Len(paths.Database + "-wal");
+                long shm  = Len(paths.Database + "-shm");
+                long blob = DirSize(paths.Blobs);
+
+                long total = 0, live = 0, pinned = 0;
+                try
+                {
+                    using var c = CpdbWin.Core.Store.Database.Open(paths.Database);
+                    long Scalar(string sql)
+                    {
+                        using var cmd = c.CreateCommand();
+                        cmd.CommandText = sql;
+                        return Convert.ToInt64(cmd.ExecuteScalar());
+                    }
+                    total  = Scalar("SELECT COUNT(*) FROM entries");
+                    live   = Scalar("SELECT COUNT(*) FROM entries WHERE deleted_at IS NULL");
+                    pinned = Scalar("SELECT COUNT(*) FROM entries WHERE pinned = 1 AND deleted_at IS NULL");
+                }
+                catch { /* counts best-effort */ }
+
+                return
+                    $"Database : {paths.Database}\n"
+                  + $"DB size  : {MB(db)}  (+wal {MB(wal)}  +shm {MB(shm)})\n"
+                  + $"Blobs    : {MB(blob)}  ({paths.Blobs})\n"
+                  + $"Entries  : {live:N0} live · {pinned:N0} pinned · {total:N0} total (incl. tombstoned)";
+            });
+            StorageInfo.Text = text;
+        }
+        catch (Exception ex)
+        {
+            StorageInfo.Text = $"(couldn't read storage info: {ex.Message})";
+        }
+    }
+
+    // ─── Updates (parity: macOS surfaces update state in-window) ─────────
+
+    private void CheckUpdates_Click(object sender, RoutedEventArgs e)
+    {
+        if (_onCheckUpdates is null)
+        {
+            UpdatesInfo.Text = "Update check isn't available from this build.";
+            return;
+        }
+        UpdatesInfo.Text = "Checking for updates… (you'll get a prompt if one's available)";
+        _onCheckUpdates.Invoke();
     }
 
     private static bool IsModifierKey(VirtualKey k) => k is
