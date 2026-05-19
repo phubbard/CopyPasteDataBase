@@ -122,6 +122,20 @@ public enum HistoryExporter {
         iso.string(from: Date(timeIntervalSince1970: epoch))
     }
 
+    /// Normalise embedded clipboard text to LF. Captured content
+    /// routinely carries CRLF (Windows source apps) or lone CR
+    /// (legacy Mac); our own separators are LF, so without this the
+    /// exported file has mixed line endings and editors prompt to
+    /// "fix" it. Apply to every field that originates from captured
+    /// data (text_preview, ocr_text, link_title, image_tags, title,
+    /// headline).
+    private static func lf(_ s: String?) -> String {
+        guard let s = s else { return "" }
+        return s
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+    }
+
     // MARK: - Markdown (a paragraph per entry)
 
     public static func renderMarkdown(_ rows: [Row]) -> String {
@@ -129,23 +143,31 @@ public enum HistoryExporter {
         out += "_\(rows.count) entries · generated \(ts(Date().timeIntervalSince1970))_\n\n"
         for r in rows {
             let pin = r.pinned ? "📌 " : ""
-            out += "## \(pin)\(r.headline)\n\n"
+            out += "## \(pin)\(lf(r.headline))\n\n"
             var meta: [String] = ["**\(r.kind)**"]
-            if let app = r.appName { meta.append(app) }
-            if let dev = r.deviceName { meta.append(dev) }
+            if let app = r.appName { meta.append(lf(app)) }
+            if let dev = r.deviceName { meta.append(lf(dev)) }
             meta.append(ts(r.createdAt))
             if r.evicted { meta.append("_(body evicted)_") }
             out += meta.joined(separator: " · ") + "\n\n"
-            if let tp = r.textPreview, !tp.isEmpty, tp != r.headline {
-                out += "```\n\(tp)\n```\n\n"
+            if let tp = r.textPreview, !tp.isEmpty, lf(tp) != lf(r.headline) {
+                out += "```\n\(lf(tp))\n```\n\n"
             }
-            if let ocr = r.ocrText, !ocr.isEmpty {
-                out += "> OCR: \(ocr.prefix(500))\n\n"
+            // Enrichment block — the metadata cpdb gleans that isn't
+            // in the raw clipboard payload. Explicitly labelled so
+            // it's obvious what was derived vs. captured. OCR is NOT
+            // truncated — the whole point of exporting is to keep
+            // the searchable text.
+            if let lt = r.linkTitle, !lf(lt).isEmpty {
+                out += "- **Fetched title:** \(lf(lt))\n"
             }
-            if let tags = r.imageTags, !tags.isEmpty {
-                out += "> Tags: \(tags)\n\n"
+            if let tags = r.imageTags, !lf(tags).isEmpty {
+                out += "- **Image tags:** \(lf(tags))\n"
             }
-            out += "---\n\n"
+            if let ocr = r.ocrText, !lf(ocr).isEmpty {
+                out += "\n**OCR text:**\n\n```\n\(lf(ocr))\n```\n"
+            }
+            out += "\n---\n\n"
         }
         return out
     }
@@ -153,14 +175,22 @@ public enum HistoryExporter {
     // MARK: - CSV (RFC 4180)
 
     public static func renderCSV(_ rows: [Row]) -> String {
-        func esc(_ s: String?) -> String {
-            let v = s ?? ""
+        // Quote per RFC-4180 when needed; embedded newlines are
+        // already LF-normalised by `lf()`, and a quoted field with
+        // LF newlines is valid RFC-4180 (it permits CRLF or LF as
+        // the in-field break; we keep the whole file LF for editor
+        // sanity).
+        func cell(_ s: String?) -> String {
+            let v = lf(s)
             if v.contains(",") || v.contains("\"") || v.contains("\n") {
                 return "\"" + v.replacingOccurrences(of: "\"", with: "\"\"") + "\""
             }
             return v
         }
-        var out = "id,kind,pinned,evicted,created_at,captured_at,source_app,device,headline,text_preview,ocr_text,image_tags\n"
+        // link_title is now its own column (was only folded into
+        // headline). image_tags + the FULL ocr_text are kept so the
+        // export carries every enrichment field.
+        var out = "id,kind,pinned,evicted,created_at,captured_at,source_app,device,headline,fetched_title,text_preview,ocr_text,image_tags\n"
         for r in rows {
             let cols = [
                 String(r.id),
@@ -169,12 +199,13 @@ public enum HistoryExporter {
                 r.evicted ? "1" : "0",
                 ts(r.createdAt),
                 ts(r.capturedAt),
-                esc(r.appName),
-                esc(r.deviceName),
-                esc(r.headline),
-                esc(r.textPreview),
-                esc(r.ocrText),
-                esc(r.imageTags),
+                cell(r.appName),
+                cell(r.deviceName),
+                cell(r.headline),
+                cell(r.linkTitle),
+                cell(r.textPreview),
+                cell(r.ocrText),
+                cell(r.imageTags),
             ]
             out += cols.joined(separator: ",") + "\n"
         }
@@ -185,7 +216,7 @@ public enum HistoryExporter {
 
     public static func renderHTML(_ rows: [Row]) -> String {
         func esc(_ s: String?) -> String {
-            (s ?? "")
+            lf(s)
                 .replacingOccurrences(of: "&", with: "&amp;")
                 .replacingOccurrences(of: "<", with: "&lt;")
                 .replacingOccurrences(of: ">", with: "&gt;")
@@ -205,8 +236,10 @@ public enum HistoryExporter {
           .badge { display: inline-block; background: #f0f0f0; border-radius: 4px; padding: 1px 6px; margin-right: 4px; }
           pre { background: #f7f7f7; border-radius: 6px; padding: 0.6rem; overflow-x: auto; font-size: 0.85rem; }
           .pin { color: #d08700; }
+          .enrich { color: #444; font-size: 0.85rem; margin: 0.25rem 0; }
+          .enrich b { color: #666; }
           @media (prefers-color-scheme: dark) {
-            body { background:#1a1a1a; color:#e5e5e5; } pre,.badge{background:#2a2a2a;} .entry{border-color:#333;}
+            body { background:#1a1a1a; color:#e5e5e5; } pre,.badge{background:#2a2a2a;} .entry{border-color:#333;} .enrich,.enrich b{color:#aaa;}
           }
         </style></head><body>
         <h1>cpdb clipboard export</h1>
@@ -223,11 +256,18 @@ public enum HistoryExporter {
             badges += "<span class=\"badge\">\(ts(r.createdAt))</span>"
             if r.evicted { badges += "<span class=\"badge\">body evicted</span>" }
             out += "  <div class=\"badges\">\(badges)</div>\n"
-            if let tp = r.textPreview, !tp.isEmpty, tp != r.headline {
+            if let tp = r.textPreview, !tp.isEmpty, lf(tp) != lf(r.headline) {
                 out += "  <pre>\(esc(tp))</pre>\n"
             }
-            if let ocr = r.ocrText, !ocr.isEmpty {
-                out += "  <div class=\"badges\">OCR: \(esc(String(ocr.prefix(500))))</div>\n"
+            // Enrichment — explicitly labelled, OCR untruncated.
+            if let lt = r.linkTitle, !lf(lt).isEmpty {
+                out += "  <div class=\"enrich\"><b>Fetched title:</b> \(esc(lt))</div>\n"
+            }
+            if let tags = r.imageTags, !lf(tags).isEmpty {
+                out += "  <div class=\"enrich\"><b>Image tags:</b> \(esc(tags))</div>\n"
+            }
+            if let ocr = r.ocrText, !lf(ocr).isEmpty {
+                out += "  <div class=\"enrich\"><b>OCR text:</b></div>\n  <pre>\(esc(ocr))</pre>\n"
             }
             out += "</div>\n"
         }

@@ -10,6 +10,24 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+- **Export now carries every enrichment field + is LF-clean.** Two
+  bugs in the v2.9.0 exporter:
+    - It dropped/buried the metadata cpdb *derives* — fetched
+      link/YouTube titles were only folded into the headline (no
+      distinct field), OCR text was truncated to 500 chars, and
+      `image_tags` were absent from HTML entirely. Now all three
+      are explicit, labelled fields in every format, and **OCR is
+      no longer truncated** (the searchable text is the whole point
+      of an export). CSV gains a dedicated `fetched_title` column
+      (13 cols now: …`headline,fetched_title,text_preview,ocr_text,
+      image_tags`); Markdown gets a per-entry enrichment block;
+      HTML gets `.enrich` rows.
+    - Mixed line endings — captured clipboard text routinely
+      carries CRLF (Windows source apps) or lone CR, while the
+      exporter's own separators are LF, so editors (Nova, etc.)
+      prompted to "fix" the file. All embedded captured text is now
+      LF-normalised; verified zero CR bytes across md/csv/html.
+
 ## [2.9.5] – 2026-05-18
 
 - **Import / Export in Preferences (GUI).** The v2.9.0 import/export
