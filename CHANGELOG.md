@@ -10,6 +10,20 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+- **GUI import no longer backdates entries an hour into the past.**
+  Reported as "none of the imported URLs enriched" — but the DB
+  showed every one *was* enriched (titles fetched, queue depth 0).
+  The real bug: the Preferences "Import URLs…" hardcoded
+  `spreadSeconds: 3600`, backdating each imported entry's
+  `created_at` across the previous hour. The popup is newest-first,
+  so freshly-imported items landed *below* recent real captures —
+  out of sight, looking missing and un-enriched. GUI import now
+  uses a 60 s spread: distinct timestamps for stable ordering, but
+  clustered at "just now" where you look right after importing.
+  (CLI `--spread-seconds` still defaults to 0 / honours whatever
+  you pass — bulk seeding a fresh install legitimately wants a
+  wide spread; an interactive GUI import does not.)
+
 ## [2.9.7] – 2026-05-18
 
 - **Import no longer aborts after the first URL.** Reported: GUI

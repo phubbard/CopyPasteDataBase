@@ -774,9 +774,14 @@ private struct PreferencesView: View {
             do {
                 let raw = try String(contentsOf: url, encoding: .utf8)
                 let store = try Store.open()
-                // 1-hour spread so a bulk import doesn't collapse to
-                // one timestamp and scramble popup ordering.
-                let r = try UrlImporter.run(rawText: raw, into: store, spreadSeconds: 3600)
+                // Small forward-less spread: 60 s total, so the
+                // batch gets distinct timestamps (stable popup
+                // ordering) but stays clustered at "just now" where
+                // the user looks right after an interactive import.
+                // The old 3600 s backdated everything up to an hour
+                // into the past, pushing fresh imports below the
+                // fold so they looked missing / un-enriched.
+                let r = try UrlImporter.run(rawText: raw, into: store, spreadSeconds: 60)
                 let msg: String
                 if r.acceptedCount == 0 {
                     msg = "No importable URLs found (\(r.rejected.count) rejected)."

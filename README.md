@@ -316,6 +316,10 @@ cpdb import-urls FILE [--dry-run] [--spread-seconds N]
                                           #   timestamp. #-comments + blanks skipped.
                                           #   Per-line isolated: a bad row counts as
                                           #   failed= and the batch continues.
+                                          #   (Preferences → Import URLs… clusters
+                                          #   imports at "now"; CLI defaults to no
+                                          #   spread — pass --spread-seconds to
+                                          #   backdate a bulk seed.)
 cpdb export --format md|csv|html [--output PATH] [--limit N] [--include-evicted]
                                           # portable dump (metadata + text, no
                                           #   flavor bytes). stdout if no --output.
