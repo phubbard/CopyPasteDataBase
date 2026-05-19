@@ -53,6 +53,9 @@ public sealed partial class MainWindow : Window
         // Each Settle/Bump fires once per row; we coalesce by debouncing
         // on the dispatcher rather than re-querying per-row.
         _host.LinkBackfill.RowSettled += OnLinkBackfillSettled;
+        // OCR settle → re-query so the screenshot is now findable by its
+        // recognised text (and any active search re-runs against it).
+        _host.ImageAnalysis.RowSettled += OnImageAnalyzed;
 
         // Use AddHandler with handledEventsToo so we still see KeyDown after
         // TextBox / ListView mark it handled internally (Delete in TextBox
@@ -141,6 +144,16 @@ public sealed partial class MainWindow : Window
             {
                 StatusText.Text = $"Fetched title for #{e.EntryId}";
             }
+            Refresh();
+        });
+    }
+
+    private void OnImageAnalyzed(object? sender, CpdbWin.Core.Analysis.ImageAnalyzedEventArgs e)
+    {
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            if (!string.IsNullOrEmpty(e.OcrText))
+                StatusText.Text = $"OCR'd #{e.EntryId}";
             Refresh();
         });
     }

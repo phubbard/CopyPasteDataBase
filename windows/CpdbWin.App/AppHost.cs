@@ -24,6 +24,7 @@ public sealed class AppHost : IDisposable
     public CaptureService Capture { get; }
     public LinkMetadataFetcher LinkFetcher { get; }
     public LinkBackfillService LinkBackfill { get; }
+    public ImageAnalysisService ImageAnalysis { get; }
     public AppPaths.Resolved Paths { get; }
 
     /// <summary>
@@ -44,6 +45,7 @@ public sealed class AppHost : IDisposable
         CaptureService capture,
         LinkMetadataFetcher linkFetcher,
         LinkBackfillService linkBackfill,
+        ImageAnalysisService imageAnalysis,
         bool suspectedDataLoss)
     {
         Paths = paths;
@@ -54,6 +56,7 @@ public sealed class AppHost : IDisposable
         Capture = capture;
         LinkFetcher = linkFetcher;
         LinkBackfill = linkBackfill;
+        ImageAnalysis = imageAnalysis;
         SuspectedDataLoss = suspectedDataLoss;
     }
 
@@ -115,29 +118,34 @@ public sealed class AppHost : IDisposable
         // within a few seconds rather than waiting on the periodic
         // timer. Reentry-guarded inside WakeForCapture, so a flurry of
         // pastes coalesces.
+        var imageAnalysis = new ImageAnalysisService(entries);
         capture.Ingested += (_, outcome) =>
         {
-            if (outcome.EntryKind == "link" &&
-                (outcome.Kind == IngestKind.Inserted || outcome.Kind == IngestKind.Bumped))
-            {
-                linkBackfill.WakeForCapture();
-            }
+            if (outcome.Kind is not (IngestKind.Inserted or IngestKind.Bumped))
+                return;
+            // Capture-wake: a fresh URL gets its title and a fresh
+            // screenshot gets OCR'd within a couple seconds instead of
+            // waiting on the periodic timer. Both are reentry-guarded.
+            if (outcome.EntryKind == "link")  linkBackfill.WakeForCapture();
+            if (outcome.EntryKind == "image") imageAnalysis.WakeForCapture();
         };
-        // The guard: refuse to start capture (or its link backfill) when
+        // The guard: refuse to start capture (or the backfill loops) when
         // we suspect data loss, so the frozen DB is preserved exactly as
         // found until the user has a chance to restore a backup.
         if (!suspectedDataLoss)
         {
             capture.Start();
             linkBackfill.Start();
+            imageAnalysis.Start();
         }
 
         return new AppHost(paths, db, blobs, ingestor, entries, capture,
-            linkFetcher, linkBackfill, suspectedDataLoss);
+            linkFetcher, linkBackfill, imageAnalysis, suspectedDataLoss);
     }
 
     public void Dispose()
     {
+        ImageAnalysis.Dispose();
         LinkBackfill.Dispose();
         LinkFetcher.Dispose();
         Capture.Dispose();

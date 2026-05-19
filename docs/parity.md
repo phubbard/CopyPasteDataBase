@@ -23,7 +23,8 @@ Legend:
 | Canonical content_hash | ✅ v1.0 | ✅ v2.5 | ✅ v1.0 | byte-exact algorithm in `docs/schema.md` § Canonical hash; pinned vectors in `Tests/CpdbCoreTests/HashVectors.swift` |
 | Inline / blob spillover (256 KB) | ✅ v1.0 | ✅ v2.5 | ✅ v1.0 | rule in `docs/schema.md` § Blob store |
 | Kind classification | ✅ v1.0 | ✅ v2.5 | ✅ v1.0 | rules + Windows-clipboard-format → UTI table in `docs/schema.md` § Kind classification |
-| OCR + image tags | ✅ v1.2 (Vision) | ✅ v2.5 | ⏳ | Windows: `Windows.Media.Ocr` is the planned engine; image classifier still TBD (no built-in equivalent of Vision's `VNClassifyImageRequest`) |
+| OCR (image → searchable text) | ✅ v1.2 (Vision) | ✅ v2.5 | ✅ v1.22.0 | Windows: `Windows.Media.Ocr` (built-in, no model bundle). `ImageAnalysisService` mirrors the link-backfill loop — capture-wake + periodic sweep + `analyzed_at` sentinel; text folded into the same FTS5 `ocr_text` column. CLI `cpdb-win analyze-images [--force]`; Preferences → "Re-OCR images" |
+| Image classification tags | ✅ v1.2 (Vision) | ✅ v2.5 | ⏳ | no built-in Windows equivalent of Vision's `VNClassifyImageRequest`; `image_tags` stays NULL. Candidate: bundled ONNX model (deferred — adds a ~15-25 MB model to the installer) |
 | Password-manager blocklist | ✅ v1.2.1 | — | ✅ | block by source-app identifier; Apple-Strong-Password shape heuristic (Apple-only) |
 | `nspasteboard.org` transient markers | ✅ v1.0 | — | — | Apple-only convention |
 
@@ -132,6 +133,7 @@ maintenance surface without a separate download.
 | `cpdb backfill-titles --retry-empty` | ✅ v2.7.8 | ✅ v1.7.0 | Windows: `cpdb-win backfill-titles --retry-empty` |
 | `cpdb reclassify-kinds` | ✅ v2.7.14 | ✅ v1.7.0 | Windows: `cpdb-win reclassify-kinds` |
 | `cpdb fetch-link-titles [--limit][--force][--retry-empty][--dry-run]` | ✅ v2.7.0 / 2.7.8 | ✅ v1.7.0 | Windows: `cpdb-win backfill-titles` family covers this |
+| `cpdb analyze-images [--force]` | ✅ v1.2 | — | ✅ v1.22.0 | Windows: `cpdb-win analyze-images [--force]` — self-sufficient (the CLI process runs the OCR via `Windows.Media.Ocr`, same as macOS doing it in-process); `--force` clears `analyzed_at` first. iOS reads OCR via CloudKit, never analyzes |
 | `cpdb import-urls FILE [--dry-run][--spread-seconds N]` | ✅ v2.9.0 | ✅ v1.10.0 | one URL per line, http(s)/file only, `#`-comments + blanks skipped; ingest as synthetic clipboard captures attributed to a "cpdb import" source app so links enrich via the normal backfill. Logic in `UrlImporter` (shared by CLI + GUI). Windows: `cpdb-win import-urls FILE [--dry-run] [--spread-seconds N]` |
 | `cpdb export --format md\|csv\|html [--output][--limit][--include-evicted]` | ✅ v2.9.0 | ✅ v1.10.0 | metadata + text only (no flavor bytes); newest-first. Logic in `HistoryExporter` (shared by CLI + GUI). CSV is RFC-4180 12-col; HTML self-contained w/ dark mode; MD = paragraph-per-entry. Windows: `cpdb-win export --format md\|csv\|html [--output FILE] [--limit N] [--include-evicted]` (no `--output` → stdout) |
 | `cpdb sync {push-once, pull-once}` | ✅ v2.0 | — | CloudKit, Apple-only |
