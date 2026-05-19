@@ -187,7 +187,9 @@ public partial class App : Application
             _prefsWindow.Activate();
             return;
         }
-        _prefsWindow = new PreferencesWindow(_settings, _settingsPath, RegisterHotkey, Host!);
+        _prefsWindow = new PreferencesWindow(
+            _settings, _settingsPath, RegisterHotkey, Host!,
+            onStoreChanged: () => _mainWindow?.RequestRefresh());
         _prefsWindow.Closed += (_, _) => _prefsWindow = null;
         _prefsWindow.Activate();
     }

@@ -18,6 +18,7 @@ public sealed partial class PreferencesWindow : Window
     private readonly string _settingsPath;
     private readonly Action<HotkeyConfig> _onHotkeyChanged;
     private readonly AppHost _host;
+    private readonly Action? _onStoreChanged;
     private HotkeyConfig _pending;
     private bool _recording;
 
@@ -25,7 +26,8 @@ public sealed partial class PreferencesWindow : Window
         UserSettings settings,
         string settingsPath,
         Action<HotkeyConfig> onHotkeyChanged,
-        AppHost host)
+        AppHost host,
+        Action? onStoreChanged = null)
     {
         InitializeComponent();
         Title = $"{CpdbVersion.Description} preferences";
@@ -33,6 +35,7 @@ public sealed partial class PreferencesWindow : Window
         _settingsPath = settingsPath;
         _onHotkeyChanged = onHotkeyChanged;
         _host = host;
+        _onStoreChanged = onStoreChanged;
         _pending = settings.Hotkey;
         HotkeyBox.Text = HotkeyFormatter.Format(_pending);
 
@@ -168,6 +171,13 @@ public sealed partial class PreferencesWindow : Window
             if (result.Rejected.Count > 0)
                 msg += $"; {result.Rejected.Count} line(s) rejected";
             SetPortabilityBusy(false, msg);
+
+            // The import wrote via its own worker-thread connection, so
+            // the main window's capture-event refresh never fired — poke
+            // it to re-query or the freshly-imported rows stay invisible
+            // until the next capture / backfill settle.
+            if (result.Inserted > 0 || result.Bumped > 0)
+                _onStoreChanged?.Invoke();
         }
         catch (Exception ex)
         {
