@@ -10,6 +10,17 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+- **Delete / Backspace removes the selected popup entry.** In the
+  popup, the dedicated Delete key (forward-delete / fn+Delete)
+  always tombstones the selected entry; Backspace does the same
+  but only when the search field is empty (while typing a query,
+  Backspace still edits text — same gating as the Space→QuickLook
+  shortcut). Routes through the existing `repository.tombstone` +
+  refresh path, so it's identical to right-click → Delete and
+  propagates via CloudKit like any other deletion.
+
+## [2.9.8] – 2026-05-18
+
 - **GUI import no longer backdates entries an hour into the past.**
   Reported as "none of the imported URLs enriched" — but the DB
   showed every one *was* enriched (titles fetched, queue depth 0).

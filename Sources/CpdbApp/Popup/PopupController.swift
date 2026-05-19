@@ -118,6 +118,27 @@ final class PopupController {
         Log.cli.info("pasteSelected entry \(id, privacy: .public) (previous=\(self.previousApp?.bundleIdentifier ?? "nil", privacy: .public))")
     }
 
+    /// Delete (tombstone) the selected entry. Mirrors
+    /// `EntryStripView.delete(row:)` — same repository.tombstone +
+    /// explicit refresh path — so the keyboard shortcut and the
+    /// context-menu Delete behave identically. Selection is clamped
+    /// by `PopupState.refresh()` so focus lands on the next row.
+    func deleteSelected() {
+        guard let state = state, let id = state.selectedEntry?.id else { return }
+        let store = state.store
+        Task.detached {
+            do {
+                let repo = EntryRepository(store: store)
+                try repo.tombstone(id: id)
+            } catch {
+                Log.cli.error(
+                    "deleteSelected failed for entry id=\(id, privacy: .public): \(String(describing: error), privacy: .public)"
+                )
+            }
+            await MainActor.run { state.refresh() }
+        }
+    }
+
     // MARK: - Positioning
 
     private func repositionOnActiveScreen(_ panel: PopupPanel) {
@@ -183,6 +204,21 @@ final class PopupController {
                     // is empty. If the user is typing, space remains a
                     // literal character into the query.
                     self.previewSelected()
+                    return true
+                case 51 where (self.state?.query.isEmpty ?? false):
+                    // Delete/Backspace — tombstone the selected entry,
+                    // but ONLY when the search field is empty. While
+                    // the user is typing a query, Backspace must keep
+                    // editing the text (same gating as Space above).
+                    self.deleteSelected()
+                    return true
+                case 117:
+                    // Forward-delete (fn+Delete / the dedicated
+                    // Delete key on full keyboards). Not a
+                    // text-editing key in this context, so no
+                    // query-empty gate needed — always deletes the
+                    // selected entry.
+                    self.deleteSelected()
                     return true
                 default:
                     return false

@@ -260,6 +260,8 @@ Press your hotkey from any app:
 | `Return` | Paste the selected entry back into the app you were using |
 | `⌘Y` | Quick Look the selected entry (any time) |
 | `Space` | Quick Look — only when the search field is empty |
+| `Delete` (fn+⌫) | Delete the selected entry (any time) |
+| `⌫` Backspace | Delete the selected entry — only when the search field is empty (otherwise edits the query) |
 | `Esc` | Dismiss popup |
 | Click outside | Dismiss popup |
 
