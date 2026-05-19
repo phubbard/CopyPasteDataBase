@@ -12,6 +12,30 @@ dated `[1.X.Y]` heading and reset `[Unreleased]` to empty.
 
 ## [Unreleased]
 
+- **Preferences parity with macOS.** The Settings window grew from
+  hotkey + import/export to a scrollable pane closing the macOS
+  gap (for the sections that actually apply to a standalone
+  Windows build):
+  - **Startup** — "Launch cpdb-win at login" toggle, wired to
+    `AutoLaunch` (was tray-menu-only). Disabled with an explanation
+    on a non-installed build (can't hijack the shared Run key).
+  - **Library maintenance** — "Re-enrich now" (reclassify URL-text
+    → link, then queue title/thumbnail refetch for title-less
+    links), plus discrete "Reclassify kinds" / "Retry empty
+    titles". Same `CpdbWin.Core.Maintenance` engine as the CLI, run
+    on a worker connection; pokes the main window + lets the
+    backfill loop pick the candidates up. This is the self-serve
+    fix for a stale/restored library.
+  - **Storage** — read-only DB path, db/wal/shm + blob sizes, and
+    live / pinned / total entry counts (closes the macOS "Storage
+    usage diagnostic" parity row).
+  - **Updates** — "Check for Updates…" + current version, mirroring
+    the tray item into the window.
+  - Deliberately *not* mirrored: iCloud sync (Apple-only), Quick
+    Look position (no Quick Look on Windows), Image-analysis
+    OCR/threshold (engine not implemented yet), Permissions (no
+    Windows runtime-permission equivalent).
+
 - **Maintenance CLI ships in the installer.** `cpdb-win.exe`
   (`reclassify-kinds`, `backfill-titles --retry-empty`, `dedupe`,
   `import-urls`, `export`) was only ever a from-source build —

@@ -83,7 +83,7 @@ Legend:
 | Feature | macOS | iOS | Windows | Contract / notes |
 |---|---|---|---|---|
 | Pinning (`entries.pinned`) | ✅ v2.6.0 | ✅ v2.6.0 | ✅ v1.1.0 | contract: `docs/schema.md` § Pinning. Schema column already exists; sort order + eviction-skip semantics are mandatory; UI is per-platform |
-| Storage usage diagnostic | ✅ v2.6.1 | — | ⏳ | iOS storage is small + caches itself; doesn't need the diagnostic |
+| Storage usage diagnostic | ✅ v2.6.1 | — | ✅ v1.21.0 | Windows: Preferences → Storage shows DB path, db/wal/shm + blob sizes, and live/pinned/total entry counts (read-only). iOS storage is small + caches itself; doesn't need the diagnostic |
 | Time-window eviction | ✅ v2.6.2 | — | ⏳ | contract: `docs/schema.md` § Eviction. `body_evicted_at` column + sync round-trip + pull-side cooperation are mandatory |
 | Test-fixture scaffolding | ✅ v2.6.3 | — | ⏳ | contract: env-var-overridable data dir; ditto-equivalent snapshot |
 | Size-budget eviction (LRU + size-weighted) | ⏳ planned | — | ⏳ | not yet implemented anywhere |
