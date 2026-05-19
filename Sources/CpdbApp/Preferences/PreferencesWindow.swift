@@ -781,7 +781,11 @@ private struct PreferencesView: View {
                 if r.acceptedCount == 0 {
                     msg = "No importable URLs found (\(r.rejected.count) rejected)."
                 } else {
-                    msg = "Imported \(r.inserted) new · \(r.bumped) bumped · \(r.skipped) skipped · \(r.rejected.count) rejected. Links enrich in the background."
+                    var parts = ["\(r.inserted) new", "\(r.bumped) bumped"]
+                    if r.skipped > 0 { parts.append("\(r.skipped) skipped") }
+                    if r.failed > 0 { parts.append("\(r.failed) failed") }
+                    if r.rejected.count > 0 { parts.append("\(r.rejected.count) rejected") }
+                    msg = "Imported " + parts.joined(separator: " · ") + ". Links enrich in the background."
                 }
                 await MainActor.run { importExportStatus = msg }
             } catch {

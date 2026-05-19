@@ -10,6 +10,27 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+- **Import no longer aborts after the first URL.** Reported: GUI
+  "Import URLs…" on an 11-line file only imported the first entry.
+  Root cause — `Configuration()` set no SQLite busy timeout, so the
+  Preferences import's `Store.open()` (a second connection in the
+  *same* menu-bar-app process as the running capture daemon) hit an
+  immediate `SQLITE_BUSY` on the contended write lock by iteration
+  2; the `try` propagated and aborted the whole loop after one
+  insert. (The CLI is a separate process and usually won the race,
+  which is why it looked fine in testing — a classic
+  works-on-my-machine.) Two fixes:
+    - `Store` now sets `busyMode = .timeout(5.0)` — contended
+      writers wait (up to 5 s, far longer than any cpdb write txn)
+      instead of failing instantly. Benefits every consumer (CLI
+      racing the app, the GUI, the syncer).
+    - `UrlImporter.run` isolates each line in its own do/catch:
+      one ingest throwing now counts as `failed` and the batch
+      continues, instead of losing every remaining URL. CLI `done:`
+      line and the GUI status both surface the `failed` count.
+  Verified: a 10-URL file imports `inserted=10 … failed=0` against
+  the live DB with the daemon running.
+
 ## [2.9.6] – 2026-05-18
 
 - **Export now carries every enrichment field + is LF-clean.** Two

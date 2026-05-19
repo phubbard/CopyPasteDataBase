@@ -58,7 +58,7 @@ struct ImportUrls: ParsableCommand {
             into: store,
             spreadSeconds: spreadSeconds
         )
-        print("done: inserted=\(result.inserted) bumped=\(result.bumped) skipped=\(result.skipped)")
+        print("done: inserted=\(result.inserted) bumped=\(result.bumped) skipped=\(result.skipped) failed=\(result.failed)")
         if result.inserted > 0 {
             print("link entries will get titles + thumbnails on the next backfill cycle")
             print("(or run `cpdb fetch-link-titles` to enrich now)")

@@ -28,6 +28,14 @@ public final class Store {
         var config = Configuration()
         config.readonly = readonly
         config.foreignKeysEnabled = true
+        // Wait, don't throw, on a contended write lock. Without this
+        // a second connection to the same file (e.g. the menu-bar
+        // app's daemon Store + a Preferences "Import URLs…" Store in
+        // the same process, or the CLI racing the running app) gets
+        // an immediate SQLITE_BUSY and the operation fails. 5s is
+        // far longer than any single cpdb write transaction, so in
+        // practice contended writers just queue briefly.
+        config.busyMode = .timeout(5.0)
         self.dbQueue = try DatabaseQueue(path: path, configuration: config)
         if !readonly {
             try Self.migrate(dbQueue)

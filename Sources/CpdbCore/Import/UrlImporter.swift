@@ -16,6 +16,10 @@ public enum UrlImporter {
         public var inserted: Int = 0
         public var bumped: Int = 0
         public var skipped: Int = 0
+        /// Per-line ingest threw (e.g. a transient DB-busy after the
+        /// 5s timeout). Counted, not fatal — the batch continues so
+        /// one bad row can't lose the other N.
+        public var failed: Int = 0
         /// (line, reason) for lines that didn't pass the scheme
         /// filter — surfaced so the UI / CLI can show why.
         public var rejected: [(line: String, reason: String)] = []
@@ -73,11 +77,19 @@ public enum UrlImporter {
             let offset = step * Double(accepted.count - 1 - idx)
             let capturedAt = now.addingTimeInterval(-offset)
             let snapshot = Self.snapshot(for: line, capturedAt: capturedAt)
-            let outcome = try ingestor.ingest(snapshot, sourceApp: .importer, deviceId: deviceId)
-            switch outcome {
-            case .inserted: result.inserted += 1
-            case .bumped:   result.bumped += 1
-            case .skipped:  result.skipped += 1
+            // Per-line isolation: a single ingest throwing (transient
+            // DB contention, an odd flavor, etc.) must NOT abort the
+            // whole import — that's the v2.9.x bug where a SQLITE_BUSY
+            // on line 2 silently dropped the remaining 9 URLs.
+            do {
+                let outcome = try ingestor.ingest(snapshot, sourceApp: .importer, deviceId: deviceId)
+                switch outcome {
+                case .inserted: result.inserted += 1
+                case .bumped:   result.bumped += 1
+                case .skipped:  result.skipped += 1
+                }
+            } catch {
+                result.failed += 1
             }
         }
         return result
