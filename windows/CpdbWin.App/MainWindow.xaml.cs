@@ -39,10 +39,8 @@ public sealed partial class MainWindow : Window
         => SettingsRequested?.Invoke();
 
     [DllImport("user32.dll")] private static extern short GetKeyState(int vKey);
-    private const int VK_SHIFT   = 0x10;
-    private const int VK_CONTROL = 0x11;
-    private static bool IsShiftDown() => (GetKeyState(VK_SHIFT)   & 0x8000) != 0;
-    private static bool IsCtrlDown()  => (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+    private const int VK_SHIFT = 0x10;
+    private static bool IsShiftDown() => (GetKeyState(VK_SHIFT) & 0x8000) != 0;
 
     public MainWindow(AppHost host)
     {
@@ -241,36 +239,23 @@ public sealed partial class MainWindow : Window
 
     private void SearchBox_TextChanged(object sender, TextChangedEventArgs e) => Refresh();
 
-    private void EntryList_ItemClick(object sender, ItemClickEventArgs e)
+    /// <summary>
+    /// Double-click = activate (copy to clipboard + hide window +
+    /// paste-back to the previously-foreground app). A single click only
+    /// selects — the framework's native Extended selection handles plain
+    /// / Shift / Ctrl clicks, and <see cref="EntryList_SelectionChanged"/>
+    /// drives the preview pane. Enter does the same as double-click (see
+    /// the keyboard handlers).
+    /// </summary>
+    private void EntryList_DoubleTapped(object sender, DoubleTappedRoutedEventArgs e)
     {
-        if (e.ClickedItem is not EntryViewModel vm) return;
+        // Resolve the row actually under the pointer so double-clicking
+        // an unselected row activates that row, not a stale selection.
+        var vm = (e.OriginalSource as FrameworkElement)?.DataContext as EntryViewModel
+                 ?? EntryList.SelectedItem as EntryViewModel;
+        if (vm is null) return;
         int idx = EntryList.Items.IndexOf(vm);
-        if (idx < 0) return;
-
-        // IsItemClickEnabled fires ItemClick on every click — including
-        // Shift- and Ctrl-modified ones — and suppresses the framework's
-        // default selection-extension. Drive the multi-select gestures
-        // ourselves, and only activate (paste-back + hide) on a plain click.
-        if (IsShiftDown())
-        {
-            if (_shiftAnchor < 0) _shiftAnchor = idx;
-            ExtendSelection(_shiftAnchor, idx);
-            _cursorIndex = idx;
-            return;
-        }
-        if (IsCtrlDown())
-        {
-            if (EntryList.SelectedItems.Contains(vm))
-                EntryList.SelectedItems.Remove(vm);
-            else
-                EntryList.SelectedItems.Add(vm);
-            _shiftAnchor = idx;
-            _cursorIndex = idx;
-            return;
-        }
-
-        _shiftAnchor = idx;
-        _cursorIndex = idx;
+        if (idx >= 0) { _shiftAnchor = idx; _cursorIndex = idx; }
         ActivateEntry(vm);
     }
 
@@ -660,14 +645,72 @@ public sealed partial class MainWindow : Window
     private void DeleteEntries(IReadOnlyList<EntryViewModel> vms)
     {
         if (vms.Count == 0) return;
+
+        // Was the user driving from the search box (type-to-filter +
+        // arrow nav, focus stays in the TextBox by design) or directly
+        // on the list (clicked a row / used the context menu)? Capture
+        // it BEFORE Refresh() — Refresh() replaces ItemsSource, which
+        // destroys the focused ListViewItem and bounces keyboard focus
+        // back to the search box. If the delete came from the list we
+        // must put focus back on the list afterwards, or "press Delete
+        // repeatedly to clear rows" dies after the first one.
+        bool searchHadFocus = SearchBox.FocusState != FocusState.Unfocused;
+
+        // Where to land after the list shrinks: the position of the
+        // topmost deleted row. The row that slides up into that slot
+        // becomes the new selection, so repeatedly pressing Delete
+        // walks down the list instead of snapping the cursor back to
+        // the top every time.
+        var deletedIds = vms.Select(v => v.EntryId).ToHashSet();
+        int landIndex = EntryList.Items
+            .OfType<EntryViewModel>()
+            .Select((v, i) => (v, i))
+            .Where(t => deletedIds.Contains(t.v.EntryId))
+            .Select(t => t.i)
+            .DefaultIfEmpty(0)
+            .Min();
+
         _host.Entries.TombstoneMany(vms.Select(v => v.EntryId));
         StatusText.Text = vms.Count == 1
             ? $"Deleted #{vms[0].EntryId}"
             : $"Deleted {vms.Count} entries";
-        ShowDetailEmpty();
         _shiftAnchor = -1;
         _cursorIndex = -1;
         Refresh();
+
+        // Re-anchor on the row now occupying the deleted slot (or the
+        // new last row if the tail was deleted). SelectedIndex raises
+        // SelectionChanged, which refreshes the preview pane.
+        int count = EntryList.Items.Count;
+        if (count == 0)
+        {
+            ShowDetailEmpty();
+            return;
+        }
+        int newSel = Math.Clamp(landIndex, 0, count - 1);
+        EntryList.SelectedIndex = newSel;
+        _cursorIndex = newSel;
+        EntryList.ScrollIntoView(EntryList.Items[newSel]);
+
+        // List-driven delete: hand keyboard focus back to the freshly
+        // selected row so the next Delete keystroke lands on the list,
+        // not the search box. Deferred (Low) so the virtualized
+        // container for newSel is realized after ScrollIntoView.
+        // Search-box-driven delete: leave focus alone — the selection is
+        // preserved and SearchBox_KeyDown drives the next Delete, so
+        // stealing focus to the list would break type-to-filter.
+        if (!searchHadFocus)
+        {
+            DispatcherQueue.TryEnqueue(
+                Microsoft.UI.Dispatching.DispatcherQueuePriority.Low,
+                () =>
+                {
+                    if (EntryList.ContainerFromIndex(newSel) is Control c)
+                        c.Focus(FocusState.Keyboard);
+                    else
+                        EntryList.Focus(FocusState.Keyboard);
+                });
+        }
     }
 
     private void ActivateEntry(EntryViewModel vm)
