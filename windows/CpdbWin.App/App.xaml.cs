@@ -108,7 +108,13 @@ public partial class App : Application
         // Idempotent — once we've initialized once, the user's later choice
         // (off, in particular) sticks. The flag lives in settings.json next
         // to the rest of the prefs.
-        if (!_settings.AutoLaunchInitialized)
+        //
+        // Gate the whole thing on a managed (Velopack) install: a dev /
+        // Debug run shares this settings.json, so if it consumed the
+        // one-time AutoLaunchInitialized flag the real install would
+        // never get its first-run autostart enabled. A dev build leaves
+        // both the flag and the Run key untouched.
+        if (AutoLaunch.IsManagedInstall() && !_settings.AutoLaunchInitialized)
         {
             AutoLaunch.SetEnabled(true);
             _settings.AutoLaunchInitialized = true;

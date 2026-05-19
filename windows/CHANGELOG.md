@@ -12,6 +12,22 @@ dated `[1.X.Y]` heading and reset `[Unreleased]` to empty.
 
 ## [Unreleased]
 
+- **Autostart can no longer be hijacked by a non-installed build.**
+  Autostart is one shared `HKCU\…\Run\CpdbWin` value. A dev / Debug
+  / portable run (e.g. a `bin\Debug` build used for testing) called
+  `AutoLaunch.SetEnabled(true)` and overwrote it with its own
+  throwaway path — so a reboot launched the *stale dev binary*
+  instead of the real install (observed: an ancient 1.11 dev build
+  auto-starting after the install had updated to 1.16.0). Now
+  `AutoLaunch` only writes the Run key when the running process
+  lives under the Velopack install root
+  (`%LOCALAPPDATA%\CpdbWin\`); a non-installed build leaves both
+  the Run key and the one-time `AutoLaunchInitialized` flag
+  untouched. Disabling autostart is still allowed from any build so
+  a bad entry can always be cleaned up.
+
+## [1.16.0] – 2026-05-19
+
 - **Exports implement the corrected v2.9.6 contract.** The v2.9.0
   exporter dropped enrichment: fetched link/YouTube titles were
   only folded into the headline (no distinct field), OCR was
@@ -29,6 +45,8 @@ dated `[1.X.Y]` heading and reset `[Unreleased]` to empty.
     → `\n`) and the whole document is guaranteed CR-free — captured
     clipboard text routinely carries CRLF, which made editors
     prompt to "fix" the file.
+
+## [1.15.0] – 2026-05-19
 
 - **Persistent tray-icon visibility across updates.** The
   notification-area icon now registers with a fixed `guidItem`
