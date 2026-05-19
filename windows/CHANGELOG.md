@@ -12,6 +12,24 @@ dated `[1.X.Y]` heading and reset `[Unreleased]` to empty.
 
 ## [Unreleased]
 
+- **Exports implement the corrected v2.9.6 contract.** The v2.9.0
+  exporter dropped enrichment: fetched link/YouTube titles were
+  only folded into the headline (no distinct field), OCR was
+  truncated to 500 chars, and `image_tags` was missing from HTML.
+  macOS v2.9.6 corrected the contract; Windows now matches it
+  byte-for-byte:
+  - Every enrichment field is surfaced **explicitly labelled** —
+    `fetched_title` (YouTube/page titles), the **full** untruncated
+    `ocr_text`, and `image_tags`. Markdown gets a per-entry
+    enrichment block (`**Fetched title:**` / `**Image tags:**` /
+    fenced `**OCR text:**`); HTML gets `.enrich` rows + dark-mode
+    styling; **CSV header is now 13 columns** (`fetched_title`
+    inserted after `headline`).
+  - All embedded captured text is **LF-normalised** (`\r\n`/`\r`
+    → `\n`) and the whole document is guaranteed CR-free — captured
+    clipboard text routinely carries CRLF, which made editors
+    prompt to "fix" the file.
+
 - **Persistent tray-icon visibility across updates.** The
   notification-area icon now registers with a fixed `guidItem`
   (`NIF_GUID`). Windows keys the user's "show this icon on the
