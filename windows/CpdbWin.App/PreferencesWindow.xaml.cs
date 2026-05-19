@@ -291,6 +291,16 @@ public sealed partial class PreferencesWindow : Window
             return $"Queued {r.LinkStateReset} title-less link(s) for refetch.";
         });
 
+    private void ReOcr_Click(object sender, RoutedEventArgs e) =>
+        _ = RunMaintenanceAsync("re-OCR images", db =>
+        {
+            var r = MaintenanceCommands.ResetImageAnalysis(db);
+            return r.LinkStateReset == 0
+                ? "No image entries to OCR."
+                : $"Re-armed {r.LinkStateReset} image(s); OCR runs in the "
+                  + "background and folds the text into search.";
+        });
+
     private void ReEnrich_Click(object sender, RoutedEventArgs e) =>
         _ = RunMaintenanceAsync("re-enrich", db =>
         {
@@ -328,6 +338,7 @@ public sealed partial class PreferencesWindow : Window
         ReEnrichButton.IsEnabled    = !busy;
         ReclassifyButton.IsEnabled  = !busy;
         RetryEmptyButton.IsEnabled  = !busy;
+        ReOcrButton.IsEnabled       = !busy;
         MaintenanceStatus.Text = status;
     }
 

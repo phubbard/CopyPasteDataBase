@@ -1,3 +1,4 @@
+using CpdbWin.Core.Analysis;
 using CpdbWin.Core.Identity;
 using CpdbWin.Core.Ingest;
 using CpdbWin.Core.Maintenance;
@@ -18,6 +19,7 @@ namespace CpdbWin.Cli;
 /// <code>
 /// cpdb-win reclassify-kinds
 /// cpdb-win backfill-titles --retry-empty
+/// cpdb-win analyze-images [--force]
 /// cpdb-win dedupe --links-all-time
 /// cpdb-win --help | -h
 /// </code>
@@ -64,6 +66,7 @@ public static class Program
         {
             "reclassify-kinds"   => RunReclassify(db),
             "backfill-titles"    => RunBackfillTitles(db, args[1..]),
+            "analyze-images"     => RunAnalyzeImages(db, paths, args[1..]),
             "dedupe"             => RunDedupe(db, args[1..]),
             "import-urls"        => RunImportUrls(db, paths, args[1..]),
             "export"             => RunExport(db, args[1..]),
@@ -197,6 +200,29 @@ public static class Program
         return 0;
     }
 
+    private static int RunAnalyzeImages(SqliteConnection db, AppPaths.Resolved paths, string[] flags)
+    {
+        // Self-sufficient like macOS `cpdb analyze-images`: this process
+        // actually runs the OCR (Windows.Media.Ocr is available here too
+        // — same TFM as the app), not just re-arm state for the GUI.
+        bool force = flags.Contains("--force");
+        if (force)
+        {
+            var r = MaintenanceCommands.ResetImageAnalysis(db);
+            Console.WriteLine($"analyze-images --force: re-armed {r.LinkStateReset} image(s).");
+        }
+
+        var blobs = new BlobStore(paths.Blobs);
+        var entries = new EntryRepository(db, blobs);
+        using var svc = new ImageAnalysisService(entries);
+        var n = svc.DrainAsync().GetAwaiter().GetResult();
+        Console.WriteLine(
+            n == 0
+                ? "analyze-images: nothing to do (no un-analyzed images)."
+                : $"analyze-images: OCR'd {n} image(s); text folded into the FTS5 index.");
+        return 0;
+    }
+
     private static int RunDedupe(SqliteConnection db, string[] flags)
     {
         if (flags.Length == 0 || !flags.Contains("--links-all-time"))
@@ -238,6 +264,13 @@ public static class Program
                   kind=link rows that settled with no title (link_title
                   NULL or empty). Restart the GUI app to fire the
                   next backfill cycle.
+
+              cpdb-win analyze-images [--force]
+                  On-device OCR (Windows.Media.Ocr) of image entries
+                  that haven't been analyzed yet; recognised text is
+                  folded into the FTS5 index so screenshots become
+                  searchable. --force re-OCRs every image (clears
+                  analyzed_at first). Safe while the GUI is running.
 
               cpdb-win dedupe --links-all-time
                   For each text_preview URL with multiple live

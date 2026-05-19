@@ -355,6 +355,74 @@ public sealed class EntryRepository
         tx.Commit();
     }
 
+    // ─── Image analysis backfill (docs/schema.md § ocr_text) ────────────────
+
+    /// <summary>
+    /// Image entries that still need OCR: <c>kind = 'image'</c>, not
+    /// tombstoned, and <c>analyzed_at IS NULL</c> (the sentinel — set once
+    /// OCR has run, even if it found no text, so a blank image isn't
+    /// re-OCR'd forever). Newest-first so a freshly captured screenshot
+    /// becomes searchable within a capture-wake cycle.
+    /// </summary>
+    public IReadOnlyList<long> NextImageAnalysisCandidates(int limit)
+    {
+        const string sql = """
+            SELECT id FROM entries
+            WHERE kind = 'image'
+              AND deleted_at IS NULL
+              AND analyzed_at IS NULL
+            ORDER BY created_at DESC
+            LIMIT $limit
+            """;
+        var ids = new List<long>();
+        using var cmd = _db.CreateCommand();
+        cmd.CommandText = sql;
+        cmd.Parameters.AddWithValue("$limit", limit);
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read()) ids.Add(reader.GetInt64(0));
+        return ids;
+    }
+
+    /// <summary>
+    /// Record the OCR result for an image entry. Always stamps
+    /// <c>analyzed_at</c> (even when <paramref name="ocrText"/> is null —
+    /// "we looked, there was no text") so the row drops out of the
+    /// candidate set. Writes the text into <c>entries.ocr_text</c> and the
+    /// FTS5 shadow's <c>ocr_text</c> column (same delete-free column
+    /// UPDATE the link path uses in <see cref="SettleLink"/>).
+    /// </summary>
+    public void SettleImageOcr(long entryId, string? ocrText, DateTimeOffset? at = null)
+    {
+        var ts = (at ?? DateTimeOffset.UtcNow).ToUnixTimeMilliseconds() / 1000.0;
+
+        using var tx = _db.BeginTransaction();
+
+        using (var cmd = _db.CreateCommand())
+        {
+            cmd.Transaction = tx;
+            cmd.CommandText = """
+                UPDATE entries
+                SET ocr_text = $o, analyzed_at = $ts
+                WHERE id = $id AND deleted_at IS NULL
+                """;
+            cmd.Parameters.AddWithValue("$o", (object?)ocrText ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("$ts", ts);
+            cmd.Parameters.AddWithValue("$id", entryId);
+            cmd.ExecuteNonQuery();
+        }
+
+        using (var cmd = _db.CreateCommand())
+        {
+            cmd.Transaction = tx;
+            cmd.CommandText = "UPDATE entries_fts SET ocr_text = $o WHERE rowid = $id";
+            cmd.Parameters.AddWithValue("$o", ocrText ?? string.Empty);
+            cmd.Parameters.AddWithValue("$id", entryId);
+            cmd.ExecuteNonQuery();
+        }
+
+        tx.Commit();
+    }
+
     /// <summary>
     /// Mark <paramref name="entryId"/> deleted (sets <c>deleted_at</c>) and
     /// remove the FTS5 row so the entry stops surfacing in searches. The

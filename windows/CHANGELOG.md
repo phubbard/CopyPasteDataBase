@@ -12,6 +12,24 @@ dated `[1.X.Y]` heading and reset `[Unreleased]` to empty.
 
 ## [Unreleased]
 
+- **On-device OCR for image entries.** The Windows analogue of the
+  macOS Vision text pass — screenshots become searchable by their
+  contents. `ImageOcr` wraps Windows' built-in
+  `Windows.Media.Ocr.OcrEngine` (no model bundle, no network, no
+  new dependency — Core already used WinRT imaging).
+  `ImageAnalysisService` mirrors the proven `LinkBackfillService`
+  loop: capture-wake on every kind=image insert + a 15-min sweep,
+  reentry-guarded, `analyzed_at` as the one-shot sentinel (stamped
+  even when no text is found, so a blank image isn't re-OCR'd
+  forever). Recognised text is written to `entries.ocr_text` and
+  folded into the existing FTS5 `ocr_text` column, so it ranks in
+  the same search. Surfaces: `cpdb-win analyze-images [--force]`
+  (the CLI process does the OCR itself, like macOS); Preferences →
+  Library maintenance → **Re-OCR images**; live UI refresh when a
+  row settles. **Image classification tags** remain out of scope
+  (no built-in Windows equivalent of Vision's
+  `VNClassifyImageRequest`; `image_tags` stays NULL — tracked ⏳).
+
 - **Preferences parity with macOS.** The Settings window grew from
   hotkey + import/export to a scrollable pane closing the macOS
   gap (for the sections that actually apply to a standalone

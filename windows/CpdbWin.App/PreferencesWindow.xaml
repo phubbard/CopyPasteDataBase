@@ -40,7 +40,7 @@
                 <!-- Library maintenance -->
                 <StackPanel Spacing="6">
                     <TextBlock Text="Library maintenance" FontWeight="SemiBold"/>
-                    <Grid ColumnDefinitions="Auto,Auto,Auto,*" ColumnSpacing="8">
+                    <Grid ColumnDefinitions="Auto,Auto,Auto,Auto,*" ColumnSpacing="8">
                         <Button Grid.Column="0" x:Name="ReEnrichButton"
                                 Content="Re-enrich now"
                                 Click="ReEnrich_Click"
@@ -51,6 +51,9 @@
                         <Button Grid.Column="2" x:Name="RetryEmptyButton"
                                 Content="Retry empty titles"
                                 Click="RetryEmpty_Click"/>
+                        <Button Grid.Column="3" x:Name="ReOcrButton"
+                                Content="Re-OCR images"
+                                Click="ReOcr_Click"/>
                     </Grid>
                     <TextBlock x:Name="MaintenanceStatus"
                                FontSize="11"

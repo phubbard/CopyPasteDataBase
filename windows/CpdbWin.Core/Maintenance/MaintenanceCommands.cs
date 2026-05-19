@@ -124,6 +124,27 @@ public static class MaintenanceCommands
     }
 
     /// <summary>
+    /// Clear <c>analyzed_at</c> on every live image entry so the
+    /// image-analysis loop re-OCRs them. The Windows analogue of macOS
+    /// <c>cpdb analyze-images --force</c> — used by the CLI's
+    /// <c>analyze-images --force</c> and the Preferences "Re-OCR images"
+    /// button. The actual OCR is done afterwards by
+    /// <see cref="ImageAnalysisService"/> (running app) or the CLI's
+    /// drain loop; this just re-arms the candidate set.
+    /// </summary>
+    public static MaintenanceResult ResetImageAnalysis(SqliteConnection db)
+    {
+        using var cmd = db.CreateCommand();
+        cmd.CommandText = """
+            UPDATE entries
+            SET analyzed_at = NULL
+            WHERE kind = 'image' AND deleted_at IS NULL
+            """;
+        var n = cmd.ExecuteNonQuery();
+        return new MaintenanceResult(Scanned: n, Reclassified: 0, LinkStateReset: n);
+    }
+
+    /// <summary>
     /// Cross-time link collapse: for each text_preview URL with multiple
     /// live kind=link rows, keep one survivor (newest <c>created_at</c>)
     /// and tombstone the rest. Before tombstoning, salvage the survivor's
