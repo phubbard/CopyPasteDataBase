@@ -25,6 +25,7 @@ public partial class App : Application
     private TrayIcon? _tray;
     private GlobalHotkey? _hotkey;
     private readonly UpdateService _updates = new();
+    private SingleInstance? _singleInstance;
     private UserSettings _settings = new();
     private string _settingsPath = string.Empty;
 
@@ -63,6 +64,19 @@ public partial class App : Application
         // so we don't have to fight the WinAppSDK auto-generated Main +
         // bootstrap sequence; one less moving part to break.
         VelopackApp.Build().Run();
+
+        // Single-instance guard. Velopack's install / update / uninstall
+        // sub-invocations exit inside Run() above, so they never reach
+        // here — only a real app launch does. If another instance owns
+        // the singleton, it's been poked to surface its window; we must
+        // exit now, before opening the DB or creating any UI, so we
+        // don't get two capture loops + two SQLite writers.
+        _singleInstance = SingleInstance.Acquire();
+        if (_singleInstance is null)
+        {
+            Environment.Exit(0);
+            return;
+        }
 
         Host = AppHost.Bootstrap();
 
@@ -106,6 +120,10 @@ public partial class App : Application
         // right-click menu is the only other path). Same handler.
         _mainWindow.SettingsRequested += () =>
             _mainWindow.DispatcherQueue.TryEnqueue(OpenPreferences);
+        // A second launch pokes the singleton event → surface this
+        // (the live) window instead of starting a duplicate process.
+        _singleInstance.ShowRequested += () =>
+            _mainWindow.DispatcherQueue.TryEnqueue(BringMainToFront);
         _ourMainHwnd = WindowNative.GetWindowHandle(_mainWindow);
         InstallForegroundHook();
         _mainWindow.Activate();
@@ -562,6 +580,7 @@ public partial class App : Application
         _hotkey?.Dispose();
         _tray?.Dispose();
         _updates.Dispose();
+        _singleInstance?.Dispose();
         Host?.Dispose();
         Exit();
     }
