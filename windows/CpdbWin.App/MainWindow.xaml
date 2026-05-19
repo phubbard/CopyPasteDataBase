@@ -3,7 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:local="using:CpdbWin.App">
     <Grid Padding="12" RowDefinitions="Auto,*,Auto" RowSpacing="8">
-        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+        <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="8">
             <TextBox x:Name="SearchBox"
                      PlaceholderText="Search clipboard history…"
                      TextChanged="SearchBox_TextChanged"/>
@@ -20,6 +20,13 @@
                 <ComboBoxItem Content="Color" Tag="color"/>
                 <ComboBoxItem Content="Other" Tag="other"/>
             </ComboBox>
+            <Button x:Name="SettingsButton"
+                    Grid.Column="2"
+                    Click="SettingsButton_Click"
+                    ToolTipService.ToolTip="Settings (Import / Export, hotkey, updates)"
+                    AutomationProperties.Name="Settings">
+                <SymbolIcon Symbol="Setting"/>
+            </Button>
         </Grid>
 
         <Grid Grid.Row="1" ColumnDefinitions="2*,3*" ColumnSpacing="12">

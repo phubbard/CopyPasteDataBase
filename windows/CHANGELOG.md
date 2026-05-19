@@ -12,6 +12,14 @@ dated `[1.X.Y]` heading and reset `[Unreleased]` to empty.
 
 ## [Unreleased]
 
+- **Visible Settings button.** Preferences (Import / Export,
+  hotkey, update check) was only reachable by right-clicking the
+  tray icon — undiscoverable. Added a gear button to the main
+  window's top bar that opens the same Preferences window; the
+  tray menu item stays as a secondary path.
+
+## [1.12.0] – 2026-05-18
+
 - **Boot diagnostics + empty-DB circuit breaker.** Hardening
   after an unexplained, unrecoverable history loss. Two parts:
   - *Gc audit log.* `Gc.Run()` returns a `Stats` (tombstoned /
