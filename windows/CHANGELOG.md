@@ -12,6 +12,15 @@ dated `[1.X.Y]` heading and reset `[Unreleased]` to empty.
 
 ## [Unreleased]
 
+- **Single-instance guard.** Launching cpdb-win while it's already
+  running (e.g. "Launch on login" started it at boot, then the user
+  double-clicks the shortcut) used to spin up a second process —
+  two capture loops, two global-hotkey registrations fighting, and
+  two writers on one SQLite DB. Now a named-mutex guard makes the
+  duplicate launch exit immediately and instead surface the
+  already-running window. The guard sits after Velopack's
+  install/update hooks, so auto-update's restart is unaffected.
+
 - **Visible Settings button.** Preferences (Import / Export,
   hotkey, update check) was only reachable by right-clicking the
   tray icon — undiscoverable. Added a gear button to the main
