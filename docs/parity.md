@@ -112,7 +112,11 @@ Windows port shipped a maintenance CLI (`cpdb-win.exe`) in v1.7.0 —
 console-only, no WinUI dependency, dispatches to the same engine
 helpers in `CpdbWin.Core.Maintenance`. Read / display subcommands
 (`list`, `search`, `show`, `copy`, `stats`) are out of scope for v1
-since the GUI covers them.
+since the GUI covers them. As of **v1.20.0 the CLI is bundled in
+the Velopack installer** — it publishes into the same folder as the
+GUI and lands at `%LOCALAPPDATA%\CpdbWin\current\cpdb-win.exe`
+(stable across auto-updates), so users get the documented
+maintenance surface without a separate download.
 
 | Command | macOS | Windows | Notes |
 |---|---|---|---|

@@ -12,6 +12,19 @@ dated `[1.X.Y]` heading and reset `[Unreleased]` to empty.
 
 ## [Unreleased]
 
+- **Maintenance CLI ships in the installer.** `cpdb-win.exe`
+  (`reclassify-kinds`, `backfill-titles --retry-empty`, `dedupe`,
+  `import-urls`, `export`) was only ever a from-source build —
+  there was no way for an installed user to trigger re-enrichment
+  or other maintenance. `build-installer.ps1` now publishes the
+  CLI (self-contained, same RID) into the same folder Velopack
+  packs, so it installs alongside the GUI at
+  `%LOCALAPPDATA%\CpdbWin\current\cpdb-win.exe` and stays current
+  across auto-updates. Example — re-enrich a restored/old library:
+  `cpdb-win reclassify-kinds` then `cpdb-win backfill-titles
+  --retry-empty`, then relaunch cpdb-win so the backfill loop
+  fetches the titles + thumbnails.
+
 - **GUI URL-import now refreshes the main window.** The
   Preferences "Import" path writes via its own worker-thread
   SqliteConnection (so a big import doesn't freeze the UI and
