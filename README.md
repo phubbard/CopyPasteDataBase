@@ -39,7 +39,7 @@ database.
 | **2.8.0–2.8.6** | Link metadata enrichment — preview thumbnails (og:image / twitter:image / Wikipedia REST API / favicon-fallback) · live popup updates while backfill runs · capture-wake immediate enrichment · hover tooltips with source app + device + timestamp · URL-shaped text reclassifies to `kind=link` · `loginwindow` ignore + cross-time link dedupe · "Retry empties" + transient-error handling · single-instance guard · popup close button · unified Permissions section with live `NWBrowser` Local Network probe · exponential-backoff retry (1·2^n min, 60-min cap) · NWPathMonitor reachability gate · bot-check / CAPTCHA detection · Reddit JSON API path · iOS list rows render link titles + thumbnails | ✅ |
 | 2.9+ | Browse window (full-screen, tiled, scrolling grid) · App Store submission for the iOS companion · garbage collection of pre-v2.1 wire-format orphans on the CloudKit zone · size-budget eviction | ⏳ |
 | **Relay sync substrate** | Cross-platform replacement for CloudKit. Phase A done: blind-PSK protocol spec ([`docs/relay-protocol.md`](docs/relay-protocol.md)) + Worker scaffold ([`cpdb-relay/`](cpdb-relay/)). Superseding accounts/tiers/OAuth design parked in [`docs/relay-v2-accounts-roadmap.md`](docs/relay-v2-accounts-roadmap.md) — deferred, clients not started | ⏳ |
-| **cpdb-win 1.0** | Standalone Windows port — C# / .NET 8 / WinUI 3 with the same SQLite + FTS5 schema, `Windows.Media.Ocr`, MSIX install. No cross-device sync in v1; schema kept compatible (see [`docs/schema.md`](docs/schema.md)) so future sync paths stay open | ⏳ |
+| **cpdb-win 1.x** | Standalone Windows port — C# / .NET 8 / WinUI 3, same SQLite + FTS5 schema (v1–v9 migrator), link-metadata enrichment, import/export, global hotkey + paste-back, Velopack `Setup.exe` + client-side delta auto-update (x64 + arm64). No cross-device sync in v1; on-device OCR/image-tags still pending (`Windows.Media.Ocr`). Schema kept bit-compatible (see [`docs/schema.md`](docs/schema.md)) so future sync paths stay open. See the [Windows section](#windows-cpdb-win) | ✅ shipping / OCR ⏳ |
 
 ## Features
 
@@ -221,31 +221,116 @@ shared CloudKit zone, and pulls your full history. Use the menu bar's
 **Pull from iCloud** item to force a drain if the periodic timer hasn't
 fired yet.
 
-### Windows (cpdb-win, in development)
+### Windows (cpdb-win)
 
-Two beta testers run Windows; cpdb-win v1 will be a **standalone**
-Windows clipboard manager — no cross-device sync in the first
-release, just the same single-machine experience the Mac app
-shipped with in 1.x. C# / .NET 8 / WinUI 3 / SQLite + FTS5 /
-`Windows.Media.Ocr` for OCR parity. MSIX install for local sideload.
+A **standalone** Windows clipboard manager that mirrors the Mac 1.x
+single-machine experience — no cross-device sync in v1, but built on
+the same SQLite + FTS5 schema so a future sync path stays open. It
+ships and auto-updates today; sources live under
+[`windows/`](windows/).
 
-Schema parity with macOS/iOS is the strategic decision:
+![cpdb-win](docs/cpdb-win.png)
+
+**Language & runtime**
+
+- **C# / .NET 8**, target `net8.0-windows10.0.19041.0`.
+- **WinUI 3** desktop app (unpackaged), via the Windows App SDK.
+- Two RIDs shipped every release: **`win-x64`** and **`win-arm64`**
+  (native — runs unemulated on Snapdragon X / Surface and on
+  Windows-on-ARM VMs).
+
+**Libraries**
+
+- [Microsoft.WindowsAppSDK](https://learn.microsoft.com/windows/apps/windows-app-sdk/)
+  `1.8` — WinUI 3 UI framework.
+- [Microsoft.Data.Sqlite](https://learn.microsoft.com/dotnet/standard/data/sqlite/)
+  `8.0` (bundled `e_sqlite3` with FTS5) — same store + search engine
+  contract as GRDB on the Mac side.
+- [Velopack](https://velopack.io) `0.0.1298` — `Setup.exe` installer
+  **and** client-side delta auto-update over GitHub Releases
+  (per-architecture channels).
+- `Microsoft.Windows.SDK.BuildTools` — Win32 metadata.
+- [xUnit](https://xunit.net) — **430+ tests** (`CpdbWin.Core.Tests`),
+  run in CI on every push (Windows runner).
+- Everything else is the .NET BCL + direct Win32 P/Invoke
+  (clipboard, global hotkey, tray icon, foreground/paste-back,
+  `SendInput`).
+
+**Projects**
+
+```
+windows/
+├── CpdbWin.Core/        engine: Store (SQLite/FTS5/Migrator/Gc),
+│                        Capture, Ingest, Analysis (link metadata),
+│                        Portability (UrlImporter/HistoryExporter)
+├── CpdbWin.App/         WinUI 3 app: popup window, tray, hotkey,
+│                        paste-back, auto-update, single-instance
+├── CpdbWin.Cli/         console maintenance peer (no WinUI dep)
+└── CpdbWin.Core.Tests/  xUnit
+```
+
+**Feature set (shipping)**
+
+- **Clipboard capture daemon** with the byte-exact canonical
+  `content_hash` dedup, inline/blob spillover at 256 KB, and the
+  Windows-clipboard-format → UTI translation table from
+  `docs/schema.md`.
+- **Instant FTS5 search** + kind-filter (Text / Link / Image / File
+  / Color / Other), schema **v1–v9 migrator** kept lock-step with
+  macOS/iOS.
+- **Link metadata enrichment** at parity with Mac 2.7–2.8: YouTube
+  oEmbed + `og:title` scrape, preview thumbnails
+  (`og:image`/`twitter:image`/Wikipedia REST/favicon), exponential
+  backoff, reachability gate, bot-check/CAPTCHA detection, Reddit
+  `.json` path, capture-wake immediate fetch, live card updates.
+- **Pinning**, hover tooltips, per-kind rendering, link preview pane.
+- **Global hotkey** summon → pick → **paste-back** into the app you
+  came from (hidden window + synthetic Ctrl+V via `SendInput`).
+- **Click selects · double-click / Enter copies**; Delete keeps your
+  place + keyboard focus in the list.
+- **Data portability**: URL-list import + Markdown/CSV/HTML export,
+  one shared engine behind both the CLI and the Preferences pane,
+  implementing the v2.9.6 export contract (explicit `fetched_title`
+  / full OCR / image tags, LF-normalised, 13-col CSV).
+- **Maintenance CLI** (`cpdb-win`): `reclassify-kinds`,
+  `backfill-titles`, `dedupe --links-all-time`, `import-urls`,
+  `export`.
+- **Client-side auto-update** — prompt-not-silent, 30 s + daily +
+  on-demand "Check for Updates…", per-arch Velopack channels off one
+  GitHub release.
+- **Single-instance guard**, tray icon with a stable GUID (survives
+  updates), autostart that a dev build can't hijack, and
+  boot-diagnostics + an empty-DB circuit breaker.
+
+**Not yet** (tracked in [`docs/parity.md`](docs/parity.md)): on-device
+OCR + image tags (planned via `Windows.Media.Ocr`), and any
+cross-device sync (v1 is deliberately standalone).
+
+**Install**: download `CpdbWin-<ver>-win-x64-Setup.exe` (or
+`-win-arm64-`) from the [latest release](https://github.com/phubbard/CopyPasteDataBase/releases/latest)
+and run it. SmartScreen will say "Unknown publisher" once (More info →
+Run anyway); after that the app keeps itself current via the in-app
+updater. Build from source: `pwsh windows/build-installer.ps1`
+(see `windows/release-installer.ps1` for the release pipeline).
+
+**Storage**: `%LOCALAPPDATA%\cpdb\` — `cpdb.db` (+ `-wal`/`-shm`),
+`blobs/<ab>/<cd>/<sha256>`, and diagnostic logs (`update.log`,
+`gc.log`, `paste-back.log`, `startup-crash.log`).
+
+Schema parity is the strategic constraint, the same as iOS:
 
 - [`docs/schema.md`](docs/schema.md) — canonical behaviour contract:
   DDL, kind classification, content_hash algorithm, blob spillover,
-  Windows-clipboard-format → UTI translation table, and per-feature
-  semantics (pinning, eviction, etc.).
+  Windows-clipboard-format → UTI translation table, per-feature
+  semantics.
 - [`docs/parity.md`](docs/parity.md) — cross-platform scoreboard:
-  what's implemented where, with version stamps. Read this first
-  when picking up a port-side feature.
+  what's implemented where, with version stamps.
 
-Keeping new clients bit-compatible leaves every future sync path
-open (shared-folder log sync, self-hosted server, CloudKit Web
-Services, or plain `.sqlite` import/export).
-
-The Windows track will live under `windows/` once scaffolded. Mac
-+ iOS development continues from this repo on macOS; Windows work
-runs from a Windows VM with its own Claude Code session.
+Keeping clients bit-compatible leaves every future sync path open
+(shared-folder log sync, self-hosted server, CloudKit Web Services,
+or plain `.sqlite` import/export). Windows development runs from a
+Windows VM with its own Claude Code session; Mac + iOS continue from
+macOS.
 
 ## Usage
 
