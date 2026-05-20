@@ -98,8 +98,19 @@ public sealed class LinkMetadataFetcher : IDisposable
             Timeout = TimeSpan.FromSeconds(8),
         };
         client.DefaultRequestHeaders.UserAgent.ParseAdd(DefaultUserAgent);
+        // HTML-only Accept by default. Previously included
+        // application/json;q=0.9, which made ActivityPub-aware CDNs
+        // (WordPress.com's nginx fronting Federated-WordPress sites)
+        // willing to serve the federated-actor JSON for the page URL
+        // instead of the HTML version — and worse, cache the JSON
+        // variant against the same URL key for subsequent requests.
+        // Result: WP pages settled with NULL title because the parser
+        // got 5 KB of ActivityPub JSON to grep for `<title>` in.
+        // YouTube oEmbed and Reddit `.json` endpoints return JSON
+        // regardless of Accept, so dropping it here doesn't affect
+        // either special-case path.
         client.DefaultRequestHeaders.Accept.ParseAdd(
-            "text/html, application/xhtml+xml, application/json;q=0.9");
+            "text/html, application/xhtml+xml");
         client.DefaultRequestHeaders.AcceptLanguage.ParseAdd("en-US,en;q=0.9");
         return client;
     }
@@ -391,6 +402,23 @@ public sealed class LinkMetadataFetcher : IDisposable
             {
                 return ClassifyHttpFailure((int)resp.StatusCode, "html");
             }
+            // Guard against non-HTML responses. WordPress.com's
+            // ActivityPub support returns `application/activity+json`
+            // for the page URL when the client signals JSON is
+            // acceptable — and CDN-caches it under a key our previous
+            // Accept header overlapped with. Even with the corrected
+            // Accept (HTML-only) above, the stale cache may still
+            // serve JSON for a while. Treating non-HTML as transient
+            // lets the row keep trying and stops the parser from
+            // grepping 5 KB of JSON for an HTML title (which silently
+            // settles with NULL). text/html, application/xhtml+xml,
+            // and a permissive "looks like markup" fallback all pass.
+            var contentType = resp.Content.Headers.ContentType?.MediaType?.ToLowerInvariant();
+            if (contentType is not null && !IsHtmlLike(contentType))
+            {
+                return new FetchOutcome.Transient(
+                    $"non-html content-type: {contentType}");
+            }
             // Cap body read at MaxBodyBytes — most pages have their head
             // section well within the first 64 KB, and an unbounded read
             // is a DoS vector for the daemon's worker queue.
@@ -556,6 +584,25 @@ public sealed class LinkMetadataFetcher : IDisposable
     {
         [JsonPropertyName("source")]
         public string? Source { get; set; }
+    }
+
+    /// <summary>
+    /// True when <paramref name="contentType"/> looks like a markup
+    /// document the HTML parser can usefully grep. Matches
+    /// <c>text/html</c>, <c>application/xhtml+xml</c>, the generic
+    /// <c>text/*</c> family (some misconfigured servers send
+    /// <c>text/plain</c> with HTML in the body), and bare ASCII
+    /// <c>"text"</c> for legacy responses with no subtype. Returns
+    /// false for <c>application/activity+json</c>,
+    /// <c>application/ld+json</c>, generic <c>application/json</c>,
+    /// images, video, etc. Public for unit tests.
+    /// </summary>
+    public static bool IsHtmlLike(string contentType)
+    {
+        if (string.IsNullOrEmpty(contentType)) return true;  // unspecified → assume html
+        return contentType.Equals("text/html",            StringComparison.OrdinalIgnoreCase)
+            || contentType.Equals("application/xhtml+xml", StringComparison.OrdinalIgnoreCase)
+            || contentType.StartsWith("text/",             StringComparison.OrdinalIgnoreCase);
     }
 
     // ─── HTTP failure classification ──────────────────────────────────────

@@ -222,6 +222,24 @@ public static class LinkMetadataParser
         ("&nbsp;", " "),
         ("&#x27;", "'"),
         ("&#34;", "\""),
+        // Common numeric entities for typographic punctuation that
+        // WordPress + Markdown-flavoured sites emit literally in
+        // <title>. Without these the title shows as e.g.
+        // "ultracrepidarian &#8211; ultracrepidarian: …".
+        ("&#8211;", "–"),  // en dash –
+        ("&#8212;", "—"),  // em dash —
+        ("&#8216;", "‘"),  // left single quote ‘
+        ("&#8217;", "’"),  // right single quote ’
+        ("&#8220;", "“"),  // left double quote “
+        ("&#8221;", "”"),  // right double quote ”
+        ("&#8230;", "…"),  // ellipsis …
+        ("&ndash;", "–"),
+        ("&mdash;", "—"),
+        ("&lsquo;", "‘"),
+        ("&rsquo;", "’"),
+        ("&ldquo;", "“"),
+        ("&rdquo;", "”"),
+        ("&hellip;", "…"),
     };
 
     // ─── Regex helpers ────────────────────────────────────────────────────

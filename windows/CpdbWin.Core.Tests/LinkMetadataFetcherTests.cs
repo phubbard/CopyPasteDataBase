@@ -23,6 +23,28 @@ public class LinkMetadataFetcherTests
         Assert.Equal(expected, LinkMetadataFetcher.TryNormalize(input, out _));
     }
 
+    // ─── Content-Type guard (IsHtmlLike) ─────────────────────────────────
+
+    [Theory]
+    [InlineData("text/html",                  true)]
+    [InlineData("TEXT/HTML",                  true)]   // case-insensitive
+    [InlineData("application/xhtml+xml",      true)]
+    [InlineData("text/plain",                 true)]   // legacy / misconfigured
+    [InlineData("text/xml",                   true)]   // text/* family
+    [InlineData("",                           true)]   // unspecified → assume html
+    // Non-HTML — WordPress.com ActivityPub + similar should be rejected so the
+    // HTML parser doesn't grep 5 KB of JSON looking for <title>.
+    [InlineData("application/activity+json",  false)]
+    [InlineData("application/ld+json",        false)]
+    [InlineData("application/json",           false)]
+    [InlineData("image/png",                  false)]
+    [InlineData("video/mp4",                  false)]
+    [InlineData("application/pdf",            false)]
+    public void IsHtmlLike_AcceptsMarkupRejectsEverythingElse(string contentType, bool expected)
+    {
+        Assert.Equal(expected, LinkMetadataFetcher.IsHtmlLike(contentType));
+    }
+
     // ─── YouTube host detection ──────────────────────────────────────────
 
     [Theory]

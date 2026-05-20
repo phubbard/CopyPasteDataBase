@@ -218,11 +218,23 @@ public class LinkMetadataParserTests
     [Fact]
     public void DecodeHtmlEntities_LeavesUnknownEntitiesUntouched()
     {
-        // Numeric entities outside the small lookup pass through literally.
-        // Acceptable: link titles overwhelmingly hit the ASCII subset, and
-        // a stray "&hellip;" rendering as "&hellip;" is just less pretty,
+        // Truly-unknown entities (out of our extended typographic-punctuation
+        // table) pass through literally. Acceptable: link titles
+        // overwhelmingly hit the entities we cover, and a stray
+        // "&Aelig;" rendering as "&Aelig;" is just less pretty,
         // not broken.
-        Assert.Equal("a&hellip;b", LinkMetadataParser.DecodeHtmlEntities("a&hellip;b"));
+        Assert.Equal("a&Aelig;b", LinkMetadataParser.DecodeHtmlEntities("a&Aelig;b"));
+    }
+
+    [Fact]
+    public void DecodeHtmlEntities_DecodesTypographicPunctuation()
+    {
+        // WordPress + Markdown titles emit these heavily; v1.36.0 added
+        // both the numeric and named forms.
+        Assert.Equal("a–b—c…d",        LinkMetadataParser.DecodeHtmlEntities("a&#8211;b&#8212;c&#8230;d"));
+        Assert.Equal("a–b—c…d",        LinkMetadataParser.DecodeHtmlEntities("a&ndash;b&mdash;c&hellip;d"));
+        Assert.Equal("‘a’ “b”",        LinkMetadataParser.DecodeHtmlEntities("&#8216;a&#8217; &#8220;b&#8221;"));
+        Assert.Equal("‘a’ “b”",        LinkMetadataParser.DecodeHtmlEntities("&lsquo;a&rsquo; &ldquo;b&rdquo;"));
     }
 
     // ─── WordPress-aware title precedence ───────────────────────────────
