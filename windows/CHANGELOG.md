@@ -12,6 +12,22 @@ dated `[1.X.Y]` heading and reset `[Unreleased]` to empty.
 
 ## [Unreleased]
 
+- **Preview pane no longer overlaps state from the previous
+  selection.** Reported with a screenshot: selecting a link entry
+  after an image entry showed the link title sitting on top of a
+  leftover "Show OCR text" button and stray classifier tag chips
+  from the previous image. Cause: `MainWindow.ShowDetail` reset
+  only `DetailLinkScroll` + `DetailLinkImage.Source` up front; the
+  image layout (`DetailImageScroll`, `DetailImage`, `DetailTagsList`,
+  `DetailOcrButton`, `DetailOcrPanel`) and the text scroll
+  (`DetailTextScroll`) were never collapsed when entering a
+  non-image branch, so they rendered through. Fix: comprehensive
+  reset at the top of `ShowDetail` — collapse all three layouts +
+  clear sources + hide OCR/tags — then each branch only flips its
+  own piece on. `ShowDetailEmpty` and `ShowDetailMulti` already
+  did this; `ShowDetail` was the only entry point missing the
+  call.
+
 - **"Refetch all link titles" maintenance action.** A new
   `MaintenanceCommands.RefetchAllLinks` clears `link_title` +
   `link_fetched_at` + retry state on every live `kind=link` row

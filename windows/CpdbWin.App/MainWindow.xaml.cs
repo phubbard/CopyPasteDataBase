@@ -335,10 +335,19 @@ public sealed partial class MainWindow : Window
         DetailEmpty.Visibility = Visibility.Collapsed;
         ResetMeta();
 
-        // Always-collapse the layouts we're not using; the branches below
-        // make the right one visible.
+        // Comprehensive reset of every preview layout up front; each
+        // branch below only flips its own piece back on. Without this,
+        // selecting an image entry (image + OCR button + tag chips
+        // visible) then a link entry left those image elements on
+        // screen *underneath* the link layout — observed as the link
+        // title, the leftover "Show OCR text" button, and stray tag
+        // chips all overlapping in the right pane. The other entry
+        // points (ShowDetailEmpty / ShowDetailMulti) already do this;
+        // this is the missing call site.
         DetailLinkScroll.Visibility = Visibility.Collapsed;
         DetailLinkImage.Source      = null;
+        DetailTextScroll.Visibility = Visibility.Collapsed;
+        HideImagePreview();
 
         // Pull a fresh row so we can route on kind + read the fetched
         // link_title and the original URL (text_preview).
