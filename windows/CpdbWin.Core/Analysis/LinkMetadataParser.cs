@@ -37,10 +37,28 @@ public static class LinkMetadataParser
     /// returns a value — fields are nullable when nothing useful was
     /// found.
     ///
-    /// Title resolution: <c>og:title</c> → <c>twitter:title</c> →
-    /// <c>&lt;title&gt;</c>. Thumbnail resolution: <c>og:image</c> →
+    /// <para>
+    /// Default title resolution: <c>og:title</c> → <c>twitter:title</c>
+    /// → <c>&lt;title&gt;</c>. The og:title-first order matches the
+    /// macOS contract and produces clean social-card-friendly titles
+    /// for most sites.
+    /// </para>
+    /// <para>
+    /// <b>WordPress exception:</b> WP themes consistently put the rich
+    /// <c>"Post Title – Site Tagline"</c> form in <c>&lt;title&gt;</c>
+    /// while <c>og:title</c> is the bare post slug — picking og:title
+    /// first there loses the tagline. Since WordPress backs ~40-60%
+    /// of public sites, the parser detects the
+    /// <c>&lt;meta name="generator" content="WordPress…"&gt;</c>
+    /// fingerprint (covers both WordPress.com and self-hosted) and
+    /// reverses the order to <c>&lt;title&gt;</c> → <c>og:title</c> →
+    /// <c>twitter:title</c>.
+    /// </para>
+    /// <para>
+    /// Thumbnail resolution is unchanged: <c>og:image</c> →
     /// <c>og:image:secure_url</c> → <c>og:image:url</c> →
     /// <c>twitter:image</c> → <c>twitter:image:src</c>.
+    /// </para>
     /// </summary>
     public static ParseResult Parse(ReadOnlySpan<byte> html)
     {
@@ -55,7 +73,19 @@ public static class LinkMetadataParser
         string? title = null;
         var source = TitleSource.None;
 
-        if (MatchMetaContent(html, OgTitlePattern) is { } og)
+        // WordPress-aware ordering: themes consistently put the rich
+        // "Title – Tagline" form in <title> while og:title is the bare
+        // slug. Detect via the standard generator meta tag and reverse
+        // the preference list.
+        bool isWordPress = LooksLikeWordPress(html);
+
+        if (isWordPress && MatchTitleTag(html) is { } wpTag &&
+            !string.IsNullOrWhiteSpace(wpTag))
+        {
+            title = DecodeHtmlEntities(wpTag);
+            source = TitleSource.TitleTag;
+        }
+        else if (MatchMetaContent(html, OgTitlePattern) is { } og)
         {
             title = DecodeHtmlEntities(og);
             source = TitleSource.OpenGraph;
@@ -149,6 +179,29 @@ public static class LinkMetadataParser
 
     private const string OgTitlePattern      = @"property\s*=\s*[""']og:title[""']";
     private const string TwitterTitlePattern = @"name\s*=\s*[""']twitter:title[""']";
+
+    // Matches `<meta name="generator" content="WordPress…">` in either
+    // attribute order — both WordPress.com (content="WordPress.com")
+    // and self-hosted WP (content="WordPress 6.x.x") emit this. A WP
+    // theme can in theory strip the tag, but the vast majority leave
+    // it in place and that's good enough — when absent, the parser
+    // simply falls through to the default og:title-first order.
+    private static readonly Regex WordPressGeneratorRegex = new(
+        """<meta[^>]+(?:name\s*=\s*["']generator["'][^>]+content\s*=\s*["']\s*WordPress|content\s*=\s*["']\s*WordPress[^"']*["'][^>]+name\s*=\s*["']generator["'])""",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    /// <summary>
+    /// True when <paramref name="html"/> looks like a WordPress page
+    /// via its standard generator meta tag — covers both
+    /// WordPress.com (<c>content="WordPress.com"</c>) and self-hosted
+    /// installs (<c>content="WordPress &lt;version&gt;"</c>) in either
+    /// attribute order. Used by <see cref="Parse(string)"/> to flip the
+    /// title-source preference (rich <c>&lt;title&gt;</c> over short
+    /// <c>og:title</c>); exposed publicly so the link fetcher / CLI
+    /// can diagnose WP detection without re-parsing.
+    /// </summary>
+    public static bool LooksLikeWordPress(string html) =>
+        WordPressGeneratorRegex.IsMatch(html);
     private static readonly string[] ThumbnailPatterns =
     {
         @"property\s*=\s*[""']og:image[""']",

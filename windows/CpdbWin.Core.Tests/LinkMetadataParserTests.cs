@@ -224,4 +224,86 @@ public class LinkMetadataParserTests
         // not broken.
         Assert.Equal("a&hellip;b", LinkMetadataParser.DecodeHtmlEntities("a&hellip;b"));
     }
+
+    // ─── WordPress-aware title precedence ───────────────────────────────
+
+    [Fact]
+    public void Parse_WordPress_PrefersRichTitleTagOverShortOgTitle()
+    {
+        // Real-world shape observed on the user's ultracrepidarian
+        // site: og:title is the bare post slug while <title> carries
+        // the rich "slug – tagline" form WP themes consistently emit.
+        const string html = """
+            <html><head>
+              <meta name="generator" content="WordPress.com">
+              <meta property="og:title" content="ultracrepidarian">
+              <title>ultracrepidarian – a person who criticizes outside their expertise.</title>
+            </head></html>
+            """;
+        var r = LinkMetadataParser.Parse(html);
+        Assert.Equal(
+            "ultracrepidarian – a person who criticizes outside their expertise.",
+            r.Title);
+        Assert.Equal(LinkMetadataParser.TitleSource.TitleTag, r.Source);
+    }
+
+    [Fact]
+    public void Parse_SelfHostedWordPress_AlsoTriggersTitlePrecedence()
+    {
+        // Self-hosted WP emits "WordPress <version>" rather than
+        // "WordPress.com" — the detection must match both.
+        const string html = """
+            <html><head>
+              <meta name="generator" content="WordPress 6.4.2" />
+              <meta property="og:title" content="short">
+              <title>long rich title for self-hosted</title>
+            </head></html>
+            """;
+        var r = LinkMetadataParser.Parse(html);
+        Assert.Equal("long rich title for self-hosted", r.Title);
+        Assert.Equal(LinkMetadataParser.TitleSource.TitleTag, r.Source);
+    }
+
+    [Fact]
+    public void Parse_WordPress_FallsBackToOgWhenTitleTagMissing()
+    {
+        // Belt-and-braces: a WP page without <title> still produces
+        // *something* via the standard og:title path.
+        const string html = """
+            <html><head>
+              <meta name="generator" content="WordPress.com">
+              <meta property="og:title" content="og fallback">
+            </head></html>
+            """;
+        var r = LinkMetadataParser.Parse(html);
+        Assert.Equal("og fallback", r.Title);
+        Assert.Equal(LinkMetadataParser.TitleSource.OpenGraph, r.Source);
+    }
+
+    [Fact]
+    public void Parse_NonWordPress_KeepsOgTitleFirst()
+    {
+        // The WP-specific reversal must NOT leak to non-WP sites.
+        const string html = """
+            <html><head>
+              <meta property="og:title" content="Social-card friendly">
+              <title>page – with – tagline</title>
+            </head></html>
+            """;
+        var r = LinkMetadataParser.Parse(html);
+        Assert.Equal("Social-card friendly", r.Title);
+        Assert.Equal(LinkMetadataParser.TitleSource.OpenGraph, r.Source);
+    }
+
+    [Theory]
+    [InlineData("<meta name=\"generator\" content=\"WordPress.com\">",  true)]
+    [InlineData("<meta name=\"generator\" content=\"WordPress 6.4.2\">", true)]
+    [InlineData("<meta name=\"generator\" content=\"wordpress\">",      true)]   // case-insensitive
+    [InlineData("<meta content=\"WordPress 5.9\" name=\"generator\">",  true)]   // reversed attrs
+    [InlineData("<meta name=\"generator\" content=\"Hugo 0.120.0\">",   false)]
+    [InlineData("<meta name=\"generator\" content=\"Jekyll\">",         false)]
+    [InlineData("<meta name=\"author\" content=\"WordPress fan\">",     false)]  // not the generator tag
+    [InlineData("",                                                      false)]
+    public void LooksLikeWordPress_TruthTable(string html, bool expected)
+        => Assert.Equal(expected, LinkMetadataParser.LooksLikeWordPress(html));
 }
