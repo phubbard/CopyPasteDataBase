@@ -40,7 +40,7 @@
                 <!-- Library maintenance -->
                 <StackPanel Spacing="6">
                     <TextBlock Text="Library maintenance" FontWeight="SemiBold"/>
-                    <Grid ColumnDefinitions="Auto,Auto,Auto,Auto,Auto,*"
+                    <Grid ColumnDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,*"
                           ColumnSpacing="8">
                         <Button Grid.Column="0" x:Name="ReEnrichButton"
                                 Content="Re-enrich now"
@@ -51,12 +51,17 @@
                                 Click="Reclassify_Click"/>
                         <Button Grid.Column="2" x:Name="RetryEmptyButton"
                                 Content="Retry empty titles"
+                                ToolTipService.ToolTip="Re-fetch only links that came back blank — keeps existing titles untouched"
                                 Click="RetryEmpty_Click"/>
-                        <Button Grid.Column="3" x:Name="ReOcrButton"
+                        <Button Grid.Column="3" x:Name="RefetchAllButton"
+                                Content="Refetch all link titles"
+                                ToolTipService.ToolTip="Wipe every link's stored title and re-fetch — use to pick up newer fetcher logic (e.g. v1.30.0 WordPress preference) on already-settled rows"
+                                Click="RefetchAll_Click"/>
+                        <Button Grid.Column="4" x:Name="ReOcrButton"
                                 Content="Re-OCR images"
                                 ToolTipService.ToolTip="Re-run text recognition only; existing classifier tags are kept"
                                 Click="ReOcr_Click"/>
-                        <Button Grid.Column="4" x:Name="ReTagButton"
+                        <Button Grid.Column="5" x:Name="ReTagButton"
                                 Content="Re-tag images"
                                 ToolTipService.ToolTip="Re-run the image classifier only; existing OCR text is kept"
                                 Click="ReTag_Click"/>

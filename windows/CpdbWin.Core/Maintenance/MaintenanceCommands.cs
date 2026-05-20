@@ -124,6 +124,58 @@ public static class MaintenanceCommands
     }
 
     /// <summary>
+    /// Clear <c>link_fetched_at</c>, <c>link_title</c>, and retry state
+    /// on every live kind=link row so the backfill loop re-fetches
+    /// every title from scratch. Used to re-apply newer fetcher logic
+    /// (e.g. the WordPress-aware precedence added in v1.30.0) to rows
+    /// that already settled under older rules. Stronger than
+    /// <see cref="RetryEmptyLinks"/> — that one only re-arms titles
+    /// that came back blank; this one wipes successful settlements
+    /// too. The actual fetch happens afterwards via the running
+    /// <c>LinkBackfillService</c> or the CLI's drain loop; this just
+    /// re-arms the candidate set. Mirrors the macOS Preferences
+    /// "Refetch all" action.
+    /// </summary>
+    public static MaintenanceResult RefetchAllLinks(SqliteConnection db)
+    {
+        using var tx = db.BeginTransaction();
+
+        // Clear the persisted title on entries first, then rebuild
+        // the FTS row's link_title shadow column the same way
+        // EntryRepository.SettleLink does for a single row — kept in
+        // one transaction so search index and storage agree.
+        int n;
+        using (var cmd = db.CreateCommand())
+        {
+            cmd.Transaction = tx;
+            cmd.CommandText = """
+                UPDATE entries
+                SET link_fetched_at = NULL,
+                    link_title       = NULL,
+                    link_retry_count = 0,
+                    link_retry_after = NULL
+                WHERE kind = 'link' AND deleted_at IS NULL
+                """;
+            n = cmd.ExecuteNonQuery();
+        }
+        using (var cmd = db.CreateCommand())
+        {
+            cmd.Transaction = tx;
+            cmd.CommandText = """
+                UPDATE entries_fts
+                SET link_title = ''
+                WHERE rowid IN (
+                    SELECT id FROM entries
+                    WHERE kind = 'link' AND deleted_at IS NULL
+                )
+                """;
+            cmd.ExecuteNonQuery();
+        }
+        tx.Commit();
+        return new MaintenanceResult(Scanned: n, Reclassified: 0, LinkStateReset: n);
+    }
+
+    /// <summary>
     /// Clear the OCR-pass sentinel (<c>ocr_at</c>) on every live image
     /// entry so the analyzer re-runs OCR for each. Does not touch
     /// <c>tags_at</c> — the classifier-tags pass is independently

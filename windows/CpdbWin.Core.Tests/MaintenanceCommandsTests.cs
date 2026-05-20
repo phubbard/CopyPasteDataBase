@@ -213,6 +213,71 @@ public class MaintenanceCommandsTests : IDisposable
         Assert.Equal(0, result.Scanned);
     }
 
+    // ─── RefetchAllLinks ─────────────────────────────────────────────────
+
+    [Fact]
+    public void RefetchAllLinks_WipesEveryLiveLinkTitle_AndReArmsThem()
+    {
+        var t0 = DateTimeOffset.FromUnixTimeSeconds(1_700_000_000);
+
+        // Three live link rows in different states.
+        var titled = IngestLink("https://wp-example.com/", t0);
+        ForceLinkState(titled, title: "stale-short-slug", fetchedAt: 12345.0);
+
+        var empty = IngestLink("https://no-title.example/", t0.AddSeconds(1));
+        ForceLinkState(empty, title: null, fetchedAt: 12346.0, retryCount: 4);
+
+        var fresh = IngestLink("https://never-tried.example/", t0.AddSeconds(2));
+        // fresh is already a candidate (link_fetched_at NULL).
+
+        // One tombstoned row that must be left alone.
+        var gone = IngestLink("https://gone.example/", t0.AddSeconds(3));
+        ForceLinkState(gone, title: "Buried", fetchedAt: 12347.0);
+        _repo.Tombstone(gone);
+
+        var result = MaintenanceCommands.RefetchAllLinks(_db);
+
+        // All three live link rows re-armed — including the one that
+        // already had no fetched-at (idempotent).
+        Assert.Equal(3, result.LinkStateReset);
+
+        // Every live link is now a candidate; titles wiped.
+        var candidates = _repo.NextLinkBackfillCandidates(10);
+        Assert.Contains(candidates, c => c.Id == titled);
+        Assert.Contains(candidates, c => c.Id == empty);
+        Assert.Contains(candidates, c => c.Id == fresh);
+
+        // Tombstoned row stays settled (not surfaced + state untouched).
+        Assert.DoesNotContain(candidates, c => c.Id == gone);
+
+        // titled's stored title is now NULL — the whole point of
+        // refetch-all vs retry-empty.
+        Assert.Null(_repo.Recent(limit: 100).Single(r => r.Id == titled).LinkTitle);
+    }
+
+    [Fact]
+    public void RefetchAllLinks_NonLinkRowsUntouched()
+    {
+        var t0 = DateTimeOffset.FromUnixTimeSeconds(1_700_000_000);
+        var link = IngestLink("https://link.example/", t0);
+        ForceLinkState(link, title: "settled", fetchedAt: 12345.0);
+
+        // A text row — RefetchAllLinks must NOT touch it (the SQL
+        // filter is `kind = 'link'`).
+        using (var cmd = _db.CreateCommand())
+        {
+            cmd.CommandText =
+                "INSERT INTO entries(uuid, created_at, captured_at, kind, "
+              + "source_device_id, content_hash, total_size) "
+              + "VALUES (randomblob(16), $t, $t, 'text', 1, randomblob(32), 16)";
+            cmd.Parameters.AddWithValue("$t", t0.AddSeconds(1).ToUnixTimeSeconds());
+            cmd.ExecuteNonQuery();
+        }
+
+        var res = MaintenanceCommands.RefetchAllLinks(_db);
+        Assert.Equal(1, res.LinkStateReset);   // only the link row counted
+    }
+
     // ─── DedupeLinksAllTime ──────────────────────────────────────────────
 
     [Fact]
