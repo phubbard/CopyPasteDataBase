@@ -12,6 +12,23 @@ dated `[1.X.Y]` heading and reset `[Unreleased]` to empty.
 
 ## [Unreleased]
 
+- **Image preview actually shows the image now.** v1.27.0's fix
+  for the blank-pane bug was incomplete: `LoadBitmap` used
+  `BitmapImage.SetSource(stream)`, which queues an *asynchronous*
+  decode and never throws — corrupt / unsupported bytes fire
+  `ImageFailed` with nobody listening, and the
+  `InMemoryRandomAccessStream` local can be garbage-collected
+  before the decode runs even for valid bytes, ending the same
+  way. So `LoadBitmap` returned a non-null `BitmapImage`, the
+  v1.27.0 null-check passed, and an empty `<Image>` reached the
+  UI — including for ordinary, well-formed Chrome JPEG thumbs.
+  Now `LoadBitmap` calls `SetSourceAsync(...).AsTask()
+  .GetAwaiter().GetResult()` so the decode happens synchronously
+  before returning: bad bytes *throw* (caught → returns `null` →
+  fallback fires), good bytes are fully populated before
+  `Image.Source` is assigned, and the stream is guaranteed alive
+  across the call.
+
 - **Image preview falls back to URL/metadata when the thumbnail
   can't be rendered.** Reported: selecting some image entries left
   the right pane completely blank — except for the source-URL +
