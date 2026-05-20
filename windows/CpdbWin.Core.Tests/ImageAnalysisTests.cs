@@ -153,6 +153,32 @@ public class ImageAnalysisTests : IDisposable
     }
 
     [Fact]
+    public void Recent_HasOcrFlag_TracksOcrText()
+    {
+        var img = IngestImage();
+        Assert.False(_repo.Recent().First(r => r.Id == img).HasOcr);  // pre-OCR
+
+        _repo.SettleImageOcr(img, "some recognised words");
+        Assert.True(_repo.Recent().First(r => r.Id == img).HasOcr);   // text present
+
+        _repo.SettleImageOcr(img, null);                              // "no text"
+        Assert.False(_repo.Recent().First(r => r.Id == img).HasOcr);  // flag clears
+    }
+
+    [Fact]
+    public void GetOcrText_RoundTrips_NullsCleanly()
+    {
+        var img = IngestImage();
+        Assert.Null(_repo.GetOcrText(img));                           // un-analyzed
+
+        _repo.SettleImageOcr(img, "  hello world  ");
+        Assert.Equal("  hello world  ", _repo.GetOcrText(img));        // exact bytes
+
+        _repo.SettleImageOcr(img, null);
+        Assert.Null(_repo.GetOcrText(img));                           // back to null
+    }
+
+    [Fact]
     public void ResetImageAnalysis_ReArmsImagesOnly()
     {
         var img = IngestImage();

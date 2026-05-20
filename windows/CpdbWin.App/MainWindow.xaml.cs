@@ -280,13 +280,30 @@ public sealed partial class MainWindow : Window
         else                                                            ShowDetailMulti(n);
     }
 
+    /// <summary>
+    /// Entry id whose OCR text the "Show OCR text" button will fetch on
+    /// click. Set in <see cref="ShowImagePreview"/>; cleared by
+    /// <see cref="HideImagePreview"/>. We resolve the text lazily so the
+    /// list-row projection doesn't carry full OCR strings around.
+    /// </summary>
+    private long _ocrEntryId = -1;
+
+    private void HideImagePreview()
+    {
+        DetailImageScroll.Visibility = Visibility.Collapsed;
+        DetailImage.Source           = null;
+        DetailOcrButton.Visibility   = Visibility.Collapsed;
+        DetailOcrPanel.Visibility    = Visibility.Collapsed;
+        DetailOcrText.Text           = string.Empty;
+        _ocrEntryId = -1;
+    }
+
     private void ShowDetailMulti(int count)
     {
         DetailEmpty.Text = $"{count} entries selected · press Delete to remove";
         DetailEmpty.Visibility       = Visibility.Visible;
         DetailTextScroll.Visibility  = Visibility.Collapsed;
-        DetailImage.Visibility       = Visibility.Collapsed;
-        DetailImage.Source           = null;
+        HideImagePreview();
         DetailLinkScroll.Visibility  = Visibility.Collapsed;
         DetailLinkImage.Source       = null;
         ResetMeta();
@@ -297,8 +314,7 @@ public sealed partial class MainWindow : Window
         DetailEmpty.Text             = "Select an entry to preview";
         DetailEmpty.Visibility       = Visibility.Visible;
         DetailTextScroll.Visibility  = Visibility.Collapsed;
-        DetailImage.Visibility       = Visibility.Collapsed;
-        DetailImage.Source           = null;
+        HideImagePreview();
         DetailLinkScroll.Visibility  = Visibility.Collapsed;
         DetailLinkImage.Source       = null;
         ResetMeta();
@@ -340,9 +356,7 @@ public sealed partial class MainWindow : Window
         var thumb = _host.Entries.GetThumbLarge(vm.EntryId);
         if (thumb is not null)
         {
-            DetailImage.Source = LoadBitmap(thumb);
-            DetailImage.Visibility      = Visibility.Visible;
-            DetailTextScroll.Visibility = Visibility.Collapsed;
+            ShowImagePreview(vm, thumb);
             // Browsers ride a source URL + HTML snippet alongside the image
             // bytes — surface them so the user can chase the original.
             ShowMetadata(vm.EntryId, includeImageMetadata: true);
@@ -356,14 +370,63 @@ public sealed partial class MainWindow : Window
             if (bytes is null) continue;
             DetailText.Text = Encoding.UTF8.GetString(bytes);
             DetailTextScroll.Visibility = Visibility.Visible;
-            DetailImage.Visibility      = Visibility.Collapsed;
-            DetailImage.Source          = null;
+            HideImagePreview();
             return;
         }
 
         DetailText.Text = "(no preview available)";
         DetailTextScroll.Visibility = Visibility.Visible;
-        DetailImage.Visibility      = Visibility.Collapsed;
+        HideImagePreview();
+    }
+
+    private void ShowImagePreview(EntryViewModel vm, byte[] thumbBytes)
+    {
+        DetailImage.Source           = LoadBitmap(thumbBytes);
+        DetailImageScroll.Visibility = Visibility.Visible;
+        DetailTextScroll.Visibility  = Visibility.Collapsed;
+
+        // OCR button surfaces only when there's actually text to show.
+        // Start with the panel collapsed — the user clicks the button to
+        // reveal the selectable text (so they can highlight + Ctrl+C a
+        // subset of the recognised text).
+        DetailOcrPanel.Visibility = Visibility.Collapsed;
+        DetailOcrText.Text        = string.Empty;
+        if (vm.HasOcr)
+        {
+            _ocrEntryId = vm.EntryId;
+            DetailOcrButton.Content    = "Show OCR text";
+            DetailOcrButton.Visibility = Visibility.Visible;
+        }
+        else
+        {
+            _ocrEntryId = -1;
+            DetailOcrButton.Visibility = Visibility.Collapsed;
+        }
+    }
+
+    /// <summary>
+    /// Toggle the OCR text panel under an image preview. Lazy-fetches
+    /// the text the first time it's shown for this entry; the
+    /// <c>TextBlock</c> has <c>IsTextSelectionEnabled=true</c> so the
+    /// user can mouse-select a subset and Ctrl+C it to the clipboard.
+    /// </summary>
+    private void DetailOcrButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_ocrEntryId < 0) return;
+        if (DetailOcrPanel.Visibility == Visibility.Visible)
+        {
+            DetailOcrPanel.Visibility = Visibility.Collapsed;
+            DetailOcrButton.Content   = "Show OCR text";
+            return;
+        }
+
+        if (string.IsNullOrEmpty(DetailOcrText.Text))
+        {
+            var text = _host.Entries.GetOcrText(_ocrEntryId);
+            DetailOcrText.Text = text ?? "(no OCR text)";
+        }
+        DetailOcrPanel.Visibility = Visibility.Visible;
+        DetailOcrButton.Content   = "Hide OCR text";
     }
 
     private void ShowLinkDetail(EntryRow row)
@@ -776,9 +839,15 @@ public sealed class EntryViewModel
     public string Tooltip { get; init; } = "";
     public ImageSource? Thumbnail { get; init; }
     public bool Pinned { get; init; }
+    /// <summary>True when the entry is a kind=image row whose OCR pass found
+    /// text — drives the "OCR" chip on the list row.</summary>
+    public bool HasOcr { get; init; }
 
     /// <summary>Visible when the entry is pinned — drives the row glyph.</summary>
     public Visibility PinGlyphVisibility => Pinned ? Visibility.Visible : Visibility.Collapsed;
+
+    /// <summary>Visible when there's selectable OCR text to view.</summary>
+    public Visibility OcrBadgeVisibility => HasOcr ? Visibility.Visible : Visibility.Collapsed;
 
     /// <summary>Label for the right-click toggle: "Pin" when unpinned, "Unpin" when pinned.</summary>
     public string PinMenuLabel => Pinned ? "Unpin" : "Pin";
@@ -799,6 +868,7 @@ public sealed class EntryViewModel
         Tooltip   = BuildTooltip(row),
         Thumbnail = ThumbnailFrom(row.ThumbSmall),
         Pinned    = row.Pinned,
+        HasOcr    = row.HasOcr,
     };
 
     /// <summary>

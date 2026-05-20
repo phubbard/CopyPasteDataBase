@@ -37,7 +37,7 @@
                       SelectionMode="Extended">
                 <ListView.ItemTemplate>
                     <DataTemplate x:DataType="local:EntryViewModel">
-                        <Grid ColumnDefinitions="48,*,Auto" ColumnSpacing="10" Margin="0,4"
+                        <Grid ColumnDefinitions="48,*,Auto,Auto" ColumnSpacing="10" Margin="0,4"
                               ToolTipService.ToolTip="{x:Bind Tooltip}">
                             <Grid.ContextFlyout>
                                 <MenuFlyout>
@@ -62,7 +62,20 @@
                                 <TextBlock Text="{x:Bind Title}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
                                 <TextBlock Text="{x:Bind Subtitle}" Opacity="0.6" FontSize="12" TextTrimming="CharacterEllipsis"/>
                             </StackPanel>
-                            <SymbolIcon Grid.Column="2"
+                            <Border Grid.Column="2"
+                                    Background="{ThemeResource AccentFillColorDefaultBrush}"
+                                    CornerRadius="3"
+                                    Padding="4,1"
+                                    VerticalAlignment="Center"
+                                    Margin="0,0,4,0"
+                                    ToolTipService.ToolTip="OCR text recognised — preview pane has a button to view + copy it"
+                                    Visibility="{x:Bind OcrBadgeVisibility}">
+                                <TextBlock Text="OCR"
+                                           FontSize="10"
+                                           FontWeight="SemiBold"
+                                           Foreground="{ThemeResource TextOnAccentFillColorPrimaryBrush}"/>
+                            </Border>
+                            <SymbolIcon Grid.Column="3"
                                         Symbol="Pin"
                                         Width="16"
                                         Margin="0,0,4,0"
@@ -85,7 +98,37 @@
                                        IsTextSelectionEnabled="True"
                                        FontFamily="Consolas"/>
                         </ScrollViewer>
-                        <Image x:Name="DetailImage" Visibility="Collapsed" Stretch="Uniform"/>
+                        <!-- Image entries: thumbnail on top, "Show OCR
+                             text" button + a collapsible scrollable
+                             selectable text block below it so the user
+                             can grab a subset of the recognised text
+                             with mouse-select + Ctrl+C. -->
+                        <ScrollViewer x:Name="DetailImageScroll"
+                                      Visibility="Collapsed"
+                                      VerticalScrollBarVisibility="Auto"
+                                      HorizontalScrollBarVisibility="Disabled">
+                            <StackPanel Spacing="8" Padding="2">
+                                <Image x:Name="DetailImage" Stretch="Uniform"/>
+                                <Button x:Name="DetailOcrButton"
+                                        Visibility="Collapsed"
+                                        HorizontalAlignment="Left"
+                                        Click="DetailOcrButton_Click"/>
+                                <Border x:Name="DetailOcrPanel"
+                                        Visibility="Collapsed"
+                                        Background="{ThemeResource SubtleFillColorTertiaryBrush}"
+                                        CornerRadius="4"
+                                        Padding="8"
+                                        MaxHeight="320">
+                                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                        <TextBlock x:Name="DetailOcrText"
+                                                   TextWrapping="Wrap"
+                                                   IsTextSelectionEnabled="True"
+                                                   FontFamily="Consolas"
+                                                   FontSize="12"/>
+                                    </ScrollViewer>
+                                </Border>
+                            </StackPanel>
+                        </ScrollViewer>
                         <!-- Link entries: stacked title / thumbnail / URL.
                              Used when the selected row is kind=link.
                              Title gets prominence at the top; the og:image

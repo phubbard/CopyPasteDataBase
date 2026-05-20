@@ -22,7 +22,9 @@ public sealed class EntryRepository
         SELECT e.id, e.kind, e.title, e.text_preview,
                e.created_at, e.captured_at, e.total_size,
                a.bundle_id, a.name, p.thumb_small, e.pinned,
-               e.link_title
+               e.link_title,
+               CASE WHEN e.ocr_text IS NOT NULL AND e.ocr_text <> ''
+                    THEN 1 ELSE 0 END AS has_ocr
         FROM entries e
         LEFT JOIN apps a ON a.id = e.source_app_id
         LEFT JOIN previews p ON p.entry_id = e.id
@@ -177,6 +179,25 @@ public sealed class EntryRepository
         if (!reader.IsDBNull(0)) return (byte[])reader.GetValue(0);
         if (!reader.IsDBNull(1)) return _blobs.Get(reader.GetString(1));
         return null;
+    }
+
+    /// <summary>
+    /// Read <c>entries.ocr_text</c> for a single row. The list-query
+    /// projection only exposes a non-empty <c>HasOcr</c> flag (avoids
+    /// pulling potentially-long OCR strings for every visible row); the
+    /// preview pane fetches the full text on demand via this. Returns
+    /// <c>null</c> when the entry hasn't been analyzed or the OCR found
+    /// no text.
+    /// </summary>
+    public string? GetOcrText(long entryId)
+    {
+        using var cmd = _db.CreateCommand();
+        cmd.CommandText = "SELECT ocr_text FROM entries WHERE id = $id";
+        cmd.Parameters.AddWithValue("$id", entryId);
+        var v = cmd.ExecuteScalar();
+        if (v is null or DBNull) return null;
+        var s = (string)v;
+        return string.IsNullOrEmpty(s) ? null : s;
     }
 
     // ─── Link metadata backfill (docs/schema.md § Link metadata enrichment) ──
@@ -485,7 +506,8 @@ public sealed class EntryRepository
                 AppName: reader.IsDBNull(8) ? null : reader.GetString(8),
                 ThumbSmall: reader.IsDBNull(9) ? null : (byte[])reader.GetValue(9),
                 Pinned: reader.GetInt64(10) != 0,
-                LinkTitle: reader.IsDBNull(11) ? null : reader.GetString(11)
+                LinkTitle: reader.IsDBNull(11) ? null : reader.GetString(11),
+                HasOcr: reader.GetInt64(12) != 0
             ));
         }
         return rows;
@@ -504,7 +526,8 @@ public readonly record struct EntryRow(
     string? AppName,
     byte[]? ThumbSmall,
     bool Pinned,
-    string? LinkTitle);
+    string? LinkTitle,
+    bool HasOcr);
 
 public readonly record struct FlavorRow(
     long EntryId,
