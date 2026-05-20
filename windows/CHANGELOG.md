@@ -12,6 +12,30 @@ dated `[1.X.Y]` heading and reset `[Unreleased]` to empty.
 
 ## [Unreleased]
 
+- **WordPress-aware link-title preference.** Reported with a real
+  case: pasting `https://ultracrepidarian.phfactor.net/` settled
+  the title as just `"ultracrepidarian"` instead of the rich
+  `"ultracrepidarian – ultracrepidarian: a person who criticizes,
+  judges, or gives advice outside the area of his or her
+  expertise."` that the page's `<title>` tag actually carries.
+  Cause: our default precedence is `og:title → twitter:title →
+  <title>` (the documented contract, good for most sites), but
+  WordPress themes consistently put the bare post slug in
+  `og:title` and the rich `"Title – Tagline"` form in `<title>`.
+  Fix: detect WordPress via the standard
+  `<meta name="generator" content="WordPress…">` tag (matches both
+  WordPress.com and self-hosted, both attribute orders, case-
+  insensitive) and reverse the order for those pages to
+  `<title>` → og:title → twitter:title. Non-WP sites keep the
+  default precedence. WP backs ~40-60% of public sites, so the
+  payoff is broad. `LinkMetadataParser.LooksLikeWordPress` is
+  exposed publicly so future callers can diagnose detection.
+  *Existing rows whose link_title was already settled in the old
+  short form aren't auto-refreshed — they'd need a "refetch all"
+  reset (deferred to a follow-up if you want a Library-maintenance
+  button for it); fresh captures pick up the new logic
+  immediately.*
+
 - **HOTFIX: unfreeze the UI.** v1.28.0 made `LoadBitmap` call
   `BitmapImage.SetSourceAsync(...).AsTask().GetAwaiter().GetResult()`
   to surface decode failures synchronously — but on the UI thread
