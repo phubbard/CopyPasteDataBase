@@ -354,13 +354,22 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        // Image entries — show the larger preview if we have one.
-        var thumb = _host.Entries.GetThumbLarge(vm.EntryId);
-        if (thumb is not null)
+        // Image entries — show the larger preview if we have one AND it
+        // actually decodes. Decoding upfront (instead of inside
+        // ShowImagePreview) lets a corrupt/unsupported thumb_large
+        // fall through to the text-flavor branch cleanly: previously a
+        // failed decode left DetailImage with a null Source so the
+        // right-hand pane went blank above the metadata bar.
+        var thumb  = _host.Entries.GetThumbLarge(vm.EntryId);
+        var bitmap = thumb is null ? null : LoadBitmap(thumb);
+        bool isImageKind = row?.Kind == "image";
+
+        if (bitmap is not null)
         {
-            ShowImagePreview(vm, thumb);
-            // Browsers ride a source URL + HTML snippet alongside the image
-            // bytes — surface them so the user can chase the original.
+            ShowImagePreview(vm, bitmap);
+            // Browsers ride a source URL + HTML snippet alongside the
+            // image bytes — surface them so the user can chase the
+            // original.
             ShowMetadata(vm.EntryId, includeImageMetadata: true);
             return;
         }
@@ -373,17 +382,26 @@ public sealed partial class MainWindow : Window
             DetailText.Text = Encoding.UTF8.GetString(bytes);
             DetailTextScroll.Visibility = Visibility.Visible;
             HideImagePreview();
+            // For an image-kind entry that fell through (no decodable
+            // thumb), still show the image-metadata bar so source URL
+            // + HTML snippet stay visible — otherwise the previous
+            // selection's metadata was the only useful content and
+            // even that was misaligned with the now-showing URL above.
+            if (isImageKind)
+                ShowMetadata(vm.EntryId, includeImageMetadata: true);
             return;
         }
 
         DetailText.Text = "(no preview available)";
         DetailTextScroll.Visibility = Visibility.Visible;
         HideImagePreview();
+        if (isImageKind)
+            ShowMetadata(vm.EntryId, includeImageMetadata: true);
     }
 
-    private void ShowImagePreview(EntryViewModel vm, byte[] thumbBytes)
+    private void ShowImagePreview(EntryViewModel vm, BitmapImage bitmap)
     {
-        DetailImage.Source           = LoadBitmap(thumbBytes);
+        DetailImage.Source           = bitmap;
         DetailImageScroll.Visibility = Visibility.Visible;
         DetailTextScroll.Visibility  = Visibility.Collapsed;
 

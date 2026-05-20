@@ -12,6 +12,25 @@ dated `[1.X.Y]` heading and reset `[Unreleased]` to empty.
 
 ## [Unreleased]
 
+- **Image preview falls back to URL/metadata when the thumbnail
+  can't be rendered.** Reported: selecting some image entries left
+  the right pane completely blank — except for the source-URL +
+  HTML-snippet bar at the bottom. Cause: the image branch in
+  `MainWindow.ShowDetail` asked `LoadBitmap` to decode
+  `previews.thumb_large`, but the call returns `null` for corrupt
+  / unsupported bytes (BitmapImage swallows async decode failures),
+  and we assigned that `null` straight to `DetailImage.Source` —
+  leaving an empty `<Image>` element. Now `ShowDetail` decodes the
+  thumb upfront and treats a `null` result the same as "no thumb
+  available": fall through to the text-flavor branch (so the
+  source URL becomes the main preview), still calling
+  `ShowMetadata` for `kind=image` rows so source URL + HTML
+  snippet stay anchored at the bottom. Net: an image with a bad
+  thumb surfaces the URL prominently instead of a blank pane.
+  `ShowImagePreview`'s signature now takes a decoded `BitmapImage`
+  (no longer a `byte[]`) so a null bitmap can never reach the UI
+  by mistake.
+
 - **Preferences: separate Re-OCR / Re-tag buttons** (so re-running
   one analysis pass doesn't redo the other). The single combined
   "Re-OCR images" was misleading — under the hood the v1.24.0
