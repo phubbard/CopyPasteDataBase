@@ -12,6 +12,20 @@ dated `[1.X.Y]` heading and reset `[Unreleased]` to empty.
 
 ## [Unreleased]
 
+- **HOTFIX: unfreeze the UI.** v1.28.0 made `LoadBitmap` call
+  `BitmapImage.SetSourceAsync(...).AsTask().GetAwaiter().GetResult()`
+  to surface decode failures synchronously — but on the UI thread
+  that's a classic sync-over-async deadlock: the WinRT
+  `IAsyncAction`'s completion callback is marshalled back to the
+  UI thread, which is stuck inside `GetResult()`. Observed
+  symptom: clicking any image entry froze the window with a
+  permanent mouse spinner; keyboard input was equally dead. v1.29.0
+  reverts `LoadBitmap` to the original non-blocking
+  `BitmapImage.SetSource` — the UI never blocks. The earlier
+  blank-pane bug for some image entries is **deliberately left as
+  a separate investigation** rather than risk another bad fix —
+  better blank preview pane than a frozen window.
+
 - **Image preview actually shows the image now.** v1.27.0's fix
   for the blank-pane bug was incomplete: `LoadBitmap` used
   `BitmapImage.SetSource(stream)`, which queues an *asynchronous*
