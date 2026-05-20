@@ -12,6 +12,36 @@ dated `[1.X.Y]` heading and reset `[Unreleased]` to empty.
 
 ## [Unreleased]
 
+- **Blank-image-preview root-cause fix.** The bug that started
+  the v1.27.0 → v1.28.0 (frozen UI) → v1.29.0 (hotfix revert) →
+  v1.32.0 (overlap fix) chain. The actual cause: `LoadBitmap`
+  built a method-local `InMemoryRandomAccessStream`, called
+  `BitmapImage.SetSource(stream)`, and returned. `SetSource`
+  returns synchronously but the *decode* runs later — and is
+  typically deferred until the consuming `Image` element enters
+  a visible visual tree. For row-card thumbs that worked fine:
+  the `Image` is already in a visible `ListView` item, decode
+  runs immediately, stream is still alive. For the preview pane,
+  `DetailImageScroll` starts `Collapsed` — decode was deferred
+  until we flipped `Visibility = Visible`, by which time the
+  local stream had been GC'd and there was nothing to decode
+  from. Silently-empty `<Image>`.
+  - **Fix:** pin the backing stream to the `BitmapImage`'s
+    lifetime via `ConditionalWeakTable<BitmapImage,
+    IRandomAccessStream>` — the stream is freed automatically
+    when its bitmap is collected (no leak).
+  - **Belt-and-braces:** `ShowImagePreview` now flips
+    `DetailImageScroll.Visibility = Visible` *before* assigning
+    `DetailImage.Source`, so the decode trigger fires immediately.
+  - **Diagnostic.** Every preview now subscribes
+    `ImageOpened` / `ImageFailed` and logs to
+    `%LOCALAPPDATA%\cpdb\image-preview.log` (entry id, decoded
+    pixel dimensions, or the WinUI error message). The previous
+    three attempts (v1.27 null-check, v1.28 sync-over-async,
+    v1.29 revert) burned cycles because we couldn't see what
+    was actually happening; now we can. If this still doesn't
+    fully fix it, the log says exactly why.
+
 - **Preview pane no longer overlaps state from the previous
   selection.** Reported with a screenshot: selecting a link entry
   after an image entry showed the link title sitting on top of a

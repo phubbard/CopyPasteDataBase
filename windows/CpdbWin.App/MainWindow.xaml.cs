@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text;
 using CpdbWin.Core;
@@ -288,6 +289,13 @@ public sealed partial class MainWindow : Window
     /// </summary>
     private long _ocrEntryId = -1;
 
+    /// <summary>
+    /// Entry id whose thumb is currently feeding <c>DetailImage</c>.
+    /// Stashed by <see cref="ShowImagePreview"/> so the ImageOpened /
+    /// ImageFailed handlers can name the row in the diagnostic log.
+    /// </summary>
+    private long _currentPreviewId = -1;
+
     private void HideImagePreview()
     {
         DetailImageScroll.Visibility = Visibility.Collapsed;
@@ -410,9 +418,26 @@ public sealed partial class MainWindow : Window
 
     private void ShowImagePreview(EntryViewModel vm, BitmapImage bitmap)
     {
-        DetailImage.Source           = bitmap;
+        // Order matters: make the parent visible BEFORE assigning Source.
+        // BitmapImage decoding is deferred until the consuming Image is
+        // in a visible visual tree; flipping Visibility after assignment
+        // races against stream lifetime (see ConditionalWeakTable pin in
+        // LoadBitmap — belt-and-braces alongside that fix).
         DetailImageScroll.Visibility = Visibility.Visible;
         DetailTextScroll.Visibility  = Visibility.Collapsed;
+
+        // Diagnostic instrumentation — log the actual ImageOpened /
+        // ImageFailed events to image-preview.log. Re-subscribe each
+        // selection (- before + so we don't stack handlers when the
+        // user clicks through many image rows). Track the current
+        // entry id so the log entry says which row.
+        _currentPreviewId = vm.EntryId;
+        DetailImage.ImageOpened -= OnDetailImageOpened;
+        DetailImage.ImageFailed -= OnDetailImageFailed;
+        DetailImage.ImageOpened += OnDetailImageOpened;
+        DetailImage.ImageFailed += OnDetailImageFailed;
+
+        DetailImage.Source = bitmap;
 
         // Classifier tag chips — one Button per top-K label, each
         // wired to filter the list by that tag (TagButton_Click).
@@ -444,6 +469,26 @@ public sealed partial class MainWindow : Window
             _ocrEntryId = -1;
             DetailOcrButton.Visibility = Visibility.Collapsed;
         }
+    }
+
+    private void OnDetailImageOpened(object sender, RoutedEventArgs e)
+    {
+        var bi = DetailImage.Source as BitmapImage;
+        LogImagePreview(
+            $"opened  entry={_currentPreviewId}  "
+          + $"px={bi?.PixelWidth ?? 0}x{bi?.PixelHeight ?? 0}");
+    }
+
+    private void OnDetailImageFailed(object sender, ExceptionRoutedEventArgs e)
+    {
+        // Surface but don't propagate — async decode failures fire
+        // here AFTER ShowDetail returned, so a sync exception would
+        // bubble up to the dispatcher with nothing meaningful to do.
+        // The log line is what makes the next blank report
+        // diagnosable. Could trigger a retroactive URL fallback in a
+        // follow-up if logs show this firing on real entries.
+        LogImagePreview(
+            $"FAILED  entry={_currentPreviewId}  msg=\"{e.ErrorMessage}\"");
     }
 
     /// <summary>
@@ -615,6 +660,25 @@ public sealed partial class MainWindow : Window
     /// the framework finishes reading it.
     /// </para>
     /// </summary>
+    /// <summary>
+    /// Pins the backing <see cref="InMemoryRandomAccessStream"/> for
+    /// each <see cref="BitmapImage"/> we create. WinUI's
+    /// <c>BitmapImage.SetSource</c> returns synchronously but the
+    /// actual decode runs later (often deferred until the consuming
+    /// <c>Image</c> element enters a visible visual tree). A
+    /// method-local stream is eligible for GC the moment
+    /// <see cref="LoadBitmap"/> returns — for thumbs whose
+    /// <c>Image</c> is inside a <c>Collapsed</c> parent (the preview
+    /// pane), the decode trigger fires too late and the stream is
+    /// already gone, producing a silently-empty image. Row-card
+    /// thumbs were unaffected because their <c>Image</c> is already
+    /// in a visible tree and decode runs before GC. Using a
+    /// <see cref="ConditionalWeakTable{TKey,TValue}"/> so the stream
+    /// is freed automatically when its <c>BitmapImage</c> is collected
+    /// — no leak.
+    /// </summary>
+    private static readonly ConditionalWeakTable<BitmapImage, IRandomAccessStream> _bitmapStreams = new();
+
     private static BitmapImage? LoadBitmap(byte[] bytes)
     {
         try
@@ -628,10 +692,38 @@ public sealed partial class MainWindow : Window
             }
             stream.Seek(0);
             var img = new BitmapImage();
+            _bitmapStreams.AddOrUpdate(img, stream);  // pin for img's lifetime
             img.SetSource(stream);
             return img;
         }
         catch { return null; }
+    }
+
+    /// <summary>
+    /// Diagnostic log for the image-preview decode path. v1.27–v1.32
+    /// went through several wrong theories about why some thumbs
+    /// previewed blank; v1.33 wires the actual answer in. Every
+    /// preview now subscribes <c>ImageOpened</c> / <c>ImageFailed</c>
+    /// on <c>DetailImage</c> and appends a line here, so the next
+    /// blank report has the underlying WinUI error message instead
+    /// of needing another guess. Path matches the other diagnostic
+    /// logs (<c>update.log</c>, <c>paste-back.log</c>, <c>gc.log</c>).
+    /// Self-rotates at 1 MB.
+    /// </summary>
+    private static void LogImagePreview(string message)
+    {
+        try
+        {
+            var path = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "cpdb", "image-preview.log");
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            if (File.Exists(path) && new FileInfo(path).Length > 1_000_000)
+                File.WriteAllText(path, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] (rotated)\n");
+            File.AppendAllText(path,
+                $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] {message}\n");
+        }
+        catch { /* never break the UI for a diag log */ }
     }
 
     private const int KeyPageSize = 8;
