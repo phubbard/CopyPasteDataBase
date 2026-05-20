@@ -40,7 +40,8 @@
                 <!-- Library maintenance -->
                 <StackPanel Spacing="6">
                     <TextBlock Text="Library maintenance" FontWeight="SemiBold"/>
-                    <Grid ColumnDefinitions="Auto,Auto,Auto,Auto,*" ColumnSpacing="8">
+                    <Grid ColumnDefinitions="Auto,Auto,Auto,Auto,Auto,*"
+                          ColumnSpacing="8">
                         <Button Grid.Column="0" x:Name="ReEnrichButton"
                                 Content="Re-enrich now"
                                 Click="ReEnrich_Click"
@@ -53,7 +54,12 @@
                                 Click="RetryEmpty_Click"/>
                         <Button Grid.Column="3" x:Name="ReOcrButton"
                                 Content="Re-OCR images"
+                                ToolTipService.ToolTip="Re-run text recognition only; existing classifier tags are kept"
                                 Click="ReOcr_Click"/>
+                        <Button Grid.Column="4" x:Name="ReTagButton"
+                                Content="Re-tag images"
+                                ToolTipService.ToolTip="Re-run the image classifier only; existing OCR text is kept"
+                                Click="ReTag_Click"/>
                     </Grid>
                     <TextBlock x:Name="MaintenanceStatus"
                                FontSize="11"

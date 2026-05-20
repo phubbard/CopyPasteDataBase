@@ -294,11 +294,22 @@ public sealed partial class PreferencesWindow : Window
     private void ReOcr_Click(object sender, RoutedEventArgs e) =>
         _ = RunMaintenanceAsync("re-OCR images", db =>
         {
-            var r = MaintenanceCommands.ResetImageAnalysis(db);
+            var r = MaintenanceCommands.ResetImageOcr(db);
             return r.LinkStateReset == 0
                 ? "No image entries to OCR."
-                : $"Re-armed {r.LinkStateReset} image(s); OCR runs in the "
-                  + "background and folds the text into search.";
+                : $"Re-armed {r.LinkStateReset} image(s) for OCR; existing "
+                  + "classifier tags kept. OCR runs in the background and "
+                  + "folds the recognised text into search.";
+        });
+
+    private void ReTag_Click(object sender, RoutedEventArgs e) =>
+        _ = RunMaintenanceAsync("re-tag images", db =>
+        {
+            var r = MaintenanceCommands.ResetImageTags(db);
+            return r.LinkStateReset == 0
+                ? "No image entries to re-tag."
+                : $"Re-armed {r.LinkStateReset} image(s) for the classifier; "
+                  + "existing OCR text kept. Tags refresh in the background.";
         });
 
     private void ReEnrich_Click(object sender, RoutedEventArgs e) =>
@@ -339,6 +350,7 @@ public sealed partial class PreferencesWindow : Window
         ReclassifyButton.IsEnabled  = !busy;
         RetryEmptyButton.IsEnabled  = !busy;
         ReOcrButton.IsEnabled       = !busy;
+        ReTagButton.IsEnabled       = !busy;
         MaintenanceStatus.Text = status;
     }
 

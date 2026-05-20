@@ -23,6 +23,7 @@ public static class Schema
         "v7_body_evicted",
         "v8_link_metadata",
         "v9_link_retry_backoff",
+        "v10_image_per_pass_timestamps",
     };
 
     public const string UnionDdl = """
@@ -52,7 +53,15 @@ public static class Schema
             link_fetched_at  REAL,
             -- v9: exponential-backoff retry state for the link fetcher.
             link_retry_count INTEGER NOT NULL DEFAULT 0,
-            link_retry_after REAL
+            link_retry_after REAL,
+            -- v10: per-pass sentinels for image analysis. NULL = "this
+            -- pass hasn't run yet for this image" — independently
+            -- candidate for OCR vs the classifier so Preferences can
+            -- offer separate "Re-OCR" and "Re-tag" buttons that don't
+            -- collide. analyzed_at stays as a Mac-parity "ever
+            -- processed" sentinel; both passes stamp it on settle.
+            ocr_at           REAL,
+            tags_at          REAL
         );
         CREATE INDEX idx_entries_created_at ON entries(created_at DESC);
         CREATE INDEX idx_entries_kind ON entries(kind);

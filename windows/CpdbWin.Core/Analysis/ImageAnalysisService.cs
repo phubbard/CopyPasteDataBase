@@ -82,35 +82,48 @@ public sealed class ImageAnalysisService : IDisposable
         int settled = 0;
         try
         {
-            var ids = _entries.NextImageAnalysisCandidates(
+            var candidates = _entries.NextImageAnalysisCandidates(
                 overrideBatchSize ?? BatchSize);
-            foreach (var id in ids)
+            foreach (var c in candidates)
             {
                 if (ct.IsCancellationRequested) break;
 
-                // Largest available raster flavor. Capture stores PNG
-                // (incl. DIB→PNG conversion); JPEG is the browser-drag
-                // fallback. If neither resolves, settle as "no text" so
-                // the row stops being a candidate.
-                var bytes = _entries.GetFlavorBytes(id, "public.png")
-                          ?? _entries.GetFlavorBytes(id, "public.jpeg");
+                // Largest available raster flavor (PNG from capture +
+                // DIB→PNG conversion; JPEG is the browser-drag fallback).
+                // If neither resolves, settle both passes as "we looked,
+                // nothing" so the row stops being a candidate.
+                var bytes = _entries.GetFlavorBytes(c.Id, "public.png")
+                          ?? _entries.GetFlavorBytes(c.Id, "public.jpeg");
 
                 string? text = null;
                 string? tags = null;
                 if (bytes is not null)
                 {
-                    // OCR + classify run sequentially, not in parallel —
-                    // both are CPU-bound on the same core in practice and
-                    // sequencing keeps memory low (no two decoded
-                    // bitmaps live at once).
-                    text = await ImageOcr.RecognizeAsync(bytes, ct).ConfigureAwait(false);
-                    tags = await ImageClassifier.ClassifyAsync(bytes, topK: 3, ct: ct)
-                        .ConfigureAwait(false);
+                    // OCR + classify run sequentially on the same bytes
+                    // — both CPU-bound, sequencing keeps memory low (no
+                    // two decoded bitmaps live concurrently). Per-pass
+                    // gating: if a Preferences reset only re-armed one
+                    // pass, the other already-done one is skipped.
+                    if (c.NeedsOcr)
+                        text = await ImageOcr.RecognizeAsync(bytes, ct).ConfigureAwait(false);
+                    if (c.NeedsTags)
+                        tags = await ImageClassifier.ClassifyAsync(bytes, topK: 3, ct: ct)
+                            .ConfigureAwait(false);
                 }
 
-                _entries.SettleImageAnalysis(id, text, tags);
+                // Combined settle when both passes ran (one tx, one FTS
+                // update); per-pass settle otherwise (so the unrelated
+                // sentinel column isn't touched and a "Re-OCR" reset
+                // doesn't accidentally re-stamp tags_at, etc.).
+                if (c.NeedsOcr && c.NeedsTags)
+                    _entries.SettleImageAnalysis(c.Id, text, tags);
+                else if (c.NeedsOcr)
+                    _entries.SettleImageOcr(c.Id, text);
+                else
+                    _entries.SettleImageTags(c.Id, tags);
+
                 settled++;
-                try { RowSettled?.Invoke(this, new ImageAnalyzedEventArgs(id, text, tags)); }
+                try { RowSettled?.Invoke(this, new ImageAnalyzedEventArgs(c.Id, text, tags)); }
                 catch { /* UI handler must not break the loop */ }
             }
         }

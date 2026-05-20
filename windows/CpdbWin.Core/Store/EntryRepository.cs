@@ -380,40 +380,129 @@ public sealed class EntryRepository
     // ─── Image analysis backfill (docs/schema.md § ocr_text) ────────────────
 
     /// <summary>
-    /// Image entries that still need OCR: <c>kind = 'image'</c>, not
-    /// tombstoned, and <c>analyzed_at IS NULL</c> (the sentinel — set once
-    /// OCR has run, even if it found no text, so a blank image isn't
-    /// re-OCR'd forever). Newest-first so a freshly captured screenshot
-    /// becomes searchable within a capture-wake cycle.
+    /// Image entries that still need at least one analysis pass —
+    /// either OCR (<c>ocr_at IS NULL</c>) or classifier tags
+    /// (<c>tags_at IS NULL</c>). Newest-first so a freshly captured
+    /// screenshot becomes searchable within a capture-wake cycle.
+    /// The per-pass flags let the analyzer skip work that's already
+    /// done (so the Preferences "Re-OCR images" button doesn't
+    /// implicitly re-tag, and vice versa).
     /// </summary>
-    public IReadOnlyList<long> NextImageAnalysisCandidates(int limit)
+    public IReadOnlyList<ImageAnalysisCandidate> NextImageAnalysisCandidates(int limit)
     {
         const string sql = """
-            SELECT id FROM entries
+            SELECT id,
+                   CASE WHEN ocr_at  IS NULL THEN 1 ELSE 0 END AS needs_ocr,
+                   CASE WHEN tags_at IS NULL THEN 1 ELSE 0 END AS needs_tags
+            FROM entries
             WHERE kind = 'image'
               AND deleted_at IS NULL
-              AND analyzed_at IS NULL
+              AND (ocr_at IS NULL OR tags_at IS NULL)
             ORDER BY created_at DESC
             LIMIT $limit
             """;
-        var ids = new List<long>();
+        var rows = new List<ImageAnalysisCandidate>();
         using var cmd = _db.CreateCommand();
         cmd.CommandText = sql;
         cmd.Parameters.AddWithValue("$limit", limit);
         using var reader = cmd.ExecuteReader();
-        while (reader.Read()) ids.Add(reader.GetInt64(0));
-        return ids;
+        while (reader.Read())
+            rows.Add(new ImageAnalysisCandidate(
+                Id:        reader.GetInt64(0),
+                NeedsOcr:  reader.GetInt64(1) != 0,
+                NeedsTags: reader.GetInt64(2) != 0));
+        return rows;
     }
 
     /// <summary>
-    /// Record an image-analysis result — both the OCR pass and the
-    /// classifier-tags pass settle through here so the row gets one
-    /// transaction and one FTS5 update per image. Always stamps
-    /// <c>analyzed_at</c> (even when both inputs are null — "we looked,
-    /// there was nothing") so the row drops out of the candidate set
-    /// permanently. Writes <c>ocr_text</c> and <c>image_tags</c> into
-    /// <c>entries</c> and the FTS5 shadow's matching columns (same
-    /// delete-free column UPDATE pattern <see cref="SettleLink"/> uses).
+    /// Record an OCR result for an image entry. Stamps <c>ocr_at</c>
+    /// + <c>analyzed_at</c> (even when <paramref name="ocrText"/> is
+    /// null — "we looked, there was no text") so the row stops being
+    /// an OCR candidate. <b>Does not touch</b> <c>tags_at</c> /
+    /// <c>image_tags</c>, so a Preferences "Re-OCR images" reset (which
+    /// clears only <c>ocr_at</c>) can re-run OCR without disturbing
+    /// classifier tags. Mirrors the per-pass column UPDATE pattern used
+    /// by <see cref="SettleLink"/>.
+    /// </summary>
+    public void SettleImageOcr(long entryId, string? ocrText, DateTimeOffset? at = null)
+    {
+        var ts = (at ?? DateTimeOffset.UtcNow).ToUnixTimeMilliseconds() / 1000.0;
+
+        using var tx = _db.BeginTransaction();
+
+        using (var cmd = _db.CreateCommand())
+        {
+            cmd.Transaction = tx;
+            cmd.CommandText = """
+                UPDATE entries
+                SET ocr_text    = $o,
+                    ocr_at      = $ts,
+                    analyzed_at = $ts
+                WHERE id = $id AND deleted_at IS NULL
+                """;
+            cmd.Parameters.AddWithValue("$o",  (object?)ocrText ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("$ts", ts);
+            cmd.Parameters.AddWithValue("$id", entryId);
+            cmd.ExecuteNonQuery();
+        }
+        using (var cmd = _db.CreateCommand())
+        {
+            cmd.Transaction = tx;
+            cmd.CommandText = "UPDATE entries_fts SET ocr_text = $o WHERE rowid = $id";
+            cmd.Parameters.AddWithValue("$o",  ocrText ?? string.Empty);
+            cmd.Parameters.AddWithValue("$id", entryId);
+            cmd.ExecuteNonQuery();
+        }
+        tx.Commit();
+    }
+
+    /// <summary>
+    /// Record an image-classifier result. Stamps <c>tags_at</c> +
+    /// <c>analyzed_at</c> regardless of whether
+    /// <paramref name="imageTags"/> is null. Independent of
+    /// <see cref="SettleImageOcr"/> — a "Re-tag images" reset (clears
+    /// only <c>tags_at</c>) re-runs the classifier without re-running
+    /// OCR.
+    /// </summary>
+    public void SettleImageTags(long entryId, string? imageTags, DateTimeOffset? at = null)
+    {
+        var ts = (at ?? DateTimeOffset.UtcNow).ToUnixTimeMilliseconds() / 1000.0;
+
+        using var tx = _db.BeginTransaction();
+
+        using (var cmd = _db.CreateCommand())
+        {
+            cmd.Transaction = tx;
+            cmd.CommandText = """
+                UPDATE entries
+                SET image_tags  = $t,
+                    tags_at     = $ts,
+                    analyzed_at = $ts
+                WHERE id = $id AND deleted_at IS NULL
+                """;
+            cmd.Parameters.AddWithValue("$t",  (object?)imageTags ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("$ts", ts);
+            cmd.Parameters.AddWithValue("$id", entryId);
+            cmd.ExecuteNonQuery();
+        }
+        using (var cmd = _db.CreateCommand())
+        {
+            cmd.Transaction = tx;
+            cmd.CommandText = "UPDATE entries_fts SET image_tags = $t WHERE rowid = $id";
+            cmd.Parameters.AddWithValue("$t",  imageTags ?? string.Empty);
+            cmd.Parameters.AddWithValue("$id", entryId);
+            cmd.ExecuteNonQuery();
+        }
+        tx.Commit();
+    }
+
+    /// <summary>
+    /// Combined settle — equivalent to back-to-back
+    /// <see cref="SettleImageOcr"/> + <see cref="SettleImageTags"/>
+    /// but in a single transaction with a single FTS5 update. Used
+    /// when the analyzer ran both passes in one decode (the common
+    /// fresh-capture case); also a back-compat call site for tests +
+    /// the CLI that don't care about per-pass timing.
     /// </summary>
     public void SettleImageAnalysis(
         long entryId,
@@ -430,40 +519,31 @@ public sealed class EntryRepository
             cmd.Transaction = tx;
             cmd.CommandText = """
                 UPDATE entries
-                SET ocr_text = $o,
-                    image_tags = $t,
+                SET ocr_text    = $o,
+                    image_tags  = $t,
+                    ocr_at      = $ts,
+                    tags_at     = $ts,
                     analyzed_at = $ts
                 WHERE id = $id AND deleted_at IS NULL
                 """;
-            cmd.Parameters.AddWithValue("$o", (object?)ocrText ?? DBNull.Value);
-            cmd.Parameters.AddWithValue("$t", (object?)imageTags ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("$o",  (object?)ocrText  ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("$t",  (object?)imageTags ?? DBNull.Value);
             cmd.Parameters.AddWithValue("$ts", ts);
             cmd.Parameters.AddWithValue("$id", entryId);
             cmd.ExecuteNonQuery();
         }
-
         using (var cmd = _db.CreateCommand())
         {
             cmd.Transaction = tx;
             cmd.CommandText =
                 "UPDATE entries_fts SET ocr_text = $o, image_tags = $t WHERE rowid = $id";
-            cmd.Parameters.AddWithValue("$o", ocrText ?? string.Empty);
-            cmd.Parameters.AddWithValue("$t", imageTags ?? string.Empty);
+            cmd.Parameters.AddWithValue("$o",  ocrText  ?? string.Empty);
+            cmd.Parameters.AddWithValue("$t",  imageTags ?? string.Empty);
             cmd.Parameters.AddWithValue("$id", entryId);
             cmd.ExecuteNonQuery();
         }
-
         tx.Commit();
     }
-
-    /// <summary>
-    /// Back-compat alias for v1.22.0 callers (CLI + tests) that only
-    /// dealt with the OCR half. Forwards to <see cref="SettleImageAnalysis"/>
-    /// with <c>imageTags = null</c>; new callers should use
-    /// <c>SettleImageAnalysis</c> directly.
-    /// </summary>
-    public void SettleImageOcr(long entryId, string? ocrText, DateTimeOffset? at = null)
-        => SettleImageAnalysis(entryId, ocrText, imageTags: null, at: at);
 
     /// <summary>
     /// Mark <paramref name="entryId"/> deleted (sets <c>deleted_at</c>) and
@@ -570,3 +650,15 @@ public readonly record struct LinkBackfillCandidate(
     long Id,
     string Url,
     int RetryCount);
+
+/// <summary>
+/// One image entry the analyzer should process next, with per-pass
+/// flags so the service can skip work that's already done. Both flags
+/// false would mean the row is fully settled — the candidate query
+/// filters those out, so a returned candidate always has at least one
+/// flag set.
+/// </summary>
+public readonly record struct ImageAnalysisCandidate(
+    long Id,
+    bool NeedsOcr,
+    bool NeedsTags);
