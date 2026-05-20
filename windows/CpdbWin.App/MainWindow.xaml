@@ -109,6 +109,27 @@
                                       HorizontalScrollBarVisibility="Disabled">
                             <StackPanel Spacing="8" Padding="2">
                                 <Image x:Name="DetailImage" Stretch="Uniform"/>
+                                <!-- Image-classifier tags (top-3 ImageNet
+                                     labels). Each chip is a Button; click
+                                     filters the whole history by that
+                                     tag — search box gets the label, kind
+                                     filter resets to All. -->
+                                <ItemsControl x:Name="DetailTagsList" Visibility="Collapsed">
+                                    <ItemsControl.ItemsPanel>
+                                        <ItemsPanelTemplate>
+                                            <StackPanel Orientation="Horizontal" Spacing="6"/>
+                                        </ItemsPanelTemplate>
+                                    </ItemsControl.ItemsPanel>
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate x:DataType="x:String">
+                                            <Button Content="{x:Bind}"
+                                                    Click="TagButton_Click"
+                                                    FontSize="11"
+                                                    Padding="8,2"
+                                                    ToolTipService.ToolTip="Filter history by this tag"/>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
                                 <Button x:Name="DetailOcrButton"
                                         Visibility="Collapsed"
                                         HorizontalAlignment="Left"

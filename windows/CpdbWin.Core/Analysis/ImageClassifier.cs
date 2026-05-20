@@ -101,7 +101,12 @@ public static class ImageClassifier
                 if (!string.IsNullOrWhiteSpace(label)) tags.Add(label);
             }
             if (tags.Count == 0) return null;
-            return string.Join(" ", tags);
+            // Comma-separated, not space-separated: ImageNet labels are
+            // multi-word ("great white shark") so a space would make
+            // "great white shark laptop" ambiguous to split. FTS5's
+            // default tokenizer (unicode61) treats both ',' and ' ' as
+            // separators, so search-by-tag still works either way.
+            return string.Join(", ", tags);
         }
         catch (OperationCanceledException) { throw; }
         catch { return null; }

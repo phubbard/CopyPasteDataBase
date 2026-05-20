@@ -216,6 +216,40 @@ public class ImageAnalysisTests : IDisposable
           + "missing from output, or ONNX Runtime native libs didn't resolve.");
     }
 
+    [Theory]
+    [InlineData(null,                                new string[0])]
+    [InlineData("",                                  new string[0])]
+    [InlineData("   ",                               new string[0])]
+    // Canonical v1.25.0+ form: comma+space. Multi-word labels survive.
+    [InlineData("great white shark, laptop, mouse",  new[] { "great white shark", "laptop", "mouse" })]
+    // Legacy v1.24.0 space-only form (only correct for single-word labels).
+    [InlineData("laptop keyboard mouse",             new[] { "laptop", "keyboard", "mouse" })]
+    // Single tag, no separator — round-trips as one label.
+    [InlineData("laptop",                            new[] { "laptop" })]
+    public void ImageTags_Parse(string? raw, string[] expected)
+        => Assert.Equal(expected, ImageTags.Parse(raw));
+
+    [Fact]
+    public void SettleImageAnalysis_CommaSeparatedTags_AllTokensSearchable()
+    {
+        // The classifier now stores comma+space ("great white shark,
+        // laptop"); FTS5's unicode61 tokenizer splits on both ',' and
+        // whitespace, so a multi-word label still indexes each token.
+        var img = IngestImage();
+        _repo.SettleImageAnalysis(img, ocrText: null,
+            imageTags: "great white shark, laptop, mouse");
+
+        // The multi-word label's *components* are independently
+        // searchable (the whole point of comma-separating).
+        Assert.Contains(_repo.Search("shark*"),  e => e.Id == img);
+        Assert.Contains(_repo.Search("laptop*"), e => e.Id == img);
+        Assert.Contains(_repo.Search("mouse*"),  e => e.Id == img);
+
+        // And the row reads back the raw string for UI display.
+        Assert.Equal("great white shark, laptop, mouse",
+            _repo.Recent().First(r => r.Id == img).ImageTags);
+    }
+
     [Fact]
     public void ResetImageAnalysis_ReArmsImagesOnly()
     {

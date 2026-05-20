@@ -24,7 +24,8 @@ public sealed class EntryRepository
                a.bundle_id, a.name, p.thumb_small, e.pinned,
                e.link_title,
                CASE WHEN e.ocr_text IS NOT NULL AND e.ocr_text <> ''
-                    THEN 1 ELSE 0 END AS has_ocr
+                    THEN 1 ELSE 0 END AS has_ocr,
+               e.image_tags
         FROM entries e
         LEFT JOIN apps a ON a.id = e.source_app_id
         LEFT JOIN previews p ON p.entry_id = e.id
@@ -527,7 +528,8 @@ public sealed class EntryRepository
                 ThumbSmall: reader.IsDBNull(9) ? null : (byte[])reader.GetValue(9),
                 Pinned: reader.GetInt64(10) != 0,
                 LinkTitle: reader.IsDBNull(11) ? null : reader.GetString(11),
-                HasOcr: reader.GetInt64(12) != 0
+                HasOcr: reader.GetInt64(12) != 0,
+                ImageTags: reader.IsDBNull(13) ? null : reader.GetString(13)
             ));
         }
         return rows;
@@ -547,7 +549,8 @@ public readonly record struct EntryRow(
     byte[]? ThumbSmall,
     bool Pinned,
     string? LinkTitle,
-    bool HasOcr);
+    bool HasOcr,
+    string? ImageTags);
 
 public readonly record struct FlavorRow(
     long EntryId,

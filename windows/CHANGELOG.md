@@ -12,6 +12,25 @@ dated `[1.X.Y]` heading and reset `[Unreleased]` to empty.
 
 ## [Unreleased]
 
+- **Image tags are interactive in the preview pane.** Under the
+  thumbnail, the image-classifier's top-3 labels now render as
+  clickable chips. Click any one → search box gets the label, kind
+  filter resets to "All", and the main list refilters to show
+  every entry whose text / OCR / link title / image tags contains
+  that word — image search by content, one click. The list query
+  carries `image_tags` directly (short strings, ~30 bytes/row) so
+  the chips appear instantly with no per-selection DB hit.
+
+- **Tag storage switched to comma+space separation.** v1.24.0 used
+  a single space, but ImageNet has multi-word labels
+  ("great white shark"), so a space made the stored string
+  ambiguous to split for display. Storage and display now use
+  `", "`; FTS5's unicode61 tokenizer splits on both whitespace
+  *and* punctuation, so search-by-tag works against both legacy
+  v1.24.0 and current data. The display parser
+  (`CpdbWin.Core.Analysis.ImageTags.Parse`) auto-detects and
+  handles either form.
+
 - **Image classification (tags) — `image_tags` finally populated.**
   The Windows analogue of macOS Vision's `VNClassifyImageRequest`,
   closing the half of the OCR-+-tags parity row Windows was

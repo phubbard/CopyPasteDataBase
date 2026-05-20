@@ -292,6 +292,8 @@ public sealed partial class MainWindow : Window
     {
         DetailImageScroll.Visibility = Visibility.Collapsed;
         DetailImage.Source           = null;
+        DetailTagsList.ItemsSource   = null;
+        DetailTagsList.Visibility    = Visibility.Collapsed;
         DetailOcrButton.Visibility   = Visibility.Collapsed;
         DetailOcrPanel.Visibility    = Visibility.Collapsed;
         DetailOcrText.Text           = string.Empty;
@@ -385,6 +387,19 @@ public sealed partial class MainWindow : Window
         DetailImageScroll.Visibility = Visibility.Visible;
         DetailTextScroll.Visibility  = Visibility.Collapsed;
 
+        // Classifier tag chips — one Button per top-K label, each
+        // wired to filter the list by that tag (TagButton_Click).
+        if (vm.Tags.Count > 0)
+        {
+            DetailTagsList.ItemsSource = vm.Tags;
+            DetailTagsList.Visibility  = Visibility.Visible;
+        }
+        else
+        {
+            DetailTagsList.ItemsSource = null;
+            DetailTagsList.Visibility  = Visibility.Collapsed;
+        }
+
         // OCR button surfaces only when there's actually text to show.
         // Start with the panel collapsed — the user clicks the button to
         // reveal the selectable text (so they can highlight + Ctrl+C a
@@ -402,6 +417,24 @@ public sealed partial class MainWindow : Window
             _ocrEntryId = -1;
             DetailOcrButton.Visibility = Visibility.Collapsed;
         }
+    }
+
+    /// <summary>
+    /// A classifier-tag chip was clicked under the image preview —
+    /// filter the whole history by that tag. Reset the kind filter to
+    /// "All" first so the match isn't accidentally narrowed (the user
+    /// asked for "across history", not "across kind=image"). Setting
+    /// the search box triggers SearchBox_TextChanged → Refresh; FTS5
+    /// matches against text + ocr_text + image_tags + link_title so the
+    /// tag word lands every entry it appears in regardless of kind.
+    /// </summary>
+    private void TagButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button b || b.Content is not string tag) return;
+        if (string.IsNullOrWhiteSpace(tag)) return;
+        KindFilter.SelectedIndex = 0;            // "All"
+        SearchBox.Text = tag;
+        SearchBox.Focus(FocusState.Programmatic);
     }
 
     /// <summary>
@@ -843,6 +876,14 @@ public sealed class EntryViewModel
     /// text — drives the "OCR" chip on the list row.</summary>
     public bool HasOcr { get; init; }
 
+    /// <summary>
+    /// Image-classifier labels for the entry, as a list of individual
+    /// tag strings. Empty (not null) for non-image rows or images the
+    /// classifier hasn't tagged yet. The preview pane renders each as a
+    /// clickable chip that filters the list by that tag.
+    /// </summary>
+    public IReadOnlyList<string> Tags { get; init; } = Array.Empty<string>();
+
     /// <summary>Visible when the entry is pinned — drives the row glyph.</summary>
     public Visibility PinGlyphVisibility => Pinned ? Visibility.Visible : Visibility.Collapsed;
 
@@ -869,6 +910,7 @@ public sealed class EntryViewModel
         Thumbnail = ThumbnailFrom(row.ThumbSmall),
         Pinned    = row.Pinned,
         HasOcr    = row.HasOcr,
+        Tags      = CpdbWin.Core.Analysis.ImageTags.Parse(row.ImageTags),
     };
 
     /// <summary>
