@@ -12,6 +12,33 @@ dated `[1.X.Y]` heading and reset `[Unreleased]` to empty.
 
 ## [Unreleased]
 
+- **Preferences: separate Re-OCR / Re-tag buttons** (so re-running
+  one analysis pass doesn't redo the other). The single combined
+  "Re-OCR images" was misleading — under the hood the v1.24.0
+  service did both OCR and classification, so resetting it actually
+  cost both. Now there are two buttons and they really are
+  independent:
+  - **Re-OCR images** — clears only the OCR pass sentinel; the
+    classifier tags on existing rows survive untouched and the
+    analyzer re-runs only text recognition.
+  - **Re-tag images** — clears only the classifier pass sentinel;
+    existing OCR text survives and the analyzer re-runs only the
+    image classifier.
+- **Schema v10: per-pass image-analysis sentinels.** Adds
+  `entries.ocr_at` and `entries.tags_at` (REAL, nullable) so OCR
+  and the classifier can be reset independently. Backfilled from
+  `analyzed_at` so existing fully-analyzed rows don't look like
+  fresh candidates after the upgrade. `analyzed_at` stays as the
+  Mac-parity "ever processed" marker; both passes still stamp it
+  on settle. Migration is non-destructive (`ALTER TABLE … ADD
+  COLUMN` + `UPDATE … SET … = COALESCE(…, analyzed_at)`).
+- **`ImageAnalysisService` skips already-done passes.** Each
+  candidate now carries `NeedsOcr` / `NeedsTags` flags so the loop
+  runs only the pass(es) actually missing. Capture-wake on a fresh
+  image still does both; a "Re-OCR" reset only re-OCRs.
+- **CLI unchanged:** `cpdb-win analyze-images [--force]` still
+  resets and re-runs both passes (the macOS contract).
+
 - **Image tags are interactive in the preview pane.** Under the
   thumbnail, the image-classifier's top-3 labels now render as
   clickable chips. Click any one → search box gets the label, kind

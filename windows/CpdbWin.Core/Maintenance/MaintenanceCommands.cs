@@ -124,20 +124,57 @@ public static class MaintenanceCommands
     }
 
     /// <summary>
-    /// Clear <c>analyzed_at</c> on every live image entry so the
-    /// image-analysis loop re-OCRs them. The Windows analogue of macOS
-    /// <c>cpdb analyze-images --force</c> — used by the CLI's
-    /// <c>analyze-images --force</c> and the Preferences "Re-OCR images"
-    /// button. The actual OCR is done afterwards by
-    /// <see cref="ImageAnalysisService"/> (running app) or the CLI's
-    /// drain loop; this just re-arms the candidate set.
+    /// Clear the OCR-pass sentinel (<c>ocr_at</c>) on every live image
+    /// entry so the analyzer re-runs OCR for each. Does not touch
+    /// <c>tags_at</c> — the classifier-tags pass is independently
+    /// gated. Used by Preferences "Re-OCR images". Actual OCR is done
+    /// by <see cref="ImageAnalysisService"/> (running app) or the
+    /// CLI's drain loop; this just re-arms the OCR candidate set.
+    /// </summary>
+    public static MaintenanceResult ResetImageOcr(SqliteConnection db)
+    {
+        using var cmd = db.CreateCommand();
+        cmd.CommandText = """
+            UPDATE entries
+            SET ocr_at = NULL
+            WHERE kind = 'image' AND deleted_at IS NULL
+            """;
+        var n = cmd.ExecuteNonQuery();
+        return new MaintenanceResult(Scanned: n, Reclassified: 0, LinkStateReset: n);
+    }
+
+    /// <summary>
+    /// Clear the classifier-pass sentinel (<c>tags_at</c>) on every
+    /// live image so the analyzer re-runs classification. Does not
+    /// touch <c>ocr_at</c>. Used by Preferences "Re-tag images".
+    /// </summary>
+    public static MaintenanceResult ResetImageTags(SqliteConnection db)
+    {
+        using var cmd = db.CreateCommand();
+        cmd.CommandText = """
+            UPDATE entries
+            SET tags_at = NULL
+            WHERE kind = 'image' AND deleted_at IS NULL
+            """;
+        var n = cmd.ExecuteNonQuery();
+        return new MaintenanceResult(Scanned: n, Reclassified: 0, LinkStateReset: n);
+    }
+
+    /// <summary>
+    /// Combined: clear both passes' sentinels (<c>ocr_at</c> +
+    /// <c>tags_at</c> + the unified <c>analyzed_at</c>) so the
+    /// analyzer re-runs both. Used by the CLI's <c>analyze-images
+    /// --force</c>. The Preferences pane prefers the per-pass
+    /// <see cref="ResetImageOcr"/> / <see cref="ResetImageTags"/>.
     /// </summary>
     public static MaintenanceResult ResetImageAnalysis(SqliteConnection db)
     {
         using var cmd = db.CreateCommand();
         cmd.CommandText = """
             UPDATE entries
-            SET analyzed_at = NULL
+            SET ocr_at = NULL,
+                tags_at = NULL,
+                analyzed_at = NULL
             WHERE kind = 'image' AND deleted_at IS NULL
             """;
         var n = cmd.ExecuteNonQuery();

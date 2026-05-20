@@ -40,6 +40,7 @@ public static class Migrator
         if (!applied.Contains("v7_body_evicted")) ApplyV7BodyEvicted(conn);
         if (!applied.Contains("v8_link_metadata")) ApplyV8LinkMetadata(conn);
         if (!applied.Contains("v9_link_retry_backoff")) ApplyV9LinkRetryBackoff(conn);
+        if (!applied.Contains("v10_image_per_pass_timestamps")) ApplyV10ImagePerPassTimestamps(conn);
     }
 
     /// <summary>
@@ -244,6 +245,58 @@ public static class Migrator
         }
 
         RecordApplied(conn, tx, "v9_link_retry_backoff");
+        tx.Commit();
+    }
+
+    // ─── v10: per-pass image-analysis timestamps ───────────────────────
+
+    /// <summary>
+    /// Adds <c>ocr_at</c> + <c>tags_at</c> to <c>entries</c> so the
+    /// image OCR pass and the classifier-tag pass can be reset
+    /// independently (Preferences "Re-OCR images" vs "Re-tag images").
+    /// Existing rows that already went through the unified analyzer
+    /// (analyzed_at non-null) get backfilled on both so they don't
+    /// look like fresh candidates after the upgrade. <c>analyzed_at</c>
+    /// is retained for Mac-parity / "ever processed at all" semantics
+    /// — both passes still stamp it on settle.
+    /// </summary>
+    private static void ApplyV10ImagePerPassTimestamps(SqliteConnection conn)
+    {
+        using var tx = conn.BeginTransaction();
+
+        if (!HasColumn(conn, "entries", "ocr_at"))
+        {
+            using var cmd = conn.CreateCommand();
+            cmd.Transaction = tx;
+            cmd.CommandText = "ALTER TABLE entries ADD COLUMN ocr_at REAL";
+            cmd.ExecuteNonQuery();
+        }
+        if (!HasColumn(conn, "entries", "tags_at"))
+        {
+            using var cmd = conn.CreateCommand();
+            cmd.Transaction = tx;
+            cmd.CommandText = "ALTER TABLE entries ADD COLUMN tags_at REAL";
+            cmd.ExecuteNonQuery();
+        }
+
+        // Backfill from the existing unified sentinel: anything that
+        // already ran through the analyzer is "OCR done + tags done"
+        // (the pre-v10 service did both in one shot). Without this,
+        // every previously-analyzed image would re-process on first
+        // boot post-upgrade.
+        using (var cmd = conn.CreateCommand())
+        {
+            cmd.Transaction = tx;
+            cmd.CommandText = """
+                UPDATE entries
+                SET ocr_at  = COALESCE(ocr_at,  analyzed_at),
+                    tags_at = COALESCE(tags_at, analyzed_at)
+                WHERE kind = 'image' AND analyzed_at IS NOT NULL
+                """;
+            cmd.ExecuteNonQuery();
+        }
+
+        RecordApplied(conn, tx, "v10_image_per_pass_timestamps");
         tx.Commit();
     }
 }

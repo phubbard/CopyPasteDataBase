@@ -87,21 +87,27 @@ public class ImageAnalysisTests : IDisposable
                 System.Text.Encoding.UTF8.GetBytes(s)),
         }), null, _device).EntryId;
 
+    /// <summary>Project candidates → ids for the Assert.Contains assertions.</summary>
+    private IReadOnlyList<long> CandidateIds(int n = 10) =>
+        _repo.NextImageAnalysisCandidates(n).Select(c => c.Id).ToList();
+
     [Fact]
     public void Candidates_AreUnanalyzedImagesOnly()
     {
         var img1 = IngestImage();
         var img2 = IngestImage();
-        IngestText("not an image");                       // wrong kind
+        IngestText("not an image");                              // wrong kind
         var analyzed = IngestImage();
-        _repo.SettleImageOcr(analyzed, "already done");    // analyzed_at set
+        // Fully settle both passes — ocr_at + tags_at both set, so the
+        // row drops out of NextImageAnalysisCandidates entirely.
+        _repo.SettleImageAnalysis(analyzed, "already done", "laptop, keyboard, mouse");
 
-        var ids = _repo.NextImageAnalysisCandidates(10);
+        var ids = CandidateIds();
 
         Assert.Contains(img1, ids);
         Assert.Contains(img2, ids);
-        Assert.DoesNotContain(analyzed, ids);              // analyzed_at not null
-        Assert.Equal(2, ids.Count);                        // text row excluded
+        Assert.DoesNotContain(analyzed, ids);                    // both sentinels stamped
+        Assert.Equal(2, ids.Count);                              // text row excluded
     }
 
     [Fact]
@@ -109,48 +115,53 @@ public class ImageAnalysisTests : IDisposable
     {
         var img = IngestImage();
         _repo.Tombstone(img);
-        Assert.DoesNotContain(img, _repo.NextImageAnalysisCandidates(10));
+        Assert.DoesNotContain(img, CandidateIds());
     }
 
     [Fact]
-    public void SettleImageOcr_WithText_StampsAnalyzed_AndIsSearchable()
+    public void SettleImageOcr_StampsOcrSentinelOnly_TagsRowStillCandidate()
     {
         var img = IngestImage();
         _repo.SettleImageOcr(img, "INVOICE total 4815 Acme widgets");
 
-        // No longer a candidate (analyzed_at stamped).
-        Assert.DoesNotContain(img, _repo.NextImageAnalysisCandidates(10));
-
-        // ocr_text persisted.
+        // ocr_text persisted + ocr_at stamped; analyzed_at stamped too.
         using (var c = _db.CreateCommand())
         {
-            c.CommandText = "SELECT ocr_text, analyzed_at FROM entries WHERE id=$id";
+            c.CommandText =
+                "SELECT ocr_text, ocr_at, tags_at, analyzed_at FROM entries WHERE id=$id";
             c.Parameters.AddWithValue("$id", img);
             using var r = c.ExecuteReader();
             Assert.True(r.Read());
             Assert.Equal("INVOICE total 4815 Acme widgets", r.GetString(0));
-            Assert.False(r.IsDBNull(1));                    // analyzed_at set
+            Assert.False(r.IsDBNull(1));                          // ocr_at set
+            Assert.True(r.IsDBNull(2));                           // tags_at NULL (per-pass!)
+            Assert.False(r.IsDBNull(3));                          // analyzed_at set
         }
 
-        // Folded into FTS5 — the screenshot is now findable by its text.
-        var hit = _repo.Search("Acme*");
-        Assert.Contains(hit, e => e.Id == img);
+        // Folded into FTS5 — searchable by the OCR text.
+        Assert.Contains(_repo.Search("Acme*"), e => e.Id == img);
+
+        // Row is still a candidate — for tags (NeedsOcr=false, NeedsTags=true).
+        // This is the whole point of per-pass settle: a Preferences
+        // "Re-OCR images" reset doesn't need to also re-tag.
+        var c2 = _repo.NextImageAnalysisCandidates(10).First(x => x.Id == img);
+        Assert.False(c2.NeedsOcr);
+        Assert.True(c2.NeedsTags);
     }
 
     [Fact]
-    public void SettleImageOcr_NoText_StillStampsAnalyzed()
+    public void SettleImageOcr_NoText_StillStampsOcrSentinel()
     {
         var img = IngestImage();
         _repo.SettleImageOcr(img, null);   // "we looked, no text"
 
-        Assert.DoesNotContain(img, _repo.NextImageAnalysisCandidates(10));
         using var c = _db.CreateCommand();
-        c.CommandText = "SELECT ocr_text, analyzed_at FROM entries WHERE id=$id";
+        c.CommandText = "SELECT ocr_text, ocr_at FROM entries WHERE id=$id";
         c.Parameters.AddWithValue("$id", img);
         using var r = c.ExecuteReader();
         Assert.True(r.Read());
-        Assert.True(r.IsDBNull(0));         // ocr_text NULL
-        Assert.False(r.IsDBNull(1));        // analyzed_at still stamped
+        Assert.True(r.IsDBNull(0));            // ocr_text NULL
+        Assert.False(r.IsDBNull(1));           // ocr_at stamped → not an OCR candidate
     }
 
     [Fact]
@@ -251,18 +262,62 @@ public class ImageAnalysisTests : IDisposable
     }
 
     [Fact]
-    public void ResetImageAnalysis_ReArmsImagesOnly()
+    public void ResetImageAnalysis_ReArmsImagesOnly_BothPasses()
     {
         var img = IngestImage();
         var txt = IngestText("plain text row");
-        _repo.SettleImageOcr(img, "some ocr");
-        Assert.DoesNotContain(img, _repo.NextImageAnalysisCandidates(10));
+        _repo.SettleImageAnalysis(img, "some ocr", "laptop, mouse");
+        Assert.DoesNotContain(img, CandidateIds());
 
         var res = MaintenanceCommands.ResetImageAnalysis(_db);
 
         Assert.Equal(1, res.LinkStateReset);                       // one image re-armed
-        Assert.Contains(img, _repo.NextImageAnalysisCandidates(10)); // candidate again
+        var c = _repo.NextImageAnalysisCandidates(10).First(x => x.Id == img);
+        Assert.True(c.NeedsOcr);                                   // both passes re-armed
+        Assert.True(c.NeedsTags);
         // The text row was never an image candidate and is untouched.
-        Assert.DoesNotContain(txt, _repo.NextImageAnalysisCandidates(10));
+        Assert.DoesNotContain(txt, CandidateIds());
+    }
+
+    [Fact]
+    public void ResetImageOcr_ReArmsOcrOnly_KeepsTagsSentinel()
+    {
+        // Per-pass independence: a "Re-OCR images" reset must re-arm
+        // ONLY the OCR pass. Existing classifier tags must survive.
+        var img = IngestImage();
+        _repo.SettleImageAnalysis(img, "some ocr", "laptop, mouse");
+        Assert.DoesNotContain(img, CandidateIds());
+
+        var res = MaintenanceCommands.ResetImageOcr(_db);
+        Assert.Equal(1, res.LinkStateReset);
+
+        var c = _repo.NextImageAnalysisCandidates(10).First(x => x.Id == img);
+        Assert.True(c.NeedsOcr);                                   // OCR re-armed
+        Assert.False(c.NeedsTags);                                 // tags untouched
+
+        // image_tags value is preserved (the column wasn't cleared,
+        // just the sentinel — the actual tags remain visible in the UI
+        // until the classifier overwrites them on the next run).
+        Assert.Equal("laptop, mouse",
+            _repo.Recent().First(r => r.Id == img).ImageTags);
+    }
+
+    [Fact]
+    public void ResetImageTags_ReArmsTagsOnly_KeepsOcrSentinel()
+    {
+        // Mirror of the above: "Re-tag images" doesn't re-OCR.
+        var img = IngestImage();
+        _repo.SettleImageAnalysis(img, "OCR text", "laptop, mouse");
+        Assert.DoesNotContain(img, CandidateIds());
+
+        var res = MaintenanceCommands.ResetImageTags(_db);
+        Assert.Equal(1, res.LinkStateReset);
+
+        var c = _repo.NextImageAnalysisCandidates(10).First(x => x.Id == img);
+        Assert.False(c.NeedsOcr);                                  // OCR untouched
+        Assert.True(c.NeedsTags);                                  // tags re-armed
+
+        // ocr_text value is preserved on disk + in the row.
+        Assert.Equal("OCR text", _repo.GetOcrText(img));
     }
 }
