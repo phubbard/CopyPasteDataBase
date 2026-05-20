@@ -40,6 +40,23 @@ public sealed class LinkMetadataFetcher : IDisposable
     /// </summary>
     public const int MaxBodyBytes = 256 * 1024;
 
+    /// <summary>
+    /// Bodies below this size with NO extractable title source
+    /// (no og:title, no twitter:title, no <c>&lt;title&gt;</c>) are
+    /// treated as suspect CDN throttle / rate-limit responses
+    /// (<c>FetchOutcome.Transient</c>). Real HTML pages carrying any
+    /// title essentially never come in this small — even the
+    /// sparsest legitimate page carries head boilerplate pushing it
+    /// past a few KB. 2 KB is a generous floor: most throttle pages
+    /// are &lt;1 KB. Mirrors
+    /// <c>Sources/CpdbShared/Analysis/LinkMetadataFetcher.swift</c>'s
+    /// <c>suspectThrottleBodyBytes</c>. Mac built this after a
+    /// "Refetch all" burst against a WordPress host poisoned ~50
+    /// rows with empty titles — same URLs fetched cleanly a minute
+    /// later — and we're inheriting the defense.
+    /// </summary>
+    public const int SuspectThrottleBodyBytes = 2048;
+
     /// <summary>Cap on raw thumbnail bytes we'll download.</summary>
     public const int MaxThumbnailBytes = 4 * 1024 * 1024;
 
@@ -458,6 +475,21 @@ public sealed class LinkMetadataFetcher : IDisposable
         {
             return new FetchOutcome.Transient(
                 $"bot-check rejection: \"{Trunc(extractedTitle, 60)}\"");
+        }
+
+        // Step 4b: suspect-throttle detection. A 200 OK with a tiny
+        // body AND no extractable title source (no og:title, no
+        // twitter:title, no <title>) is almost certainly a CDN
+        // rate-limit / throttle response that didn't bother emitting
+        // a recognisable bot-check phrase. Real HTML pages with no
+        // title essentially never happen at this size. Treat as
+        // transient so the row keeps trying. Macos shipped this
+        // after a "Refetch all" burst poisoned ~50 WordPress rows;
+        // we're inheriting the defense for parity.
+        if (parsed.Title is null && body.Length < SuspectThrottleBodyBytes)
+        {
+            return new FetchOutcome.Transient(
+                $"suspect throttle response: {body.Length} bytes, no title");
         }
 
         var thumb = parsed.ThumbnailUrl;

@@ -33,7 +33,7 @@ dated `[1.X.Y]` heading and reset `[Unreleased]` to empty.
   generic HTML parser then ran over 5 KB of JSON, found no
   `<title>`, no `og:title`, and settled with NULL.
 
-  **Two-part fix:**
+  **Three-part fix:**
   - **Drop `application/json` from the default Accept header.** The
     HTML fetcher is the default path; YouTube oEmbed and Reddit
     `.json` endpoints return JSON regardless of Accept, so the
@@ -47,6 +47,15 @@ dated `[1.X.Y]` heading and reset `[Unreleased]` to empty.
     the row stays a candidate instead of silently settling with NULL.
     Belt-and-braces for the stale-cache window while the corrected
     Accept header propagates to fresh cache keys.
+  - **Suspect-throttle detection** (macOS parity). 200 OK with a
+    body under `SuspectThrottleBodyBytes = 2048` AND no extractable
+    title source is treated as a CDN rate-limit / throttle response
+    (real HTML pages with content essentially never come this
+    small). Macos built this defense after a "Refetch all" burst
+    against a WordPress host poisoned ~50 rows; we now inherit the
+    same heuristic. Mirrors
+    `Sources/CpdbShared/Analysis/LinkMetadataFetcher.swift`'s
+    `suspectThrottleBodyBytes`.
 
 - **Decode typographic entities in link titles (v1.36.0).** Tiny
   follow-on: `&#8211;` (en dash), `&#8212;` (em dash), curly quotes,
