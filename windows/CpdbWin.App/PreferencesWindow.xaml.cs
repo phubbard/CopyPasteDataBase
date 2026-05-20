@@ -291,6 +291,18 @@ public sealed partial class PreferencesWindow : Window
             return $"Queued {r.LinkStateReset} title-less link(s) for refetch.";
         });
 
+    private void RefetchAll_Click(object sender, RoutedEventArgs e) =>
+        _ = RunMaintenanceAsync("refetch-all link titles", db =>
+        {
+            var r = MaintenanceCommands.RefetchAllLinks(db);
+            return r.LinkStateReset == 0
+                ? "No link entries to refetch."
+                : $"Wiped + re-armed {r.LinkStateReset} link title(s); the "
+                  + "backfill loop re-fetches each in the background "
+                  + "(current fetcher rules apply, incl. v1.30.0 "
+                  + "WordPress-aware precedence).";
+        });
+
     private void ReOcr_Click(object sender, RoutedEventArgs e) =>
         _ = RunMaintenanceAsync("re-OCR images", db =>
         {
@@ -349,6 +361,7 @@ public sealed partial class PreferencesWindow : Window
         ReEnrichButton.IsEnabled    = !busy;
         ReclassifyButton.IsEnabled  = !busy;
         RetryEmptyButton.IsEnabled  = !busy;
+        RefetchAllButton.IsEnabled  = !busy;
         ReOcrButton.IsEnabled       = !busy;
         ReTagButton.IsEnabled       = !busy;
         MaintenanceStatus.Text = status;

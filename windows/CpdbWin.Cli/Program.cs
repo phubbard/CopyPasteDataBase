@@ -18,7 +18,7 @@ namespace CpdbWin.Cli;
 /// Usage:
 /// <code>
 /// cpdb-win reclassify-kinds
-/// cpdb-win backfill-titles --retry-empty
+/// cpdb-win backfill-titles --retry-empty | --refetch-all
 /// cpdb-win analyze-images [--force]
 /// cpdb-win dedupe --links-all-time
 /// cpdb-win --help | -h
@@ -186,17 +186,40 @@ public static class Program
 
     private static int RunBackfillTitles(SqliteConnection db, string[] flags)
     {
-        if (flags.Length == 0 || !flags.Contains("--retry-empty"))
+        bool retryEmpty = flags.Contains("--retry-empty");
+        bool refetchAll = flags.Contains("--refetch-all");
+        if (!retryEmpty && !refetchAll)
         {
             Console.Error.WriteLine(
-                "cpdb-win backfill-titles: only --retry-empty is supported in v1. " +
-                "(see CHANGELOG / docs/parity.md § CLI surface for the full Mac surface.)");
+                "cpdb-win backfill-titles: pass --retry-empty (re-fetch only " +
+                "links that came back blank) or --refetch-all (wipe every " +
+                "link's stored title and re-fetch — useful to pick up newer " +
+                "fetcher rules, e.g. the v1.30.0 WordPress preference).");
             return 2;
         }
-        var r = MaintenanceCommands.RetryEmptyLinks(db);
-        Console.WriteLine(
-            $"backfill-titles --retry-empty: cleared link state on {r.LinkStateReset} row(s). " +
-            "Restart cpdb-win to pick them up in the next backfill cycle.");
+        if (retryEmpty && refetchAll)
+        {
+            Console.Error.WriteLine(
+                "cpdb-win backfill-titles: --retry-empty and --refetch-all " +
+                "are mutually exclusive.");
+            return 2;
+        }
+        if (retryEmpty)
+        {
+            var r = MaintenanceCommands.RetryEmptyLinks(db);
+            Console.WriteLine(
+                $"backfill-titles --retry-empty: cleared link state on " +
+                $"{r.LinkStateReset} row(s). Restart cpdb-win to pick them " +
+                "up in the next backfill cycle.");
+        }
+        else
+        {
+            var r = MaintenanceCommands.RefetchAllLinks(db);
+            Console.WriteLine(
+                $"backfill-titles --refetch-all: wiped + re-armed " +
+                $"{r.LinkStateReset} link title(s). Restart cpdb-win " +
+                "to drain the backfill loop under current fetcher rules.");
+        }
         return 0;
     }
 
@@ -264,6 +287,14 @@ public static class Program
                   kind=link rows that settled with no title (link_title
                   NULL or empty). Restart the GUI app to fire the
                   next backfill cycle.
+
+              cpdb-win backfill-titles --refetch-all
+                  Wipe link_title + link_fetched_at on EVERY live
+                  kind=link row and re-arm them for the backfill loop.
+                  Stronger than --retry-empty (which only re-fetches
+                  blanks). Use to pick up newer fetcher rules — e.g.
+                  the v1.30.0 WordPress-aware precedence — on rows
+                  that already settled under older logic.
 
               cpdb-win analyze-images [--force]
                   On-device OCR (Windows.Media.Ocr) of image entries

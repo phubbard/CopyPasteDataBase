@@ -12,6 +12,24 @@ dated `[1.X.Y]` heading and reset `[Unreleased]` to empty.
 
 ## [Unreleased]
 
+- **"Refetch all link titles" maintenance action.** A new
+  `MaintenanceCommands.RefetchAllLinks` clears `link_title` +
+  `link_fetched_at` + retry state on every live `kind=link` row
+  (and the FTS5 shadow's `link_title` column) so the backfill
+  loop re-fetches every title under current fetcher rules.
+  Surfaced two ways:
+  - **Preferences → Library maintenance → "Refetch all link
+    titles"** — for already-settled rows that picked up the bare
+    short title before v1.30.0's WordPress-aware precedence
+    landed.
+  - **`cpdb-win backfill-titles --refetch-all`** — symmetric with
+    the existing `--retry-empty` flag (which only re-arms blanks);
+    covers macOS's `cpdb fetch-link-titles --force`.
+
+  Stronger than "Retry empty titles" — that one only wipes blanks;
+  this one wipes successful settlements too. Tombstoned rows are
+  skipped; non-link rows untouched.
+
 - **WordPress-aware link-title preference.** Reported with a real
   case: pasting `https://ultracrepidarian.phfactor.net/` settled
   the title as just `"ultracrepidarian"` instead of the rich
