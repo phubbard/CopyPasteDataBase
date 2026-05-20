@@ -12,6 +12,32 @@ dated `[1.X.Y]` heading and reset `[Unreleased]` to empty.
 
 ## [Unreleased]
 
+- **Blank-image-preview — actual fix (v1.35.0).** The v1.34.0
+  instrumentation pinpointed it immediately. The user's log:
+  ```
+  healthcheck entry=189  px=400x400  vis=Collapsed/Visible
+  ```
+  Bitmap decoded fine (400×400, `ImageOpened` fired) but
+  `DetailImage.Visibility == Collapsed`. The Image control itself was
+  hidden while its ScrollViewer parent was visible — explains the
+  blank-but-with-tags-and-OCR-button screenshot perfectly.
+
+  Cause: `ShowLinkDetail` does
+  `DetailImage.Visibility = Visibility.Collapsed` (to hide the image-kind
+  UI while previewing a link entry) and never restores it.
+  `ShowImagePreview` only flipped the *parent*
+  `DetailImageScroll.Visibility = Visible` — so once the user visited a
+  link entry, every subsequent image preview rendered the bitmap into a
+  collapsed Image control and showed nothing. App restart "fixed" it
+  because XAML's default is `Visible`.
+
+  Fix: `ShowImagePreview` now sets `DetailImage.Visibility = Visible`
+  alongside the parent ScrollViewer. One line. Three releases of
+  wrong theories (v1.27 null-check, v1.28 sync-over-async deadlock,
+  v1.29 revert, v1.32 reset-noise, v1.33 stream-pin) before the
+  v1.34 healthcheck handed us the smoking gun. Lesson:
+  **instrumentation before theory.**
+
 - **Blank-image-preview — comprehensive instrumentation (v1.34.0).**
   v1.33.0's `ConditionalWeakTable` stream-pin didn't fix the bug for
   the user's existing image entries. The reproducing screenshot showed

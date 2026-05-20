@@ -429,6 +429,14 @@ public sealed partial class MainWindow : Window
         // races against stream lifetime (see ConditionalWeakTable pin in
         // LoadBitmap — belt-and-braces alongside that fix).
         DetailImageScroll.Visibility = Visibility.Visible;
+        // Also restore DetailImage itself — ShowLinkDetail collapses it
+        // (to hide the image-kind UI when previewing a link), and never
+        // sets it back. Without this, selecting an image entry AFTER a
+        // link entry decodes the bitmap (PixelWidth > 0, ImageOpened
+        // fires) but the Image control stays Collapsed — silently
+        // blank preview. The v1.34.0 healthcheck log caught this:
+        // px=400x400 vis=Collapsed/Visible.
+        DetailImage.Visibility       = Visibility.Visible;
         DetailTextScroll.Visibility  = Visibility.Collapsed;
 
         // Diagnostic instrumentation — log the actual ImageOpened /
