@@ -1,3 +1,4 @@
+using CpdbWin.Core.Analysis;
 using CpdbWin.Core.Capture;
 using CpdbWin.Core.Identity;
 using CpdbWin.Core.Ingest;
@@ -176,6 +177,43 @@ public class ImageAnalysisTests : IDisposable
 
         _repo.SettleImageOcr(img, null);
         Assert.Null(_repo.GetOcrText(img));                           // back to null
+    }
+
+    [Fact]
+    public void SettleImageAnalysis_PersistsOcrAndTags_BothFtsSearchable()
+    {
+        var img = IngestImage();
+        _repo.SettleImageAnalysis(img, "RECEIPT total $42", "laptop keyboard");
+
+        using (var c = _db.CreateCommand())
+        {
+            c.CommandText =
+                "SELECT ocr_text, image_tags, analyzed_at FROM entries WHERE id=$id";
+            c.Parameters.AddWithValue("$id", img);
+            using var r = c.ExecuteReader();
+            Assert.True(r.Read());
+            Assert.Equal("RECEIPT total $42", r.GetString(0));
+            Assert.Equal("laptop keyboard", r.GetString(1));
+            Assert.False(r.IsDBNull(2));
+        }
+
+        // Both OCR and tag columns fold into FTS5 — search by a word
+        // from each independently and the same row matches.
+        Assert.Contains(_repo.Search("RECEIPT*"), e => e.Id == img);
+        Assert.Contains(_repo.Search("laptop*"),  e => e.Id == img);
+    }
+
+    [Fact]
+    public void Classifier_BundledModelLoads()
+    {
+        // Smoke check that the Models\ files were CopyToOutputDirectory
+        // -ied into the test bin and ONNX Runtime + the native libs
+        // resolve under net8.0-windows on this host. If this ever fails
+        // in CI on a fresh runner, the package's runtimes/ propagation
+        // is the first thing to check.
+        Assert.True(ImageClassifier.IsAvailable,
+            "MobileNetV2 model + labels failed to load — bundled files "
+          + "missing from output, or ONNX Runtime native libs didn't resolve.");
     }
 
     [Fact]

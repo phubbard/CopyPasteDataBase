@@ -24,7 +24,7 @@ Legend:
 | Inline / blob spillover (256 KB) | ✅ v1.0 | ✅ v2.5 | ✅ v1.0 | rule in `docs/schema.md` § Blob store |
 | Kind classification | ✅ v1.0 | ✅ v2.5 | ✅ v1.0 | rules + Windows-clipboard-format → UTI table in `docs/schema.md` § Kind classification |
 | OCR (image → searchable text) | ✅ v1.2 (Vision) | ✅ v2.5 | ✅ v1.22.0 | Windows: `Windows.Media.Ocr` (built-in, no model bundle). `ImageAnalysisService` mirrors the link-backfill loop — capture-wake + periodic sweep + `analyzed_at` sentinel; text folded into the same FTS5 `ocr_text` column. CLI `cpdb-win analyze-images [--force]`; Preferences → "Re-OCR images" |
-| Image classification tags | ✅ v1.2 (Vision) | ✅ v2.5 | ⏳ | no built-in Windows equivalent of Vision's `VNClassifyImageRequest`; `image_tags` stays NULL. Candidate: bundled ONNX model (deferred — adds a ~15-25 MB model to the installer) |
+| Image classification tags | ✅ v1.2 (Vision) | ✅ v2.5 | ✅ v1.24.0 | Windows: bundled **MobileNetV2** ImageNet-1k ONNX (~13 MB) run through Microsoft.ML.OnnxRuntime. Top-3 labels stored space-separated in `image_tags` and folded into the FTS5 `image_tags` column (same shape as macOS Vision tags), so searching by tag works alongside text + OCR. `ImageClassifier.IsAvailable` gates the pass — a missing/failed model is silent and OCR keeps working. Accuracy and label vocabulary differ from Apple's classifier (different model + dataset); the parity claim is "image search by content", not byte-for-byte tag equality |
 | Password-manager blocklist | ✅ v1.2.1 | — | ✅ | block by source-app identifier; Apple-Strong-Password shape heuristic (Apple-only) |
 | `nspasteboard.org` transient markers | ✅ v1.0 | — | — | Apple-only convention |
 

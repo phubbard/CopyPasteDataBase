@@ -5,5 +5,22 @@
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.10" />
+    <!--
+      Image classification — local on-device, no service / no network.
+      Ships native runtime binaries for both win-x64 and win-arm64 under
+      runtimes/, picked up automatically by the .NET SDK when publishing
+      with -r win-<arch>. The native lib is what Velopack delta updates
+      have to carry per arch (~5 MB / arch); the managed wrapper is small.
+    -->
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.18.1" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- Bundled MobileNetV2 ImageNet classifier — loaded by
+         CpdbWin.Core.Analysis.ImageClassifier. Resolved relative to the
+         AppBase / assembly directory at runtime, so the same file works
+         for the GUI install, the CLI, and the test runner without any
+         per-host config. -->
+    <None Update="Models\mobilenetv2-12.onnx" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="Models\imagenet1k_labels.txt" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

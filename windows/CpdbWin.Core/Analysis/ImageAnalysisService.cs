@@ -96,12 +96,21 @@ public sealed class ImageAnalysisService : IDisposable
                           ?? _entries.GetFlavorBytes(id, "public.jpeg");
 
                 string? text = null;
+                string? tags = null;
                 if (bytes is not null)
+                {
+                    // OCR + classify run sequentially, not in parallel —
+                    // both are CPU-bound on the same core in practice and
+                    // sequencing keeps memory low (no two decoded
+                    // bitmaps live at once).
                     text = await ImageOcr.RecognizeAsync(bytes, ct).ConfigureAwait(false);
+                    tags = await ImageClassifier.ClassifyAsync(bytes, topK: 3, ct: ct)
+                        .ConfigureAwait(false);
+                }
 
-                _entries.SettleImageOcr(id, text);
+                _entries.SettleImageAnalysis(id, text, tags);
                 settled++;
-                try { RowSettled?.Invoke(this, new ImageAnalyzedEventArgs(id, text)); }
+                try { RowSettled?.Invoke(this, new ImageAnalyzedEventArgs(id, text, tags)); }
                 catch { /* UI handler must not break the loop */ }
             }
         }
@@ -148,9 +157,13 @@ public sealed class ImageAnalyzedEventArgs : EventArgs
     public long EntryId { get; }
     /// <summary>The recognised text, or null when none was found.</summary>
     public string? OcrText { get; }
-    public ImageAnalyzedEventArgs(long entryId, string? ocrText)
+    /// <summary>Space-separated classifier labels, or null when the
+    /// classifier was unavailable / produced no usable tags.</summary>
+    public string? ImageTags { get; }
+    public ImageAnalyzedEventArgs(long entryId, string? ocrText, string? imageTags = null)
     {
-        EntryId = entryId;
-        OcrText = ocrText;
+        EntryId   = entryId;
+        OcrText   = ocrText;
+        ImageTags = imageTags;
     }
 }
