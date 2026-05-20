@@ -12,6 +12,29 @@ dated `[1.X.Y]` heading and reset `[Unreleased]` to empty.
 
 ## [Unreleased]
 
+- **Image classification (tags) — `image_tags` finally populated.**
+  The Windows analogue of macOS Vision's `VNClassifyImageRequest`,
+  closing the half of the OCR-+-tags parity row Windows was
+  missing. Bundled **MobileNetV2** ImageNet-1k ONNX (~13 MB) +
+  human-readable 1000-class labels, run through
+  Microsoft.ML.OnnxRuntime (ships native libs for both win-x64 and
+  win-arm64 — picked up automatically per RID on publish).
+  Top-3 labels per image, space-separated, stored in
+  `entries.image_tags` and folded into the FTS5 `image_tags`
+  column, so a screenshot of a laptop is searchable by `laptop`
+  alongside any text the OCR pass found in it.
+  - **One pass, one DB write per image.** `ImageAnalysisService`
+    now runs OCR and classification sequentially on the same
+    decoded bytes, then settles both via the new
+    `EntryRepository.SettleImageAnalysis(id, ocrText, imageTags)`
+    — one transaction, one FTS5 update. Existing `SettleImageOcr`
+    is a back-compat alias so v1.22.x callers/tests stay valid.
+  - **Best-effort load.** A missing model file or failed native-
+    lib load returns `null` tags; OCR keeps working. Accuracy and
+    label vocabulary differ from Apple's classifier — the parity
+    claim is "image search by content", not byte-for-byte tag
+    equality.
+
 - **OCR is visible in the UI.** Image entries that have been
   OCR'd now show a small **OCR** chip on the list row, and the
   preview pane gets a **Show OCR text** button under the image.

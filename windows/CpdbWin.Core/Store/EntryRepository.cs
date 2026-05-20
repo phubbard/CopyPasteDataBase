@@ -405,14 +405,20 @@ public sealed class EntryRepository
     }
 
     /// <summary>
-    /// Record the OCR result for an image entry. Always stamps
-    /// <c>analyzed_at</c> (even when <paramref name="ocrText"/> is null —
-    /// "we looked, there was no text") so the row drops out of the
-    /// candidate set. Writes the text into <c>entries.ocr_text</c> and the
-    /// FTS5 shadow's <c>ocr_text</c> column (same delete-free column
-    /// UPDATE the link path uses in <see cref="SettleLink"/>).
+    /// Record an image-analysis result — both the OCR pass and the
+    /// classifier-tags pass settle through here so the row gets one
+    /// transaction and one FTS5 update per image. Always stamps
+    /// <c>analyzed_at</c> (even when both inputs are null — "we looked,
+    /// there was nothing") so the row drops out of the candidate set
+    /// permanently. Writes <c>ocr_text</c> and <c>image_tags</c> into
+    /// <c>entries</c> and the FTS5 shadow's matching columns (same
+    /// delete-free column UPDATE pattern <see cref="SettleLink"/> uses).
     /// </summary>
-    public void SettleImageOcr(long entryId, string? ocrText, DateTimeOffset? at = null)
+    public void SettleImageAnalysis(
+        long entryId,
+        string? ocrText,
+        string? imageTags = null,
+        DateTimeOffset? at = null)
     {
         var ts = (at ?? DateTimeOffset.UtcNow).ToUnixTimeMilliseconds() / 1000.0;
 
@@ -423,10 +429,13 @@ public sealed class EntryRepository
             cmd.Transaction = tx;
             cmd.CommandText = """
                 UPDATE entries
-                SET ocr_text = $o, analyzed_at = $ts
+                SET ocr_text = $o,
+                    image_tags = $t,
+                    analyzed_at = $ts
                 WHERE id = $id AND deleted_at IS NULL
                 """;
             cmd.Parameters.AddWithValue("$o", (object?)ocrText ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("$t", (object?)imageTags ?? DBNull.Value);
             cmd.Parameters.AddWithValue("$ts", ts);
             cmd.Parameters.AddWithValue("$id", entryId);
             cmd.ExecuteNonQuery();
@@ -435,14 +444,25 @@ public sealed class EntryRepository
         using (var cmd = _db.CreateCommand())
         {
             cmd.Transaction = tx;
-            cmd.CommandText = "UPDATE entries_fts SET ocr_text = $o WHERE rowid = $id";
+            cmd.CommandText =
+                "UPDATE entries_fts SET ocr_text = $o, image_tags = $t WHERE rowid = $id";
             cmd.Parameters.AddWithValue("$o", ocrText ?? string.Empty);
+            cmd.Parameters.AddWithValue("$t", imageTags ?? string.Empty);
             cmd.Parameters.AddWithValue("$id", entryId);
             cmd.ExecuteNonQuery();
         }
 
         tx.Commit();
     }
+
+    /// <summary>
+    /// Back-compat alias for v1.22.0 callers (CLI + tests) that only
+    /// dealt with the OCR half. Forwards to <see cref="SettleImageAnalysis"/>
+    /// with <c>imageTags = null</c>; new callers should use
+    /// <c>SettleImageAnalysis</c> directly.
+    /// </summary>
+    public void SettleImageOcr(long entryId, string? ocrText, DateTimeOffset? at = null)
+        => SettleImageAnalysis(entryId, ocrText, imageTags: null, at: at);
 
     /// <summary>
     /// Mark <paramref name="entryId"/> deleted (sets <c>deleted_at</c>) and
