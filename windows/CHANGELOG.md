@@ -12,6 +12,35 @@ dated `[1.X.Y]` heading and reset `[Unreleased]` to empty.
 
 ## [Unreleased]
 
+- **Blank-image-preview — comprehensive instrumentation (v1.34.0).**
+  v1.33.0's `ConditionalWeakTable` stream-pin didn't fix the bug for
+  the user's existing image entries. The reproducing screenshot showed
+  the tag chips + OCR button rendered (proving `ShowImagePreview` ran)
+  but `image-preview.log` never got written — meaning neither
+  `ImageOpened` *nor* `ImageFailed` fired. WinUI was decoding silently
+  and never completing or erroring.
+
+  Without an event to log against, the only way forward is to
+  instrument the path itself. v1.34 adds:
+  - **`ShowDetail` entry log** for image-kind rows — records entry id,
+    `thumb_large` byte length, and the **first 16 bytes in hex** so we
+    can spot a corrupt header (PNG starts `89 50 4E 47`, JPEG `FF D8 FF`,
+    WEBP `52 49 46 46 .. .. .. .. 57 45 42 50`).
+  - **`LoadBitmap`** now takes an `entryId` and logs success (with
+    final stream size) or the full exception type + message.
+  - **`ShowImagePreview`** logs the pre-SetSource `PixelWidth` and
+    schedules a **750 ms `DispatcherQueue` health check**: if
+    `DetailImage.Source` is still 0×0 after the delay, decode is
+    genuinely stuck silently — that line in the log is the smoking
+    gun for the next investigation.
+
+  No behavioural changes; the preview still renders the same way. This
+  is a pure diagnostic release so the next "blank preview" report has
+  enough breadcrumbs to act on. If the health-check log shows
+  `px=0x0` consistently, the decode pipeline itself is broken; if it
+  shows `px=NxM` (non-zero), the bitmap *is* decoded but a layout /
+  visibility bug is hiding it.
+
 - **Blank-image-preview root-cause fix.** The bug that started
   the v1.27.0 → v1.28.0 (frozen UI) → v1.29.0 (hotfix revert) →
   v1.32.0 (overlap fix) chain. The actual cause: `LoadBitmap`

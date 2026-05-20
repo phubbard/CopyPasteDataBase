@@ -378,8 +378,13 @@ public sealed partial class MainWindow : Window
         // failed decode left DetailImage with a null Source so the
         // right-hand pane went blank above the metadata bar.
         var thumb  = _host.Entries.GetThumbLarge(vm.EntryId);
-        var bitmap = thumb is null ? null : LoadBitmap(thumb);
         bool isImageKind = row?.Kind == "image";
+        if (isImageKind)
+            LogImagePreview(
+                $"ShowDetail   entry={vm.EntryId}  "
+              + $"thumb={(thumb is null ? "null" : thumb.Length.ToString())}  "
+              + $"hdr={HexHeader(thumb)}");
+        var bitmap = thumb is null ? null : LoadBitmap(thumb, vm.EntryId);
 
         if (bitmap is not null)
         {
@@ -437,7 +442,36 @@ public sealed partial class MainWindow : Window
         DetailImage.ImageOpened += OnDetailImageOpened;
         DetailImage.ImageFailed += OnDetailImageFailed;
 
+        LogImagePreview($"SetSource    entry={vm.EntryId}  bitmap.PixelWidth-pre={bitmap.PixelWidth}");
         DetailImage.Source = bitmap;
+
+        // Health check: WinUI BitmapImage decode is async; if it never
+        // completes (no ImageOpened, no ImageFailed) the preview pane
+        // stays blank forever and there's no error to log. Schedule a
+        // delayed check that records the bitmap's PixelWidth — if it's
+        // still 0 we know decode is stuck. Bail if the user has
+        // navigated to a different entry by the time we fire.
+        long checkId = vm.EntryId;
+        DispatcherQueue.TryEnqueue(
+            Microsoft.UI.Dispatching.DispatcherQueuePriority.Low,
+            async () =>
+            {
+                try
+                {
+                    await System.Threading.Tasks.Task.Delay(750);
+                    if (_currentPreviewId != checkId) return;
+                    var bi = DetailImage.Source as BitmapImage;
+                    int pw = bi?.PixelWidth  ?? -1;
+                    int ph = bi?.PixelHeight ?? -1;
+                    LogImagePreview(
+                        $"healthcheck entry={checkId}  px={pw}x{ph}  "
+                      + $"vis={DetailImage.Visibility}/{DetailImageScroll.Visibility}");
+                }
+                catch (Exception ex)
+                {
+                    LogImagePreview($"healthcheck entry={checkId}  EXN: {ex.GetType().Name}: {ex.Message}");
+                }
+            });
 
         // Classifier tag chips — one Button per top-K label, each
         // wired to filter the list by that tag (TagButton_Click).
@@ -679,7 +713,7 @@ public sealed partial class MainWindow : Window
     /// </summary>
     private static readonly ConditionalWeakTable<BitmapImage, IRandomAccessStream> _bitmapStreams = new();
 
-    private static BitmapImage? LoadBitmap(byte[] bytes)
+    private static BitmapImage? LoadBitmap(byte[] bytes, long entryId = -1)
     {
         try
         {
@@ -694,9 +728,33 @@ public sealed partial class MainWindow : Window
             var img = new BitmapImage();
             _bitmapStreams.AddOrUpdate(img, stream);  // pin for img's lifetime
             img.SetSource(stream);
+            if (entryId >= 0)
+                LogImagePreview($"LoadBitmap   entry={entryId}  stream.Size={stream.Size}  ok");
             return img;
         }
-        catch { return null; }
+        catch (Exception ex)
+        {
+            if (entryId >= 0)
+                LogImagePreview($"LoadBitmap   entry={entryId}  EXN: {ex.GetType().Name}: {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// First 16 bytes of <paramref name="bytes"/> as space-separated hex,
+    /// for spotting image magic numbers in the diagnostic log. PNG starts
+    /// with <c>89 50 4E 47</c>; JPEG with <c>FF D8 FF</c>; GIF with
+    /// <c>47 49 46 38</c>; WEBP has <c>52 49 46 46 .. .. .. .. 57 45 42 50</c>.
+    /// If the header doesn't match a format BitmapImage supports, that's
+    /// the explanation for a silently-blank preview.
+    /// </summary>
+    private static string HexHeader(byte[]? bytes)
+    {
+        if (bytes is null || bytes.Length == 0) return "(empty)";
+        int n = Math.Min(16, bytes.Length);
+        var sb = new StringBuilder(n * 3);
+        for (int i = 0; i < n; i++) sb.Append(bytes[i].ToString("X2")).Append(' ');
+        return sb.ToString().TrimEnd();
     }
 
     /// <summary>
