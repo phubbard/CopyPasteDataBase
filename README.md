@@ -278,8 +278,9 @@ windows/
 - **Instant FTS5 search** + kind-filter (Text / Link / Image / File
   / Color / Other), schema **v1–v9 migrator** kept lock-step with
   macOS/iOS.
-- **Link metadata enrichment** at parity with Mac 2.7–2.8: YouTube
-  oEmbed + `og:title` scrape, preview thumbnails
+- **Link metadata enrichment** at parity with Mac 2.7–2.9: YouTube
+  oEmbed + `og:title` scrape (with WordPress-aware precedence —
+  rich `<title>` wins on WP pages), preview thumbnails
   (`og:image`/`twitter:image`/Wikipedia REST/favicon), exponential
   backoff, reachability gate, bot-check/CAPTCHA detection, Reddit
   `.json` path, capture-wake immediate fetch, live card updates.

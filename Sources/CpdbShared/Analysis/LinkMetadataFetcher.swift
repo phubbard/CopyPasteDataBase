@@ -527,9 +527,29 @@ public actor LinkMetadataFetcher {
             return String(data: data, encoding: .isoLatin1) ?? ""
         }()
         // Title resolution.
+        //
+        // Default precedence: og:title → twitter:title → <title>.
+        // WordPress themes invert that convention: they put the
+        // bare post slug in og:title and the rich "Title – Tagline"
+        // form in <title>. WP backs ~40-60% of the public web, so
+        // when we detect it (via the `<meta name="generator"
+        // content="WordPress…">` fingerprint) we flip the order to
+        // <title> → og:title → twitter:title to surface the richer
+        // headline. Non-WP pages keep the default. Fallthrough is
+        // preserved either way — a WP page without a <title> still
+        // yields og:title via the regular path. Ported from the
+        // Windows v1.30.0 fix; see
+        // docs/handoffs/macos-wordpress-title-precedence.md.
         var title: String?
         var source: Result.Source = .none
-        if let raw = matchMetaContent(in: html, namePattern: #"property\s*=\s*["']og:title["']"#) {
+        let isWordPress = Self.looksLikeWordPress(html)
+        if isWordPress,
+           let raw = matchTitleTag(in: html),
+           !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        {
+            title = decodeHTMLEntities(raw)
+            source = .htmlTitleTag
+        } else if let raw = matchMetaContent(in: html, namePattern: #"property\s*=\s*["']og:title["']"#) {
             title = decodeHTMLEntities(raw)
             source = .htmlOpenGraph
         } else if let raw = matchMetaContent(in: html, namePattern: #"name\s*=\s*["']twitter:title["']"#) {
@@ -559,6 +579,22 @@ public actor LinkMetadataFetcher {
             }
         }
         return Result(title: title, thumbnailURL: thumbnailURL, source: source)
+    }
+
+    /// True when `html` looks like a WordPress page via its
+    /// standard generator meta tag — covers WordPress.com
+    /// (`content="WordPress.com"`) and self-hosted
+    /// (`content="WordPress <version>"`) in either attribute order
+    /// (case-insensitive). Used by `parseHTMLTitle` to flip the
+    /// title-source preference (rich `<title>` over short
+    /// `og:title`). Ported from Windows v1.30.0; see
+    /// `docs/handoffs/macos-wordpress-title-precedence.md`.
+    static func looksLikeWordPress(_ html: String) -> Bool {
+        let pattern = #"<meta[^>]+(?:name\s*=\s*["']generator["'][^>]+content\s*=\s*["']\s*WordPress|content\s*=\s*["']\s*WordPress[^"']*["'][^>]+name\s*=\s*["']generator["'])"#
+        return html.range(
+            of: pattern,
+            options: [.regularExpression, .caseInsensitive]
+        ) != nil
     }
 
     /// Find a `<meta {namePattern} content="…">` value. Tolerates

@@ -280,6 +280,86 @@ struct LinkMetadataFetcherTests {
         #expect(url?.absoluteString == "https://cdn.example.net/icon.png")
     }
 
+    // MARK: - WordPress-aware title precedence (ported from Windows v1.30.0)
+    // Contract: docs/handoffs/macos-wordpress-title-precedence.md.
+    // WP themes put the bare slug in og:title and "Title – Tagline" in
+    // <title>, so on detected WP pages parseHTMLTitle flips to
+    // <title> → og:title → twitter:title. Non-WP unaffected.
+
+    @Test("WordPress: rich <title> beats short og:title")
+    func wordpressPrefersRichTitleTagOverShortOgTitle() {
+        let html = """
+        <html><head>
+        <meta name="generator" content="WordPress.com">
+        <meta property="og:title" content="ultracrepidarian">
+        <title>ultracrepidarian – ultracrepidarian: a person who criticizes outside their expertise.</title>
+        </head></html>
+        """
+        let r = LinkMetadataFetcher.parseHTMLTitle(data(html))
+        #expect(r.title?.hasPrefix("ultracrepidarian – ") == true)
+        #expect(r.source == .htmlTitleTag)
+    }
+
+    @Test("WordPress: self-hosted generator string also triggers precedence flip")
+    func selfHostedWordPressAlsoTriggers() {
+        let html = """
+        <html><head>
+        <meta name="generator" content="WordPress 6.4.2">
+        <meta property="og:title" content="short slug">
+        <title>Rich Title – With Tagline</title>
+        </head></html>
+        """
+        let r = LinkMetadataFetcher.parseHTMLTitle(data(html))
+        #expect(r.title == "Rich Title – With Tagline")
+        #expect(r.source == .htmlTitleTag)
+    }
+
+    @Test("WordPress: falls back to og:title when <title> missing")
+    func wordpressFallsBackToOgWhenTitleTagMissing() {
+        let html = """
+        <html><head>
+        <meta name="generator" content="WordPress.com">
+        <meta property="og:title" content="only og has it">
+        </head></html>
+        """
+        let r = LinkMetadataFetcher.parseHTMLTitle(data(html))
+        #expect(r.title == "only og has it")
+        #expect(r.source == .htmlOpenGraph)
+    }
+
+    @Test("Non-WordPress: keeps og:title first")
+    func nonWordPressKeepsOgFirst() {
+        let html = """
+        <html><head>
+        <meta property="og:title" content="og wins">
+        <title>title loses</title>
+        </head></html>
+        """
+        let r = LinkMetadataFetcher.parseHTMLTitle(data(html))
+        #expect(r.title == "og wins")
+        #expect(r.source == .htmlOpenGraph)
+    }
+
+    @Test("looksLikeWordPress: truth table")
+    func looksLikeWordPressTruthTable() {
+        let cases: [(html: String, expected: Bool, label: String)] = [
+            (#"<meta name="generator" content="WordPress.com">"#,           true,  "WP.com"),
+            (#"<meta name="generator" content="WordPress 6.4.2">"#,         true,  "self-hosted versioned"),
+            (#"<meta name="generator" content="wordpress">"#,               true,  "lowercase"),
+            (#"<meta content="WordPress 5.9" name="generator">"#,           true,  "attr order reversed"),
+            (#"<meta name="generator" content="Hugo 0.120.0">"#,            false, "Hugo"),
+            (#"<meta name="generator" content="Jekyll">"#,                  false, "Jekyll"),
+            (#"<meta name="author" content="WordPress fan">"#,              false, "WP in author, not generator"),
+            ("",                                                            false, "empty"),
+        ]
+        for c in cases {
+            #expect(
+                LinkMetadataFetcher.looksLikeWordPress(c.html) == c.expected,
+                "\(c.label) → expected \(c.expected)"
+            )
+        }
+    }
+
     @Test("HTML entity decoder: common entities")
     func entityDecoder() {
         let cases: [(String, String)] = [

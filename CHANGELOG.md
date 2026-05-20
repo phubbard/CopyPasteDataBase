@@ -10,6 +10,22 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+- **WordPress-aware link-title precedence.** Ported from Windows
+  v1.30.0 ([handoff
+  doc](docs/handoffs/macos-wordpress-title-precedence.md)). WordPress
+  themes systematically put the bare post slug in `og:title` and the
+  rich "Title – Tagline" form in `<title>` — the inverse of the
+  social-card convention. Our default precedence (`og:title →
+  twitter:title → <title>`) therefore picked the short slug on
+  roughly 40-60% of the public web. Fix: detect WP via
+  `<meta name="generator" content="WordPress…">` and, on detected
+  pages, reverse to `<title> → og:title → twitter:title`. Non-WP
+  pages unaffected. New `LinkMetadataFetcher.looksLikeWordPress(_:)`
+  + 5 tests (rich vs short, self-hosted version string, fallback
+  when `<title>` missing, non-WP control, truth-table for the
+  detector). **Already-settled rows aren't auto-refreshed** —
+  `link_fetched_at` is set so the backfill skips them; recover the
+  bare-slug entries via Preferences → "Refetch all".
 - **Delete / Backspace removes the selected popup entry.** In the
   popup, the dedicated Delete key (forward-delete / fn+Delete)
   always tombstones the selected entry; Backspace does the same
