@@ -586,29 +586,25 @@ public sealed partial class MainWindow : Window
 
     /// <summary>
     /// Decode <paramref name="bytes"/> into a <see cref="BitmapImage"/>.
-    /// Returns <c>null</c> on any decode failure so the caller can fall
-    /// back to the URL/text branch instead of pushing an empty
-    /// <c>&lt;Image&gt;</c> to the UI.
+    /// Returns <c>null</c> on any synchronous decode failure (corrupt
+    /// stream construction, etc.); a deferred decode failure inside
+    /// the framework's async pipeline fires <c>ImageFailed</c>
+    /// downstream — we deliberately do <b>not</b> await it.
     ///
     /// <para>
-    /// Uses <see cref="BitmapImage.SetSourceAsync"/> + a sync wait
-    /// rather than the non-async <see cref="BitmapImage.SetSource"/>.
-    /// Two reasons:
+    /// <b>Never sync-wait on <c>SetSourceAsync</c> from the UI thread.</b>
+    /// v1.28.0 tried <c>SetSourceAsync(...).GetAwaiter().GetResult()</c>
+    /// to surface decode failures synchronously; the WinRT
+    /// <c>IAsyncAction</c>'s completion callback is marshalled back to
+    /// the UI thread, which is blocked in <c>GetResult()</c> — classic
+    /// sync-over-async deadlock, observed as a permanently-spinning
+    /// mouse cursor the moment any image entry was selected. v1.29.0
+    /// reverts to <see cref="BitmapImage.SetSource"/> (synchronous
+    /// return, no UI-thread block) and pins the
+    /// <see cref="InMemoryRandomAccessStream"/> on the
+    /// <see cref="DependencyObject.Tag"/> so it can't be GC'd before
+    /// the framework finishes reading it.
     /// </para>
-    /// <list type="bullet">
-    /// <item><b>Decode failures are surfaced.</b> <c>SetSource</c>
-    ///       queues an asynchronous decode and never throws — corrupt /
-    ///       unsupported bytes fire <c>ImageFailed</c> with nobody
-    ///       listening, leaving a silently-empty image element.
-    ///       <c>SetSourceAsync</c>'s task completes only after the
-    ///       decode finishes and rejects on failure, so a thrown
-    ///       exception is caught here and returned as <c>null</c>.</item>
-    /// <item><b>Stream lifetime.</b> The decode reads from the
-    ///       <see cref="InMemoryRandomAccessStream"/> — if the stream
-    ///       goes out of scope before the async decode runs, the bytes
-    ///       are gone. Awaiting <c>SetSourceAsync</c> keeps the stream
-    ///       alive until the decode is done.</item>
-    /// </list>
     /// </summary>
     private static BitmapImage? LoadBitmap(byte[] bytes)
     {
@@ -623,12 +619,7 @@ public sealed partial class MainWindow : Window
             }
             stream.Seek(0);
             var img = new BitmapImage();
-            // SetSourceAsync forces a full synchronous decode here —
-            // throws on bad bytes, succeeds with a fully-populated
-            // BitmapImage on good bytes. Either way we know the truth
-            // before returning, and the local `stream` is guaranteed
-            // alive across the call.
-            img.SetSourceAsync(stream).AsTask().GetAwaiter().GetResult();
+            img.SetSource(stream);
             return img;
         }
         catch { return null; }
