@@ -584,11 +584,36 @@ public sealed partial class MainWindow : Window
         DetailMeta.Visibility = any ? Visibility.Visible : Visibility.Collapsed;
     }
 
+    /// <summary>
+    /// Decode <paramref name="bytes"/> into a <see cref="BitmapImage"/>.
+    /// Returns <c>null</c> on any decode failure so the caller can fall
+    /// back to the URL/text branch instead of pushing an empty
+    /// <c>&lt;Image&gt;</c> to the UI.
+    ///
+    /// <para>
+    /// Uses <see cref="BitmapImage.SetSourceAsync"/> + a sync wait
+    /// rather than the non-async <see cref="BitmapImage.SetSource"/>.
+    /// Two reasons:
+    /// </para>
+    /// <list type="bullet">
+    /// <item><b>Decode failures are surfaced.</b> <c>SetSource</c>
+    ///       queues an asynchronous decode and never throws — corrupt /
+    ///       unsupported bytes fire <c>ImageFailed</c> with nobody
+    ///       listening, leaving a silently-empty image element.
+    ///       <c>SetSourceAsync</c>'s task completes only after the
+    ///       decode finishes and rejects on failure, so a thrown
+    ///       exception is caught here and returned as <c>null</c>.</item>
+    /// <item><b>Stream lifetime.</b> The decode reads from the
+    ///       <see cref="InMemoryRandomAccessStream"/> — if the stream
+    ///       goes out of scope before the async decode runs, the bytes
+    ///       are gone. Awaiting <c>SetSourceAsync</c> keeps the stream
+    ///       alive until the decode is done.</item>
+    /// </list>
+    /// </summary>
     private static BitmapImage? LoadBitmap(byte[] bytes)
     {
         try
         {
-            var img = new BitmapImage();
             var stream = new InMemoryRandomAccessStream();
             using (var writer = new DataWriter(stream))
             {
@@ -597,7 +622,13 @@ public sealed partial class MainWindow : Window
                 writer.DetachStream();
             }
             stream.Seek(0);
-            img.SetSource(stream);
+            var img = new BitmapImage();
+            // SetSourceAsync forces a full synchronous decode here —
+            // throws on bad bytes, succeeds with a fully-populated
+            // BitmapImage on good bytes. Either way we know the truth
+            // before returning, and the local `stream` is guaranteed
+            // alive across the call.
+            img.SetSourceAsync(stream).AsTask().GetAwaiter().GetResult();
             return img;
         }
         catch { return null; }
