@@ -15,12 +15,20 @@
 | ![Windows x64](https://img.shields.io/badge/Windows-x64-0078d6?logo=windows&logoColor=white) | Intel / AMD | Velopack `Setup.exe` ([latest release](https://github.com/phubbard/CopyPasteDataBase/releases/latest)) |
 | ![Windows arm64](https://img.shields.io/badge/Windows-arm64-0078d6?logo=windows&logoColor=white) | Snapdragon X / Surface | Velopack `Setup.exe` (separate per-RID artifact) |
 
-A from-scratch, native Swift replacement for the macOS clipboard app
-[Paste](https://pasteapp.io) (`com.wiheads.paste`). Infinite disk-backed
-clipboard history, SQLite + FTS5 incremental search, on-device OCR + image
-classification via Apple's Vision framework, Quick Look previews, lossless
-`NSPasteboard` fidelity, and a one-shot importer for your existing Paste
-database.
+A cross-platform clipboard history that lets you **find anything you've
+ever copied** — including text inside screenshots, content of images,
+and the actual page titles of URLs — and keeps your data in a **standard
+SQLite file you can open with any tool**.
+
+Native on **macOS**, **iOS**, and **Windows**, all running the same
+schema and the same search semantics. Local-first; no third-party
+cloud, no telemetry, no lock-in. Optional iCloud sync stays inside
+your own iCloud Private Database — no servers we operate.
+
+Started as a from-scratch Swift replacement for the macOS app
+[Paste](https://pasteapp.io) (and still ships the one-shot Paste.db
+importer for migration); the engine and storage layer have since
+been ported to iOS and Windows.
 
 ![cpdb popup](docs/popup.png)
 
@@ -43,55 +51,120 @@ database.
 
 ## Features
 
-- **Lossless capture.** Every `NSPasteboardItem` UTI and flavor is stored
-  verbatim. Restore puts the full multi-flavor entry back on the pasteboard
-  so copying RTF out of TextEdit still pastes as RTF into Pages.
-- **On-device OCR + image tags.** Every image entry passes through Apple's
-  Vision framework (`VNRecognizeTextRequest.accurate` +
-  `VNClassifyImageRequest`) on capture. Extracted text and classifier tags
-  are folded into the same FTS5 index as plain text, so you can find
-  screenshots by their contents. No network, no model bundling.
-- **Quick Look.** Press `⌘Y` or `Space` (when the search field is empty) on
-  a selected card to pop the entry into Apple's full Quick Look panel —
-  full-resolution images, scrollable multi-page text, real PDF/Keynote
-  rendering for file entries whose underlying file still exists.
-- **Instant FTS5 search.** SQLite FTS5 with per-column scope toggles
-  (`text` · `OCR` · `tags`) and bm25 ranking. Matching hits get a small
-  coloured badge telling you which column they came from.
-- **Rich per-kind rendering.** Text shows full content (no ellipsis), links
-  show their full URL in primary colour at the top, images render their
-  thumbnail, image files render the actual file, and `#RRGGBB` strings
-  render as colour swatches even when captured as plain text.
+### Find anything you've ever copied
+
+- **On-device OCR.** Every image entry runs through Apple's Vision
+  (`VNRecognizeTextRequest.accurate`) on Mac/iOS, or
+  `Windows.Media.Ocr` on Windows. Extracted text is folded into the
+  same FTS5 index as plain text, so a search for `"flight 1138"` finds
+  the boarding-pass screenshot from six months ago. No network, no
+  cloud upload, no model bundling on Apple platforms.
+- **Image classification tags.** Vision's `VNClassifyImageRequest` on
+  Mac/iOS / a bundled **MobileNetV2** ImageNet-1k ONNX (~13 MB) on
+  Windows. Top tags land in the `image_tags` column so a search for
+  `dog` surfaces the photo of your dog even though "dog" appears
+  nowhere in any caption.
+- **Background-fetched link metadata.** Captured URLs grow their real
+  page title (YouTube oEmbed, Reddit JSON API, WordPress-aware
+  `<title>` precedence, generic og:title scrape) and preview
+  thumbnails (og:image / twitter:image / Wikipedia REST / favicon
+  fallback) within seconds, indexed in FTS5. Search `"santa cruz vala"`
+  and the YouTube URL you copied surfaces by the video's title even
+  though the URL itself is opaque.
+- **FTS5 full-text search with per-column scope toggles** — match on
+  text, OCR, tags, link title, app name, or any combination. bm25
+  ranking. Match-source badges on cards tell you which column the
+  hit came from.
+
+### Open by design — your data, your tools
+
+- **Plain SQLite + FTS5.** Your entire library is one
+  `cpdb.db` file. Open it with `sqlite3`, DB Browser, Datasette,
+  anything that speaks SQLite. The schema is documented end-to-end in
+  [`docs/schema.md`](docs/schema.md) as the cross-platform contract.
+  Same schema, same migrator (v1–v9), same FTS5 tokenizer chain on
+  every platform.
+- **`cpdb import-urls`** seeds your library from a text file of URLs
+  (one per line; http/https/file). They're ingested as if you'd
+  copied them yourself, so link enrichment kicks in. Great for
+  importing a bookmarks export or a read-later list.
+- **`cpdb export --format md|csv|html`** writes a portable archive
+  with every enrichment field carried through — fetched title, full
+  OCR text (not truncated), image tags. CSV is RFC-4180. Markdown is
+  paragraph-per-entry. HTML is self-contained with dark mode.
+- **One-shot Paste.db importer** ingests an existing
+  `com.wiheads.paste/Paste.db` — Core Data transformable blobs,
+  external-storage references, all five Paste entity kinds,
+  pinboards, source apps. Idempotent.
+- **Local-first, no telemetry, no third-party cloud.** Everything
+  lives in a known directory on your machine. The optional iCloud
+  sync (Mac/iOS) targets *your* iCloud Private Database — no
+  servers we operate, no analytics, no account to sign into.
+
+### Cross-platform — same engine, same data
+
+- **One schema across Mac/iOS/Windows.** The v1–v9 migrator is
+  identical; capture-time canonical-hash dedup uses the same byte
+  layout (test vectors in `Tests/CpdbCoreTests/HashVectors.swift`);
+  search semantics match. A library written by the Mac and read on
+  Windows looks the same.
+- **iOS companion** (search + Quick Look + "Push to Mac" paste). No
+  iOS-side capture (clipboard access is hostile on iOS; deliberate
+  trade-off). Pulls from CloudKit.
+- **Windows port** is feature-complete for capture, search, OCR,
+  link enrichment, import/export, hotkey paste-back, and Velopack
+  auto-update on x64 + arm64. Cross-platform sync substrate
+  (replacing the Apple-only CloudKit path) is in design; see
+  [`docs/relay-protocol.md`](docs/relay-protocol.md) and
+  [`docs/relay-v2-accounts-roadmap.md`](docs/relay-v2-accounts-roadmap.md).
+- **Cross-platform parity scoreboard** in [`docs/parity.md`](docs/parity.md)
+  tracks what's shipping where with version stamps.
+
+### Faithful capture + paste
+
+- **Lossless multi-flavor capture.** Every `NSPasteboardItem` UTI and
+  flavor (Mac) / clipboard format (Windows) is stored verbatim.
+  Restore puts the full set back on the pasteboard so RTF copied out
+  of TextEdit pastes as RTF into Pages, and an Excel cell range
+  pastes back as a real cell range.
+- **Quick Look** on Mac/iOS — `⌘Y` / Space-when-empty pops the full
+  Quick Look panel: full-resolution images, scrollable multi-page
+  text, real PDF/Keynote rendering for file entries whose underlying
+  file still exists.
+- **Rich per-kind rendering.** Text shows full content (no ellipsis),
+  links show fetched title + thumbnail + URL, images render their
+  thumbnail, image files render the actual file, and `#RRGGBB`
+  strings render as colour swatches even when captured as plain text.
 - **Password-manager blocklist.** `com.apple.Passwords` /
-  `com.apple.keychainaccess` are skipped by default, **including** the
-  ~50 ms race window where Passwords has dismissed its sheet before our
-  poll sees it (we track 5 seconds of frontmost-app activations, not just
-  the current frontmost). Plus an Apple-Strong-Password shape heuristic as
-  a safety net.
-- **Respects `nspasteboard.org` transient markers** — 1Password, Bitwarden,
-  Universal Clipboard, etc. opt out via UTI flags and cpdb honours them.
+  `com.apple.keychainaccess` (Mac) and the Windows equivalents are
+  skipped by default — including the ~50 ms race window where the
+  source app dismissed its sheet before our poll sees it (we track
+  5 seconds of frontmost-app activations). Plus an
+  Apple-Strong-Password shape heuristic as a safety net on Mac.
+- **Respects `nspasteboard.org` transient markers** — 1Password,
+  Bitwarden, Universal Clipboard, etc. opt out via UTI flags and
+  cpdb honours them.
 - **Content-addressed blob spillover.** Flavors ≥ 256 KB spill to
-  `blobs/<ab>/<cd>/<sha256>` fan-out so identical pastes across days share
-  a single on-disk copy.
-- **One-shot Paste.db importer.** Ingests
-  `~/Library/Application Support/com.wiheads.paste/Paste.db` — Core Data
-  transformable blobs, external-storage references under `.Paste_SUPPORT/`,
-  all five Paste entity kinds, pinboards, source apps. Idempotent.
-- **CloudKit sync across your Macs (2.0).** Every entry — metadata,
-  thumbnails, full NSPasteboardItem flavors (as `CKAsset`s), OCR text,
-  image tags — mirrors to your iCloud Private Database. Install on a
-  second Mac signed into the same iCloud account and your whole history
-  appears. Uses a custom zone + content-addressed CKRecord IDs +
-  server change tokens + APNs silent-push subscriptions for
-  near-real-time pull. Pulled entries paste back with full multi-flavor
-  fidelity — RTF, images, custom UTIs, everything. Your data, your
-  iCloud, no servers we operate. Progress and controls live under About
-  cpdb → iCloud sync / Preferences → iCloud sync.
-- **Local-first, no third-party cloud, no telemetry.** Everything lives
-  under `~/Library/Application Support/net.phfactor.cpdb/` on your
-  machine. CloudKit usage is opt-in via the app's entitlements (only
-  kicks in if you're signed into iCloud) and stays inside your own
-  Private Database.
+  `blobs/<ab>/<cd>/<sha256>` fan-out so identical pastes across days
+  share a single on-disk copy.
+
+### Optional iCloud sync across your Apple devices
+
+Mac ↔ Mac ↔ iOS via CloudKit Private Database. Every entry —
+metadata, thumbnails, full multi-flavor payloads (as `CKAsset`s),
+OCR text, image tags — mirrors to your iCloud account. Install on
+a second Mac signed in to the same account and your whole history
+appears. Uses a custom zone + content-addressed CKRecord IDs +
+server change tokens + APNs silent-push subscriptions for
+near-real-time pull. Pulled entries paste back with full
+multi-flavor fidelity. Opt-in via the app's entitlements (only
+engages if you're signed in to iCloud); stays inside your own
+Private Database; you can pause, reset, or re-push from
+Preferences → iCloud sync.
+
+A future **cross-platform** sync substrate (Cloudflare Worker, end-
+to-end encrypted, 8-word Diceware pairing) is in design so Windows
+joins the same library — see the relay-protocol docs above.
 
 ## Installing
 
