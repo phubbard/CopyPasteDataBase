@@ -282,8 +282,10 @@ windows/
   oEmbed + `og:title` scrape (with WordPress-aware precedence —
   rich `<title>` wins on WP pages), preview thumbnails
   (`og:image`/`twitter:image`/Wikipedia REST/favicon), exponential
-  backoff, reachability gate, bot-check/CAPTCHA detection, Reddit
-  `.json` path, capture-wake immediate fetch, live card updates.
+  backoff, reachability gate, bot-check/CAPTCHA detection,
+  CDN-throttle detection (tiny-body 200 + no title = transient),
+  Reddit `.json` path, capture-wake immediate fetch, live card
+  updates.
 - **Pinning**, hover tooltips, per-kind rendering, link preview pane.
 - **Global hotkey** summon → pick → **paste-back** into the app you
   came from (hidden window + synthetic Ctrl+V via `SendInput`).

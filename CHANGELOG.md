@@ -10,6 +10,25 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+- **Suspect-throttle response classification (tiny-body + no
+  title → transient).** Found while diagnosing "imported URLs not
+  enriched after Refetch all" on a WordPress host. The Refetch-all
+  burst hit a CDN rate-limit; the server returned 200 OK with a
+  short HTML body that lacked any title source. The fetcher saw
+  "no title" and stamped `link_fetched_at` with empty, no retry —
+  poisoning ~50 rows that would have parsed cleanly a minute
+  later. Now `fetchGenericHTML` rejects HTTP 200 responses with
+  `body.count < 2048 && title == nil` as
+  `FetchError.suspectThrottleResponse(bodyBytes:)`, classified
+  transient via `isTransient` (sits alongside `botCheckDetected`).
+  Next backfill cycle retries; the row never gets stamped
+  permanently empty for a transient throttle. Real pages with no
+  title essentially never come in this small, so false-positives
+  are negligible — confirmed by a regression test (sub-2KB body
+  WITH a title still parses fine; the gate only triggers post-
+  parse when title is genuinely nil). 3 new tests pin the
+  classification and the threshold constant.
+
 - **WordPress-aware link-title precedence.** Ported from Windows
   v1.30.0 ([handoff
   doc](docs/handoffs/macos-wordpress-title-precedence.md)). WordPress

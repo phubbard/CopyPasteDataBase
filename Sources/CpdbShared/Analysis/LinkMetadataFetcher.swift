@@ -53,6 +53,16 @@ public actor LinkMetadataFetcher {
         /// backfill cycle gets another shot — sometimes the same
         /// IP/UA gets through later.
         case botCheckDetected
+        /// HTTP 200 with a suspiciously tiny body and no
+        /// extractable title source — almost always a CDN
+        /// throttle / rate-limit response that lacks any of the
+        /// usual "verification" keywords but is clearly not the
+        /// real page (real pages with no titles essentially never
+        /// happen at this size). Discovered after a "Refetch all"
+        /// burst poisoned ~50 rows on a WordPress host: same URL,
+        /// same UA, fetched cleanly a minute later. Treated as
+        /// transient so the next cycle retries.
+        case suspectThrottleResponse(bodyBytes: Int)
 
         public var description: String {
             switch self {
@@ -62,6 +72,7 @@ public actor LinkMetadataFetcher {
             case .decodeFailure(let reason):    return "decode failure: \(reason)"
             case .network(let error):           return "network: \(error)"
             case .botCheckDetected:             return "bot-check / CAPTCHA interstitial"
+            case .suspectThrottleResponse(let n): return "suspect throttle response (\(n) bytes, no title)"
             }
         }
 
@@ -78,10 +89,11 @@ public actor LinkMetadataFetcher {
                 // it as an effective rate-limit signal (real
                 // permission-denied is rare for public endpoints).
                 return code == 403 || code == 408 || code == 425 || code == 429 || (500..<600).contains(code)
-            case .network, .botCheckDetected:
-                // URLSession errors (timeout, DNS, connection lost)
-                // and bot-check interstitials are usually transient
-                // — different time-of-day / IP / load can succeed.
+            case .network, .botCheckDetected, .suspectThrottleResponse:
+                // URLSession errors (timeout, DNS, connection lost),
+                // bot-check interstitials, and suspect-throttle
+                // responses are usually transient — different
+                // time-of-day / IP / load can succeed.
                 return true
             case .invalidURL, .bodyTooLarge, .decodeFailure:
                 return false
@@ -122,6 +134,14 @@ public actor LinkMetadataFetcher {
     /// going bigger just costs memory + decoder time. We HEAD-bail
     /// early if Content-Length is huge.
     private static let maxBodyBytes = 256 * 1024
+
+    /// Bodies below this size with NO title-source matches are
+    /// treated as suspect throttle / rate-limit responses (see
+    /// `FetchError.suspectThrottleResponse`). Real HTML pages
+    /// carrying any title essentially never come in this small; a
+    /// 2 KB floor is well above CDN throttle pages (usually <1 KB)
+    /// and well below a real WordPress post or news article.
+    static let suspectThrottleBodyBytes = 2048
 
     /// Per-instance URLSession with our timeouts and User-Agent.
     private let session: URLSession
@@ -365,6 +385,23 @@ public actor LinkMetadataFetcher {
         // being permanently stamped with the wrong title.
         if let title = result.title, Self.looksLikeBotCheck(title) {
             throw FetchError.botCheckDetected
+        }
+
+        // Suspect-throttle detection. A 200 OK with a tiny body
+        // AND no extractable title (no og:title, no twitter:title,
+        // no <title>) is almost certainly a CDN rate-limit /
+        // throttle response — real pages with no title source
+        // essentially never happen at this size (even the
+        // sparsest legitimate page carries head boilerplate
+        // pushing it past a few KB). Real-world trigger: a
+        // "Refetch all" burst against a WordPress site poisoned
+        // ~50 rows with empty titles; the same URLs fetched
+        // cleanly a minute later. Treat as transient so the next
+        // backoff cycle retries instead of stamping
+        // fetched-with-empty permanently. 2 KB is a generous
+        // floor — most throttle pages are <1 KB.
+        if result.title == nil, body.count < Self.suspectThrottleBodyBytes {
+            throw FetchError.suspectThrottleResponse(bodyBytes: body.count)
         }
 
         // Thumbnail fallback chain when og:image / twitter:image

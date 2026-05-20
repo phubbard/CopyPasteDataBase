@@ -360,6 +360,51 @@ struct LinkMetadataFetcherTests {
         }
     }
 
+    // MARK: - Suspect-throttle classification (v2.9.11)
+    //
+    // Tests pin the FetchError.isTransient mapping for the new case
+    // and the byte-threshold constant. The full HTTP path is covered
+    // by integration testing on real fetches; the parser-level tests
+    // here verify that nothing in `parseHTMLTitle` itself starts
+    // *returning* throttle results (the size check lives in
+    // fetchGenericHTML, post-parse) — so a tiny body with a title
+    // still parses fine. The check only fires when title is nil.
+
+    @Test("FetchError.suspectThrottleResponse is transient")
+    func throttleErrorIsTransient() {
+        let e = LinkMetadataFetcher.FetchError.suspectThrottleResponse(bodyBytes: 512)
+        #expect(e.isTransient == true)
+        // botCheckDetected stays transient too (regression guard
+        // when adding a sibling case).
+        #expect(LinkMetadataFetcher.FetchError.botCheckDetected.isTransient == true)
+        // Decode/invalidURL still permanent.
+        #expect(LinkMetadataFetcher.FetchError.invalidURL.isTransient == false)
+        #expect(LinkMetadataFetcher.FetchError.decodeFailure("x").isTransient == false)
+    }
+
+    @Test("Suspect-throttle floor matches the documented constant")
+    func throttleFloorConstant() {
+        // 2 KB — well above CDN throttle pages (<1 KB), well below
+        // a real article. The constant is consumed by tests and
+        // future tuning; this pin keeps it from being changed
+        // silently to a value that would either start poisoning
+        // legitimate sparse pages (too high) or stop catching real
+        // throttles (too low).
+        #expect(LinkMetadataFetcher.suspectThrottleBodyBytes == 2048)
+    }
+
+    @Test("Tiny body WITH a title parses fine (size check doesn't run when title found)")
+    func tinyBodyWithTitleParses() {
+        // Even sub-2KB, a real title should be returned. The size
+        // gate is post-parse and only applies when title is nil —
+        // so a stubby legitimate page that happens to have a
+        // proper <title> is safe.
+        let html = "<html><head><title>Tiny but real</title></head><body>hi</body></html>"
+        let r = LinkMetadataFetcher.parseHTMLTitle(data(html))
+        #expect(r.title == "Tiny but real")
+        #expect(r.source == .htmlTitleTag)
+    }
+
     @Test("HTML entity decoder: common entities")
     func entityDecoder() {
         let cases: [(String, String)] = [
