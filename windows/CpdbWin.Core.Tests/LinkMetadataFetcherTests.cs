@@ -23,6 +23,28 @@ public class LinkMetadataFetcherTests
         Assert.Equal(expected, LinkMetadataFetcher.TryNormalize(input, out _));
     }
 
+    // ─── Content-Type guard (IsHtmlLike) ─────────────────────────────────
+
+    [Theory]
+    [InlineData("text/html",                  true)]
+    [InlineData("TEXT/HTML",                  true)]   // case-insensitive
+    [InlineData("application/xhtml+xml",      true)]
+    [InlineData("text/plain",                 true)]   // legacy / misconfigured
+    [InlineData("text/xml",                   true)]   // text/* family
+    [InlineData("",                           true)]   // unspecified → assume html
+    // Non-HTML — WordPress.com ActivityPub + similar should be rejected so the
+    // HTML parser doesn't grep 5 KB of JSON looking for <title>.
+    [InlineData("application/activity+json",  false)]
+    [InlineData("application/ld+json",        false)]
+    [InlineData("application/json",           false)]
+    [InlineData("image/png",                  false)]
+    [InlineData("video/mp4",                  false)]
+    [InlineData("application/pdf",            false)]
+    public void IsHtmlLike_AcceptsMarkupRejectsEverythingElse(string contentType, bool expected)
+    {
+        Assert.Equal(expected, LinkMetadataFetcher.IsHtmlLike(contentType));
+    }
+
     // ─── YouTube host detection ──────────────────────────────────────────
 
     [Theory]
@@ -234,6 +256,49 @@ public class LinkMetadataFetcherTests
             await fetcher.FetchAsync("https://og-blocked.example/"));
     }
 
+    // ─── Suspect-throttle body-size detection ───────────────────────────
+
+    [Fact]
+    public async Task FetchAsync_TinyBodyNoTitle_ReturnsTransientAsSuspectThrottle()
+    {
+        // 200 OK with a <2 KB body and no extractable title source is
+        // almost certainly a CDN rate-limit response (real HTML pages
+        // with content essentially never come this small). Macos
+        // shipped this defense after a "Refetch all" burst poisoned
+        // ~50 WordPress rows; this test pins the equivalent on
+        // Windows so the row stays a candidate instead of settling
+        // with NULL.
+        const string tinyBody = "<html><head></head><body>busy</body></html>";  // ~50 bytes, no title
+        Assert.True(tinyBody.Length < LinkMetadataFetcher.SuspectThrottleBodyBytes);
+        var handler = new FakeHandler
+        {
+            OnSend = req => Html(req, "https://throttled.example/", tinyBody)
+        };
+        using var fetcher = new LinkMetadataFetcher(new HttpClient(handler), ownsClient: true);
+        var outcome = await fetcher.FetchAsync("https://throttled.example/");
+        var transient = Assert.IsType<FetchOutcome.Transient>(outcome);
+        Assert.Contains("suspect throttle", transient.Reason);
+    }
+
+    [Fact]
+    public async Task FetchAsync_TinyBodyWithTitle_SettlesNormally()
+    {
+        // The throttle heuristic is gated on title=null. A tiny page
+        // that *does* extract a title is just a small page (404 stub,
+        // landing redirect, etc.) — keep the title, don't penalize.
+        const string body =
+            "<html><head><title>Tiny Page</title></head><body></body></html>";
+        Assert.True(body.Length < LinkMetadataFetcher.SuspectThrottleBodyBytes);
+        var handler = new FakeHandler
+        {
+            OnSend = req => Html(req, "https://tiny.example/", body)
+        };
+        using var fetcher = new LinkMetadataFetcher(new HttpClient(handler), ownsClient: true);
+        var outcome = await fetcher.FetchAsync("https://tiny.example/");
+        var ok = Assert.IsType<FetchOutcome.Success>(outcome);
+        Assert.Equal("Tiny Page", ok.Title);
+    }
+
     // ─── Wikipedia host detection ────────────────────────────────────────
 
     [Theory]
@@ -303,12 +368,16 @@ public class LinkMetadataFetcherTests
     [Fact]
     public async Task FetchAsync_GenericHtml_NoTitleSignals_ReturnsSuccessNullTitle()
     {
-        // 200 OK but page has nothing parseable → Success(null, …). The
-        // backfiller settles with null, stamps fetched_at, stops retrying.
+        // 200 OK but page has nothing parseable AND a real-ish body
+        // size (above SuspectThrottleBodyBytes) → Success(null, …).
+        // The backfiller settles with null, stamps fetched_at, stops
+        // retrying. Tiny bodies with no title trigger the
+        // suspect-throttle path instead (separate test).
+        var bigBody = "<html><body>" + new string('x', 3000) + "</body></html>";  // ~3 KB, above 2 KB floor
+        Assert.True(bigBody.Length > LinkMetadataFetcher.SuspectThrottleBodyBytes);
         var handler = new FakeHandler
         {
-            OnSend = req => Html(req, "https://example.com",
-                "<html><body>no title here</body></html>")
+            OnSend = req => Html(req, "https://example.com", bigBody)
         };
         using var fetcher = new LinkMetadataFetcher(new HttpClient(handler), ownsClient: true);
         var outcome = await fetcher.FetchAsync("https://example.com/");

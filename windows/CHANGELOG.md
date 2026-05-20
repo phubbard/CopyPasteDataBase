@@ -12,6 +12,58 @@ dated `[1.X.Y]` heading and reset `[Unreleased]` to empty.
 
 ## [Unreleased]
 
+- **Link-title refetch returned NULL on WordPress ActivityPub pages (v1.36.0).**
+  Reported with a real case: user clicked "Refetch all link titles" on
+  `https://ultracrepidarian.phfactor.net/` and the title stayed as the
+  bare slug `"ultracrepidarian"` instead of becoming the rich
+  `"ultracrepidarian – ultracrepidarian: a person who criticizes…"`
+  that the page's `<title>` tag carries. v1.30.0's WordPress-aware
+  precedence was already in place; the fetcher just wasn't getting
+  HTML back to parse.
+
+  Root cause: WordPress.com sites that have ActivityPub federation
+  enabled serve `application/activity+json` (the federated-actor JSON,
+  ~5 KB) for the page URL when the client's `Accept` header signals
+  JSON is acceptable — and **the CDN caches that JSON variant against
+  the URL key**. Our fetcher's default Accept header was
+  `text/html, application/xhtml+xml, application/json;q=0.9`. The
+  q=0.9 made HTML the preference, but the cache still partitioned by
+  Accept-list content rather than q-value preference, so subsequent
+  HTML-shaped requests collided with the JSON cache entry. The
+  generic HTML parser then ran over 5 KB of JSON, found no
+  `<title>`, no `og:title`, and settled with NULL.
+
+  **Three-part fix:**
+  - **Drop `application/json` from the default Accept header.** The
+    HTML fetcher is the default path; YouTube oEmbed and Reddit
+    `.json` endpoints return JSON regardless of Accept, so the
+    special-case fetchers are unaffected. New Accept:
+    `text/html, application/xhtml+xml`.
+  - **Reject non-HTML `Content-Type` as transient in
+    `FetchGenericHtmlAsync`.** New helper `IsHtmlLike(contentType)`
+    accepts `text/html`, `application/xhtml+xml`, and the generic
+    `text/*` family (for misconfigured servers); everything else
+    (JSON, images, video, …) becomes a `FetchOutcome.Transient` so
+    the row stays a candidate instead of silently settling with NULL.
+    Belt-and-braces for the stale-cache window while the corrected
+    Accept header propagates to fresh cache keys.
+  - **Suspect-throttle detection** (macOS parity). 200 OK with a
+    body under `SuspectThrottleBodyBytes = 2048` AND no extractable
+    title source is treated as a CDN rate-limit / throttle response
+    (real HTML pages with content essentially never come this
+    small). Macos built this defense after a "Refetch all" burst
+    against a WordPress host poisoned ~50 rows; we now inherit the
+    same heuristic. Mirrors
+    `Sources/CpdbShared/Analysis/LinkMetadataFetcher.swift`'s
+    `suspectThrottleBodyBytes`.
+
+- **Decode typographic entities in link titles (v1.36.0).** Tiny
+  follow-on: `&#8211;` (en dash), `&#8212;` (em dash), curly quotes,
+  ellipsis, and their named variants (`&ndash;`, `&mdash;`, `&lsquo;`,
+  etc.) were leaking through as literal entity strings. WordPress +
+  Markdown sites emit these heavily in `<title>` tags.
+  `DecodeHtmlEntities` table extended; no parser logic change.
+
 - **Blank-image-preview — actual fix (v1.35.0).** The v1.34.0
   instrumentation pinpointed it immediately. The user's log:
   ```
