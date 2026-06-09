@@ -12,6 +12,33 @@ dated `[1.X.Y]` heading and reset `[Unreleased]` to empty.
 
 ## [Unreleased]
 
+- **Stale-autostart self-heal (v1.37.0).** Reported with a fresh
+  Parallels boot: user signs in, sees v1.11 (May 18 dev build) running
+  in the title bar instead of the installed v1.36. Dug deep with a
+  recursive `reg query HKCU /s /f CpdbWin` and found the smoking gun:
+  ```
+  HKCU\Software\Microsoft\Windows\CurrentVersion\Run
+      CpdbWin    REG_SZ    "C:\src\cpdb\…\bin\Debug\…\CpdbWin.App.exe"
+  ```
+  The Run key pointed at a v1.11 *dev Debug* binary in the repo
+  worktree — written there by a pre-v1.17.0 build before the
+  `IsManagedInstall()` guard landed. v1.11 launched at every boot,
+  grabbed the single-instance Mutex first, the installed v1.36
+  exited silently behind it, and **Velopack auto-updates never
+  applied** (the updater code only runs when the installed app is
+  the live process). The user was frozen on a 50-release-old build
+  for weeks without realising.
+
+  **Fix:** new `AutoLaunch.HealAutostartIfStale()` called from
+  `App.OnLaunched` after the first-run autostart-init block. On a
+  managed install (only — dev builds still can't touch the Run key),
+  if the Run-key value exists but doesn't point at our own
+  `Environment.ProcessPath`, overwrite it with our path. Idempotent
+  when the value already points at us; self-correcting when it
+  points anywhere else. The v1.17.0 guard prevented *new* bad
+  writes but didn't *clean up* old ones; this completes the
+  picture.
+
 - **Link-title refetch returned NULL on WordPress ActivityPub pages (v1.36.0).**
   Reported with a real case: user clicked "Refetch all link titles" on
   `https://ultracrepidarian.phfactor.net/` and the title stayed as the
