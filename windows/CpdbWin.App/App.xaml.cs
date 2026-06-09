@@ -120,6 +120,11 @@ public partial class App : Application
             _settings.AutoLaunchInitialized = true;
             _settings.Save(_settingsPath);
         }
+        // Take ownership of the Run key if a stale path (e.g. a pre-
+        // v1.17.0 dev / Debug build's bin\Debug location) is currently
+        // hijacking autostart. Idempotent on a clean install. See the
+        // detailed comment on AutoLaunch.HealAutostartIfStale.
+        AutoLaunch.HealAutostartIfStale();
 
         _mainWindow = new MainWindow(Host);
         // Visible, discoverable entry point to Preferences (the tray

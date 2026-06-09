@@ -97,4 +97,59 @@ public static class AutoLaunch
             // The toggle in the tray menu just won't stick.
         }
     }
+
+    /// <summary>
+    /// Self-heal a stale autostart entry. If we're a managed install AND
+    /// the Run-key value exists but points at a path that isn't our own
+    /// <see cref="Environment.ProcessPath"/>, overwrite it with our path.
+    ///
+    /// <para>
+    /// Covers the bug discovered in v1.36.0 user diagnosis: a pre-v1.17.0
+    /// dev / Debug build (before <see cref="IsManagedInstall"/> gating
+    /// landed) wrote its own <c>bin\Debug\…</c> path into the shared Run
+    /// key. The user reboots → Windows launches the stale dev EXE →
+    /// dev EXE grabs the single-instance Mutex first → the installed
+    /// Velopack build exits silently → auto-updates never apply (the
+    /// updater code only runs when the installed app is live) → the
+    /// user has been frozen on v1.11 for weeks without noticing.
+    /// </para>
+    ///
+    /// <para>
+    /// This routine takes ownership of the Run key on every managed-
+    /// install launch: idempotent when the value already points at us;
+    /// a self-correcting overwrite when it points anywhere else under
+    /// our own <c>ValueName</c>. The non-managed-install case (dev /
+    /// Debug) is a no-op so a dev build can't re-hijack.
+    /// </para>
+    /// </summary>
+    public static void HealAutostartIfStale()
+    {
+        try
+        {
+            if (!IsManagedInstall()) return;
+            var exe = Environment.ProcessPath;
+            if (string.IsNullOrEmpty(exe)) return;
+
+            using var read = Registry.CurrentUser.OpenSubKey(RunKey);
+            if (read?.GetValue(ValueName) is not string current) return;  // no entry → nothing to heal
+
+            // Strip surrounding quotes added by SetEnabled, then normalize
+            // both sides so a casing diff doesn't trigger a spurious write.
+            var stripped = current.Trim().Trim('"');
+            if (string.Equals(
+                    Path.GetFullPath(stripped),
+                    Path.GetFullPath(exe),
+                    StringComparison.OrdinalIgnoreCase))
+                return;
+
+            using var write = Registry.CurrentUser.CreateSubKey(RunKey, writable: true);
+            write?.SetValue(ValueName, $"\"{exe}\"", RegistryValueKind.String);
+        }
+        catch
+        {
+            // Best effort. If we can't write, the next boot will still
+            // launch whatever the stale value points at; user can
+            // manually fix via Preferences → Startup toggle.
+        }
+    }
 }
