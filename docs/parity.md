@@ -37,6 +37,7 @@ Legend:
 | Quick Look / preview | ✅ v1.3 (QLPreviewPanel) | ✅ v2.5 (sheet) | ⏳ | Windows: image viewer + inline text panel per `cpdb v2.0` plan |
 | Match-source badges | ✅ v1.2 | — | ⏳ | small chip on cards when hit comes from non-text column |
 | Domain badge on browser-image entries | ✅ v2.5.7 | — | ✅ | inline `🌐 host.tld` overlay; data driven by `text_preview` parsed as URL |
+| Time-pivot mode (search-adjacent navigation by capture time) | ✅ v2.10.0 | ⏳ | ⏳ | `⌘T` on any selected card → switch to chronological view of entries captured within ±W of the anchor. `[` / `]` step through the window-size table; Esc restores the prior search query + selection. Anchor is `captured_at` (not `created_at` — see `EntryRepository.neighbors`). Window sizes: 15 min / 30 min (default) / 1 h / 3 h / 6 h / 12 h / 1 d. Kind-agnostic by design. Primitive: `EntryRepository.neighbors(ofCapturedAt:windowSeconds:)` |
 
 ## Sync
 

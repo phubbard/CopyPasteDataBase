@@ -68,6 +68,57 @@ public struct EntryRepository {
         }
     }
 
+    /// Entries captured within ±`windowSeconds` of `anchorCapturedAt`,
+    /// ordered chronologically (oldest first inside the window — so
+    /// the strip reads left-to-right as time flowing forward).
+    /// Powers the popup's time-pivot mode (⌘T on a selected card).
+    ///
+    /// The anchor is `captured_at`, not `created_at` — see
+    /// `docs/parity.md` § Time-pivot for the rationale: `created_at`
+    /// re-bumps on dedup, so "neighbors of this thing in time"
+    /// should pivot on the original capture moment, not the most
+    /// recent re-paste. CloudKit-pulled entries preserve the
+    /// originating device's `captured_at`, so cross-device pivots
+    /// still make sense.
+    ///
+    /// No FTS overlay — caller surfaces a different mode for that.
+    /// No kind filter — neighbors-in-time is intentionally
+    /// kind-agnostic (you want to see screenshots, links, and text
+    /// you copied near the anchor moment together).
+    ///
+    /// Includes tombstoned-but-recent entries? No — `deleted_at IS
+    /// NULL`. Pinned entries: not bumped to top; chronological
+    /// ordering only. (Pin status still surfaced on the card.)
+    public func neighbors(
+        ofCapturedAt anchorCapturedAt: Double,
+        windowSeconds: TimeInterval,
+        limit: Int = 500
+    ) throws -> [EntryRow] {
+        let lo = anchorCapturedAt - windowSeconds
+        let hi = anchorCapturedAt + windowSeconds
+        return try store.dbQueue.read { db in
+            let sql = """
+                SELECT e.*, a.name AS app_name_, a.bundle_id AS app_bundle_id_, d.name AS device_name_
+                FROM entries e
+                LEFT JOIN apps a ON a.id = e.source_app_id
+                LEFT JOIN devices d ON d.id = e.source_device_id
+                WHERE e.deleted_at IS NULL
+                  AND e.captured_at BETWEEN ? AND ?
+                ORDER BY e.captured_at ASC
+                LIMIT ?
+            """
+            return try Row.fetchAll(db, sql: sql, arguments: [lo, hi, limit]).map { row in
+                let entry = try Entry(row: row)
+                return EntryRow(
+                    entry: entry,
+                    appName: row["app_name_"],
+                    appBundleId: row["app_bundle_id_"],
+                    deviceName: row["device_name_"]
+                )
+            }
+        }
+    }
+
     /// A search hit with the fully-hydrated entry row + FTS snippet + the
     /// source column that actually matched (text / OCR / tag).
     public struct SearchHit: Sendable {

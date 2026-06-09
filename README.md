@@ -423,6 +423,8 @@ Press your hotkey from any app:
 | `Space` | Quick Look — only when the search field is empty |
 | `Delete` (fn+⌫) | Delete the selected entry (any time) |
 | `⌫` Backspace | Delete the selected entry — only when the search field is empty (otherwise edits the query) |
+| `⌘T` | Time-pivot — show neighbors of the selected card (entries captured within ±30 min, chronological). Works equally from a search hit or a normal recent-list selection |
+| `[` / `]` | While in time-pivot mode: narrow / widen the window (15 min → 30 min → 1 h → 3 h → 6 h → 12 h → 1 day) |
 | `Esc` | Dismiss popup |
 | Click outside | Dismiss popup |
 

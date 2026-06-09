@@ -22,7 +22,8 @@ struct EntryStripView: View {
                             row: row,
                             snippet: state.snippetsById[row.entry.id!],
                             matchSource: state.matchSourcesById[row.entry.id!],
-                            isSelected: index == state.selectedIndex
+                            isSelected: index == state.selectedIndex,
+                            isTimePivotAnchor: state.timePivot?.anchorEntryId == row.entry.id
                         )
                         .id(row.entry.id!)
                         .onTapGesture(count: 2) {
@@ -92,6 +93,17 @@ struct EntryStripView: View {
                 Label("Pin", systemImage: "pin")
             }
         }
+
+        Button {
+            // Anchor the time-pivot on this card and let the popup
+            // show neighbors. Mirror of the ⌘T keyboard shortcut so
+            // the affordance is discoverable.
+            state.selectedIndex = index
+            state.enterTimePivot(anchoredOn: row.entry)
+        } label: {
+            Label("Show neighbors in time", systemImage: "clock.arrow.2.circlepath")
+        }
+        .keyboardShortcut("t", modifiers: .command)
 
         Button {
             share(row: row)

@@ -10,6 +10,23 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+- **Time-pivot mode in the popup (`⌘T`).** Search lets you find a
+  specific clip; time-pivot lets you find what was around it. Press
+  `⌘T` on any selected card and the popup switches from
+  search/recent to a chronological strip of entries captured within
+  ±30 min of that card's `captured_at`. Works equally from a search
+  hit ("I copied a kayak URL — what else was I copying around then?")
+  and from any recent entry. The anchor card gets an orange clock
+  badge so you can spot it among neighbors. `[` / `]` step through
+  the window-size table (15 min / 30 min / 1 h / 3 h / 6 h / 12 h /
+  1 day). `Esc` exits and restores the prior search query +
+  selection. `Return` / `Delete` / `⌘Y` etc. still work normally
+  inside pivot mode. Discoverable via the right-click context menu
+  ("Show neighbors in time"). New `EntryRepository.neighbors(
+  ofCapturedAt:windowSeconds:)` is the underlying primitive — 6
+  tests pin its behaviour (range, boundary, tombstone-filter,
+  kind-agnostic, empty, limit clipping). 138 tests green.
+
 - **Suspect-throttle response classification (tiny-body + no
   title → transient).** Found while diagnosing "imported URLs not
   enriched after Refetch all" on a WordPress host. The Refetch-all

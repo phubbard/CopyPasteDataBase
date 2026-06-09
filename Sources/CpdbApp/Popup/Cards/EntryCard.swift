@@ -12,6 +12,10 @@ struct EntryCard: View {
     /// popup is in "most recent" mode (no active query).
     let matchSource: FtsIndex.MatchSource?
     let isSelected: Bool
+    /// True when this card is the anchor of the popup's time-pivot
+    /// mode. Renders a small clock badge so the user can spot the
+    /// reference point among the chronologically-ordered neighbors.
+    var isTimePivotAnchor: Bool = false
 
     static let cardSize = CGSize(width: 320, height: 360)
 
@@ -37,13 +41,23 @@ struct EntryCard: View {
             // is the card's stroked overlay). Accent-colored to
             // match the kind icon, no chrome — pin is a state, not
             // an action target.
-            if row.entry.pinned {
-                Image(systemName: "pin.fill")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.tint)
-                    .padding(8)
-                    .accessibilityLabel("Pinned")
+            HStack(spacing: 6) {
+                if row.entry.pinned {
+                    Image(systemName: "pin.fill")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.tint)
+                        .accessibilityLabel("Pinned")
+                }
+                if isTimePivotAnchor {
+                    // Distinct glyph + colour so it doesn't visually
+                    // collide with the pin badge when both apply.
+                    Image(systemName: "clock.fill")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.orange)
+                        .accessibilityLabel("Time-pivot anchor")
+                }
             }
+            .padding(8)
         }
         .shadow(color: .black.opacity(isSelected ? 0.22 : 0.10), radius: isSelected ? 10 : 4, y: 2)
         .help(tooltip)

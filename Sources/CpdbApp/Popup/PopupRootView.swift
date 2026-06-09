@@ -9,8 +9,15 @@ struct PopupRootView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            header
-            kindFilterRow
+            if state.timePivot != nil {
+                // Time-pivot mode owns the header; the search row +
+                // kind chips are out of context here (you're
+                // explicitly navigating by time, not searching).
+                pivotHeader
+            } else {
+                header
+                kindFilterRow
+            }
             Divider()
             if state.rows.isEmpty {
                 emptyState
@@ -23,6 +30,63 @@ struct PopupRootView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(.ultraThinMaterial)
+    }
+
+    /// Header shown while in time-pivot mode. Replaces the search
+    /// row + kind chips. Shows the anchor moment, the current
+    /// window size, the result count, and the controls hint
+    /// (`[`/`]` widen-narrow, Esc to exit).
+    @ViewBuilder
+    private var pivotHeader: some View {
+        if let pivot = state.timePivot {
+            HStack(spacing: 10) {
+                Image(systemName: "clock.arrow.2.circlepath")
+                    .foregroundStyle(.tint)
+                let anchor = Date(timeIntervalSince1970: pivot.anchorCapturedAt)
+                Text("Around \(Self.pivotDateFormat.string(from: anchor))")
+                    .font(.system(size: 14, weight: .semibold))
+                Text("· ±\(Self.formatWindow(pivot.windowSeconds))")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text("\(state.rows.count) entries")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+                Text("·")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(.quaternary)
+                Text("[ / ] to widen · ⎋ to exit")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+                Button("Exit") {
+                    state.exitTimePivot()
+                }
+                .keyboardShortcut(.cancelAction)
+                .buttonStyle(.borderless)
+                .font(.system(size: 12))
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+        }
+    }
+
+    private static let pivotDateFormat: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "EEE MMM d, HH:mm"
+        return f
+    }()
+
+    /// Render `±N min / hours / day` from the raw seconds. Pure
+    /// presentation; the values come from
+    /// `PopupState.timePivotWindowSeconds`.
+    private static func formatWindow(_ seconds: TimeInterval) -> String {
+        let minutes = Int(seconds / 60)
+        if minutes < 60 { return "\(minutes) min" }
+        if minutes < 24 * 60 {
+            let h = minutes / 60
+            return "\(h) h"
+        }
+        return "1 day"
     }
 
     private var header: some View {

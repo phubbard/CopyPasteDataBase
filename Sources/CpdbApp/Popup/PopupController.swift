@@ -183,7 +183,39 @@ final class PopupController {
             let consumed: Bool = MainActor.assumeIsolated {
                 switch keyCode {
                 case 53: // Escape
-                    self.hide()
+                    // Time-pivot mode owns Escape — it exits the
+                    // mode and restores the prior search query +
+                    // selection. Only when NOT in pivot does Esc
+                    // hide the popup. Matches the Quick Look /
+                    // sheet convention: Esc closes one layer at a
+                    // time, the outermost dismiss comes last.
+                    if self.state?.timePivot != nil {
+                        self.state?.exitTimePivot()
+                    } else {
+                        self.hide()
+                    }
+                    return true
+                case 17 where cmdHeld:
+                    // ⌘T — enter time-pivot mode anchored on the
+                    // selected card. Shows neighbors captured
+                    // within ±30 min (default) of the anchor's
+                    // captured_at, ordered chronologically. [ / ]
+                    // widen/narrow; Esc restores the prior search.
+                    if let entry = self.state?.selectedEntry {
+                        self.state?.enterTimePivot(anchoredOn: entry)
+                    }
+                    return true
+                case 33 where (self.state?.timePivot != nil):
+                    // [ — narrow the time-pivot window. Gated to
+                    // pivot mode so the bracket key remains a
+                    // literal character in the search field
+                    // otherwise.
+                    self.state?.narrowTimePivot()
+                    return true
+                case 30 where (self.state?.timePivot != nil):
+                    // ] — widen the time-pivot window. Same gate as
+                    // [ above.
+                    self.state?.widenTimePivot()
                     return true
                 case 123: // Left arrow
                     self.state?.selectPrevious()

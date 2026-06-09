@@ -71,6 +71,45 @@ final class PopupState {
     /// Highlight/selection index within `rows`. Clamped to valid range.
     var selectedIndex: Int = 0
 
+    /// Time-pivot mode — non-nil means the popup is showing
+    /// neighbors of an anchor entry instead of search/recent.
+    /// `⌘T` on a selected card enters this mode; `Esc` exits and
+    /// restores the prior query/selection. `[` / `]` widen / narrow
+    /// the window. See `enterTimePivot(...)`.
+    private(set) var timePivot: TimePivot?
+
+    /// Allowed time-pivot window sizes, in seconds. Tap `[`/`]` to
+    /// move between adjacent entries. 30 min is the default for
+    /// "around when I copied this" (clipboard sessions are usually
+    /// minutes-to-hours).
+    public static let timePivotWindowSeconds: [TimeInterval] = [
+        15 * 60,        // 15 min
+        30 * 60,        // 30 min  ← default
+        60 * 60,        // 1 h
+        3 * 60 * 60,    // 3 h
+        6 * 60 * 60,    // 6 h
+        12 * 60 * 60,   // 12 h
+        24 * 60 * 60,   // 1 d
+    ]
+
+    struct TimePivot: Sendable {
+        /// Entry id this pivot is anchored on. Surfaced to the card
+        /// renderer so the anchor gets a visual marker among
+        /// neighbors.
+        let anchorEntryId: Int64
+        /// `captured_at` of the anchor — pinned so widening the
+        /// window keeps the same pivot point even if the anchor
+        /// gets bumped by a re-capture.
+        let anchorCapturedAt: Double
+        /// Index into `PopupState.timePivotWindowSeconds`.
+        var windowIndex: Int
+        /// State to restore on Esc exit.
+        let savedQuery: String
+        let savedSelectedIndex: Int
+
+        var windowSeconds: TimeInterval { PopupState.timePivotWindowSeconds[windowIndex] }
+    }
+
     /// Monotonically-bumped token used to trigger a "scroll to newest" on
     /// every summon. Hiding the popup resets `selectedIndex` to 0 and
     /// `refresh()` repopulates `rows`, but neither of those changes on
@@ -123,8 +162,28 @@ final class PopupState {
         // Fetch synchronously on main — the DB reads are fast and the popup
         // UI expects an immediate result on summon. If this turns out to
         // block the UI for image-heavy rows we can push it to a task.
-        isSearching = !q.isEmpty
+        isSearching = !q.isEmpty && timePivot == nil
         do {
+            // Time-pivot mode supersedes search + recent — the user
+            // explicitly switched away from those.
+            if let pivot = timePivot {
+                let fetched = try repository.neighbors(
+                    ofCapturedAt: pivot.anchorCapturedAt,
+                    windowSeconds: pivot.windowSeconds
+                )
+                guard gen == generation else { return }
+                rows = fetched
+                snippetsById = [:]
+                matchSourcesById = [:]
+                // Selection lands on the anchor so it's the focused
+                // card when pivot mode opens (and after widen/narrow).
+                if let i = rows.firstIndex(where: { $0.entry.id == pivot.anchorEntryId }) {
+                    selectedIndex = i
+                } else {
+                    selectedIndex = rows.isEmpty ? 0 : min(selectedIndex, rows.count - 1)
+                }
+                return
+            }
             if q.isEmpty {
                 let fetched = try repository.recent(
                     limit: searchLimit,
@@ -316,5 +375,70 @@ final class PopupState {
     var selectedEntry: Entry? {
         guard rows.indices.contains(selectedIndex) else { return nil }
         return rows[selectedIndex].entry
+    }
+
+    // MARK: - Time pivot
+
+    /// Default window index (30 min) — second entry in
+    /// `timePivotWindowSeconds`. Pulled out so other defaults
+    /// (e.g. iOS later) can pin the same convention.
+    public static let timePivotDefaultIndex = 1
+
+    /// Enter time-pivot mode anchored on `entry`. Saves the
+    /// current search query + selection so `exitTimePivot()` can
+    /// restore them. No-op when called twice (re-entering replaces
+    /// the anchor rather than nesting state).
+    func enterTimePivot(anchoredOn entry: Entry) {
+        guard let id = entry.id else { return }
+        let saved = (timePivot == nil)
+            ? TimePivot(
+                anchorEntryId: id,
+                anchorCapturedAt: entry.capturedAt,
+                windowIndex: Self.timePivotDefaultIndex,
+                savedQuery: query,
+                savedSelectedIndex: selectedIndex
+              )
+            : TimePivot(
+                anchorEntryId: id,
+                anchorCapturedAt: entry.capturedAt,
+                windowIndex: timePivot!.windowIndex,
+                // Re-entering preserves what was originally saved
+                // so the user can pivot → pivot → Esc and still
+                // land back at their first search.
+                savedQuery: timePivot!.savedQuery,
+                savedSelectedIndex: timePivot!.savedSelectedIndex
+              )
+        timePivot = saved
+        refresh()
+    }
+
+    /// Exit time-pivot mode and restore the prior search/recent
+    /// state (search query + selection). No-op when not in pivot.
+    func exitTimePivot() {
+        guard let saved = timePivot else { return }
+        timePivot = nil
+        query = saved.savedQuery
+        selectedIndex = saved.savedSelectedIndex
+        refresh()
+    }
+
+    /// Widen the time window (next step in `timePivotWindowSeconds`).
+    /// Caps at the last index. No-op outside pivot mode.
+    func widenTimePivot() {
+        guard var pivot = timePivot else { return }
+        let maxIdx = Self.timePivotWindowSeconds.count - 1
+        guard pivot.windowIndex < maxIdx else { return }
+        pivot.windowIndex += 1
+        timePivot = pivot
+        refresh()
+    }
+
+    /// Narrow the time window (previous step). Floored at 0.
+    func narrowTimePivot() {
+        guard var pivot = timePivot else { return }
+        guard pivot.windowIndex > 0 else { return }
+        pivot.windowIndex -= 1
+        timePivot = pivot
+        refresh()
     }
 }
