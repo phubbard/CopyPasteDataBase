@@ -515,6 +515,11 @@ cpdb dedupe [--dry-run] [--window 5.0] [--links-all-time]
                                           #   --links-all-time ignores the window
                                           #   for kind=link (catches loginwindow /
                                           #   multi-Mac phantoms days apart).
+                                          # As of v2.10.1 the live capture path
+                                          # uses a 30 s in-Ingestor dedup window
+                                          # (fixes Chrome/Chromium pasteboard-token
+                                          # jitter). Run `--window 30` once after
+                                          # upgrading to collapse pre-existing dupes.
 cpdb backfill-titles [--dry-run]          # one-off fix for the v2.5.0–2.5.2
                                           #   bare-file://-URL title regression
 cpdb forget-source-app com.apple.Passwords [--dry-run]

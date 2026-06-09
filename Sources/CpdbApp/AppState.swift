@@ -82,7 +82,7 @@ final class PopupState {
     /// move between adjacent entries. 30 min is the default for
     /// "around when I copied this" (clipboard sessions are usually
     /// minutes-to-hours).
-    public static let timePivotWindowSeconds: [TimeInterval] = [
+    nonisolated(unsafe) public static let timePivotWindowSeconds: [TimeInterval] = [
         15 * 60,        // 15 min
         30 * 60,        // 30 min  ← default
         60 * 60,        // 1 h

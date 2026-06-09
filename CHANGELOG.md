@@ -10,6 +10,32 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+- **Secondary text-dedup window widened from 3 s to 30 s.** A
+  library-wide audit of one user's 30-day capture history found
+  87 dupe pairs that the prior 3 s window missed — 26 in the 3-10 s
+  bucket, 31 in 10-30 s, plus 30 more out past 30 s. Root cause:
+  Chrome / Chromium browsers re-emit the pasteboard seconds-to-
+  minutes after the initial copy with a tweaked internal session
+  token in `org.chromium.source-rfh-token` / `source-url`. The
+  user-visible text and HTML are byte-identical; only Chrome's
+  internal metadata UTI moves a byte or two, which flips the
+  canonical hash and slips past the primary dedup. The original 3 s
+  window (sized for Xcode's tight-coupled rewrite) was too narrow.
+  30 s catches the Chrome pattern with very low false-positive risk
+  (humans rarely re-copy identical text in under half a minute —
+  typical workflow is copy → use → copy *different*).
+  `Ingestor.secondaryDedupWindowSeconds` is now a public named
+  constant so the value lives in one place and is observable from
+  tests. 4 new tests pin: the constant value, bump-within-window,
+  insert-beyond-window, and the exact Chromium 1-byte-jitter
+  pattern at the 19 s gap that motivated the change. To clean up
+  existing dupes from before this fix: `cpdb dedupe --window 30
+  --dry-run` to preview, then `--commit`. A larger structural fix
+  (strip volatile metadata UTIs from the canonical hash entirely,
+  so dupes are caught at hash-collision time rather than via the
+  text-bucket safety net) is on the table but deferred — it'd
+  change the hash semantics and need a migration story.
+
 - **Time-pivot mode in the popup (`⌘T`).** Search lets you find a
   specific clip; time-pivot lets you find what was around it. Press
   `⌘T` on any selected card and the popup switches from

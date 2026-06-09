@@ -12,6 +12,13 @@ public struct Ingestor {
     public let store: Store
     public let blobs: BlobStore
 
+    /// Time window for the secondary text-preview dedup (see the
+    /// long comment in `doIngest`). Public so callers / tests can
+    /// observe the same value the production path uses, but not
+    /// configurable — this is a behavioural choice that lives in
+    /// one place.
+    public static let secondaryDedupWindowSeconds: TimeInterval = 30.0
+
     public init(store: Store, blobs: BlobStore = BlobStore()) {
         self.store = store
         self.blobs = blobs
@@ -123,24 +130,35 @@ public struct Ingestor {
             }
 
             // Secondary dedup: some source apps publish a pasteboard,
-            // then immediately rewrite it with a slightly different
-            // flavor set (Xcode's debug console is a known offender —
-            // first writes a plain-text flavor, then appends an RTF
-            // flavor a few milliseconds later). The two writes hash
-            // differently, so `content_hash` dedup misses them and we
-            // get two near-identical rows seconds apart.
+            // then rewrite it shortly after with a slightly different
+            // flavor set — same logical content, different canonical
+            // hash. Two known patterns:
             //
-            // Catch that by checking whether the most recent live row
-            // has the SAME normalized text_preview AND landed in the
-            // last few seconds. If so, treat this capture as a bump,
-            // not an insert. Window kept small (3s) so legitimate
-            // "copy the same thing twice, intentionally" still works
-            // once the user has paused between copies.
+            //   1. **Tight-coupled rewrites** (Xcode's debug console).
+            //      Writes plain-text, then appends RTF a few ms later.
+            //   2. **Slow flavor jitter** (Chrome / Chromium browsers).
+            //      Re-emits the pasteboard with a tweaked internal
+            //      session token in `org.chromium.source-rfh-token` /
+            //      `org.chromium.source-url` seconds to a minute
+            //      after the initial copy. The user-visible text and
+            //      HTML are identical; only Chrome's internal
+            //      metadata UTI moves a byte or two.
+            //
+            // We widened the window to 30 s after a library-wide audit
+            // showed 26+31 = 57 dupe pairs in the 3-30 s gap buckets
+            // over 30 days (vs. 34 caught by the original 3 s window).
+            // 30 s catches the Chrome-jitter pattern while staying
+            // well below the "copy the same thing twice intentionally"
+            // threshold — typical human workflow is copy → use →
+            // copy *different*, not copy-then-copy-same in under
+            // half a minute. A still-broader fix (strip volatile
+            // metadata UTIs from the canonical hash itself) is
+            // tracked separately; it's a schema-impacting change.
             let plain = snapshot.plainText
             if let text = plain?.trimmingCharacters(in: .whitespacesAndNewlines),
                !text.isEmpty
             {
-                let cutoff = snapshot.capturedAt.timeIntervalSince1970 - 3.0
+                let cutoff = snapshot.capturedAt.timeIntervalSince1970 - Self.secondaryDedupWindowSeconds
                 if let recentId = try Int64.fetchOne(
                     db,
                     sql: """
