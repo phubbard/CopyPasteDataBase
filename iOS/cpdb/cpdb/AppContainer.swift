@@ -4,6 +4,7 @@ import Observation
 import GRDB
 import BackgroundTasks
 import CpdbShared
+import CpdbCore
 #if canImport(UIKit)
 import UIKit
 #endif
@@ -28,6 +29,26 @@ final class AppContainer {
 
     private(set) var store: Store?
     private var syncer: CloudKitSyncer?
+
+    /// iOS clipboard capture controller. Built during `bootstrap()` once
+    /// the store + local device row exist. Nil until then (and capture
+    /// no-ops). Routes through the shared `Ingestor` — see
+    /// `IOSClipboardCapture`.
+    private var capture: IOSClipboardCapture?
+
+    /// UserDefaults key for the capture-on-this-device toggle. Default
+    /// OFF. The Settings UI reads/writes this via `@AppStorage`; the
+    /// container reads it directly to gate ALL capture (both the manual
+    /// "Save clipboard now" action and the optional capture-on-foreground
+    /// path honor it). Manual save is allowed only when the toggle is on,
+    /// matching the "capture is opt-in per device" model.
+    static let captureEnabledKey = "cpdb.ios.captureEnabled"
+
+    /// Whether clipboard capture is enabled on this device. Reads the same
+    /// UserDefaults key the Settings toggle writes.
+    var isCaptureEnabled: Bool {
+        UserDefaults.standard.bool(forKey: Self.captureEnabledKey)
+    }
 
     /// Monotonic token that ticks whenever the `entries` table changes
     /// (local insert, CloudKit pull, remote tombstone). SearchView
@@ -101,6 +122,24 @@ final class AppContainer {
             // capture paths). Stopped never — the observation is
             // cheap and we want it running for the app's lifetime.
             startLiveUpdates()
+            // Build the clipboard-capture controller. Upserts the local
+            // iOS `devices` row (kind="ios") so captured entries carry a
+            // real `source_device_id`, then wires the shared `Ingestor`.
+            // Capture still no-ops unless the user enabled the toggle —
+            // this just makes the machinery ready.
+            do {
+                let localDeviceId = try Self.ensureLocalIOSDevice(
+                    in: store, identifier: deviceID, name: deviceName
+                )
+                let ingestor = Ingestor(store: store)
+                self.capture = IOSClipboardCapture(
+                    ingestor: ingestor, deviceId: localDeviceId
+                )
+                print("[cpdb] bootstrap: capture controller ready (deviceRow=\(localDeviceId))")
+            } catch {
+                // Non-fatal: read-only sync still works without capture.
+                print("[cpdb] bootstrap: capture setup failed: \(error)")
+            }
             // Kick the 30 s foreground poll once the DB + syncer are
             // ready. scenePhase may have already moved to .active
             // before bootstrap completed (its guard on `store != nil`
@@ -375,6 +414,76 @@ final class AppContainer {
             if depth > 6 { break }
         }
         print("==========================================================")
+    }
+
+    // MARK: - Capture
+
+    /// Manual "Save clipboard now" action, invoked from the UI. Honors the
+    /// capture toggle (no-op when disabled) and pushes the result so the
+    /// new entry syncs to the user's other devices immediately.
+    ///
+    /// Banner note: this reads the pasteboard (after a `detectPatterns`
+    /// gate), which shows the system paste banner — expected and
+    /// acceptable because the user explicitly tapped "Save".
+    @MainActor
+    func saveClipboardNow() async {
+        guard isCaptureEnabled else {
+            print("[cpdb] capture: save requested but capture disabled")
+            return
+        }
+        await runCapture(trigger: "manual")
+    }
+
+    /// Optional capture-on-foreground. Called from the scene-activation
+    /// handler ONLY when the toggle is on. Same gated path as the manual
+    /// save; the `detectPatterns` gate means a foreground activation with
+    /// nothing new on the clipboard reads nothing and shows no banner.
+    @MainActor
+    func captureOnForegroundIfEnabled() async {
+        guard isCaptureEnabled else { return }
+        await runCapture(trigger: "foreground")
+    }
+
+    @MainActor
+    private func runCapture(trigger: String) async {
+        guard let capture = capture else {
+            print("[cpdb] capture: controller not ready")
+            return
+        }
+        let result = await capture.captureCurrentClipboard()
+        switch result {
+        case .inserted(let id):
+            print("[cpdb] capture(\(trigger)): inserted \(id)")
+        case .bumped(let id):
+            print("[cpdb] capture(\(trigger)): bumped \(id)")
+        case .skipped(let reason):
+            print("[cpdb] capture(\(trigger)): skipped — \(reason)")
+        }
+        // Push so the capture reaches the user's other devices now rather
+        // than waiting for the next periodic tick.
+        if IOSClipboardCapture.isPushable(result) {
+            await pushNow()
+        }
+    }
+
+    /// Upsert the local iOS device row and return its row id. Mirrors the
+    /// Mac's `DeviceIdentity.ensureLocalDevice` but with `kind: "ios"` and
+    /// the UIDevice-derived identifier/name already resolved by the
+    /// caller. iOS has no IOKit, so this lives here rather than in the
+    /// shared `DeviceIdentity` enum (which is macOS-only).
+    private static func ensureLocalIOSDevice(
+        in store: Store, identifier: String, name: String
+    ) throws -> Int64 {
+        try store.dbQueue.write { db in
+            if let existing = try Device
+                .filter(Column("identifier") == identifier)
+                .fetchOne(db) {
+                return existing.id!
+            }
+            var row = Device(identifier: identifier, name: name, kind: "ios")
+            try row.insert(db)
+            return row.id!
+        }
     }
 
     // MARK: - Device identity

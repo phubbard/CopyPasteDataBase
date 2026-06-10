@@ -1,7 +1,9 @@
-#if os(macOS)
+#if os(macOS) || os(iOS)
 import Foundation
-import AppKit
 import CpdbShared
+#if os(macOS)
+import AppKit
+#endif
 
 public struct FrontmostAppInfo: Sendable {
     public var bundleId: String
@@ -25,8 +27,23 @@ public struct FrontmostAppInfo: Sendable {
         name: "cpdb import",
         iconPng: nil
     )
+
+    /// Synthetic source-app identity for clipboard captures made on
+    /// iOS. iOS gives apps no way to learn which app the user copied
+    /// *from* (there is no `NSWorkspace.frontmostApplication`
+    /// equivalent, and reading the source app would require private
+    /// API), so every iOS capture is attributed to this single
+    /// identity. On the Mac, entry detail shows "captured on <device>"
+    /// from the device row; the app row here just gives the popup a
+    /// stable, honest label ("iOS clipboard") instead of "unknown".
+    public static let iosClipboard = FrontmostAppInfo(
+        bundleId: "net.phfactor.cpdb.ios.clipboard",
+        name: "iOS clipboard",
+        iconPng: nil
+    )
 }
 
+#if os(macOS)
 public enum FrontmostApp {
     /// Snapshot the current frontmost application. Must be called shortly
     /// after a pasteboard change — after that the race window is wide open.
@@ -72,4 +89,5 @@ public enum FrontmostApp {
         return rep.representation(using: .png, properties: [:])
     }
 }
-#endif
+#endif // os(macOS) — FrontmostApp (NSWorkspace/NSImage) is macOS-only
+#endif // os(macOS) || os(iOS)

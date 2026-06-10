@@ -1,13 +1,20 @@
-#if os(macOS)
+#if os(macOS) || os(iOS)
 import Foundation
 import GRDB
-import IOKit
 import CpdbShared
+#if os(macOS)
+import IOKit
+#endif
 
 /// Takes a `PasteboardSnapshot` and writes it to the store — or bumps the
 /// existing row's `created_at` if we've seen this content before.
 ///
-/// Stateless and testable: no AppKit, no global singletons.
+/// Stateless and testable: no AppKit, no global singletons. The struct body
+/// is platform-neutral (GRDB + CpdbShared only), so iOS captures route
+/// through the *same* ingest engine the macOS daemon uses — content-hash
+/// dedup, the 30s secondary text-dedup window, kind reclassification, and
+/// push-queue enqueue all behave identically across devices. This is the
+/// "never a parallel ingest path" requirement from hash-v2 §5.5.
 public struct Ingestor {
     public let store: Store
     public let blobs: BlobStore
@@ -406,6 +413,11 @@ public struct Ingestor {
 
 // MARK: - Device identity
 
+#if os(macOS)
+/// macOS local-device identity (IOKit hardware UUID + host name). iOS has
+/// no IOKit and resolves its own device identity in the app's
+/// `AppContainer` (UIDevice.identifierForVendor), inserting the `devices`
+/// row with `kind: "ios"` there — so this enum stays macOS-only.
 public enum DeviceIdentity {
     /// Returns the row id of the local device, creating it on first call.
     public static func ensureLocalDevice(in store: Store) throws -> Int64 {
@@ -441,4 +453,5 @@ public enum DeviceIdentity {
         return cfValue
     }
 }
-#endif
+#endif // os(macOS) — DeviceIdentity (IOKit) is macOS-only
+#endif // os(macOS) || os(iOS)

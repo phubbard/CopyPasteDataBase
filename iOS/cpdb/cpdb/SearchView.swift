@@ -55,6 +55,10 @@ struct SearchView: View {
     @State private var filter: SearchFilter = .load()
     @State private var showFilter: Bool = false
 
+    /// Settings sheet (capture toggle + manual save). Capture is opt-in
+    /// per device — see `SettingsSheet` / `IOSClipboardCapture`.
+    @State private var showSettings: Bool = false
+
     var body: some View {
         NavigationStack {
             // No more VStack-wrapped progress banner — it used to sit
@@ -196,11 +200,24 @@ struct SearchView: View {
                     }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    syncIndicator
+                    HStack(spacing: 10) {
+                        syncIndicator
+                        Button {
+                            showSettings = true
+                        } label: {
+                            Image(systemName: "gearshape")
+                        }
+                        .accessibilityLabel("Settings")
+                    }
                 }
             }
             .sheet(isPresented: $showAbout) {
                 AboutSheet()
+            }
+            .sheet(isPresented: $showSettings) {
+                SettingsSheet()
+                    .environment(container)
+                    .presentationDetents([.medium, .large])
             }
             .sheet(isPresented: $showFilter) {
                 FilterSheet(filter: $filter)
@@ -573,6 +590,74 @@ private struct InlinePullProgress: View {
         let s = total % 60
         if h > 0 { return String(format: "%d:%02d:%02d", h, m, s) }
         return String(format: "%d:%02d", m, s)
+    }
+}
+
+/// Settings sheet. First pass: clipboard-capture controls.
+///
+/// Capture is **opt-in and OFF by default** — see `IOSClipboardCapture`
+/// for why iOS can't safely auto-capture in the background and why every
+/// read is gated behind `detectPatterns` (no paste banner). Two controls:
+///
+///   - **Capture clipboard on this device** — the master toggle. Persisted
+///     via `@AppStorage` to the same key `AppContainer` reads to gate all
+///     capture. When on, the app may save the clipboard on foreground
+///     activation (still detect-gated).
+///   - **Save clipboard now** — explicit one-shot capture. Reads the
+///     clipboard (shows the system paste banner, as expected for an
+///     explicit user action) and stores text/links. Disabled while the
+///     toggle is off.
+struct SettingsSheet: View {
+    @Environment(AppContainer.self) private var container
+    @Environment(\.dismiss) private var dismiss
+
+    /// Bound to the same UserDefaults key `AppContainer.isCaptureEnabled`
+    /// reads. `@AppStorage` keeps the toggle and the container's gate in
+    /// lockstep without any manual plumbing.
+    @AppStorage(AppContainer.captureEnabledKey) private var captureEnabled: Bool = false
+
+    /// Transient confirmation after a manual save.
+    @State private var lastSaveNote: String?
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    Toggle("Capture clipboard on this device", isOn: $captureEnabled)
+                } header: {
+                    Text("Clipboard capture")
+                } footer: {
+                    Text("Off by default. When on, cpdb can save what you copy on this iPhone so it syncs to your other devices. iOS can only read the clipboard while the app is open, and shows a “pasted from” banner each time it reads — so capture happens on an explicit save or when you return to the app, never silently in the background.")
+                }
+
+                Section {
+                    Button {
+                        Task {
+                            await container.saveClipboardNow()
+                            lastSaveNote = "Saved current clipboard"
+                        }
+                    } label: {
+                        Label("Save clipboard now", systemImage: "tray.and.arrow.down")
+                    }
+                    .disabled(!captureEnabled)
+
+                    if let note = lastSaveNote {
+                        Text(note)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                } footer: {
+                    Text("Reads the current clipboard once and stores any text or link. iOS will briefly show a “pasted from” banner — that’s the system telling you cpdb read the clipboard because you asked it to.")
+                }
+            }
+            .navigationTitle("Settings")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
     }
 }
 

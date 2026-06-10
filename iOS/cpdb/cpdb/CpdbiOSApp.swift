@@ -11,8 +11,14 @@ import UIKit
 /// Single-scene SwiftUI app: a search view at the root, pushes a
 /// detail view when you tap a row. All data comes from the local
 /// SQLite store, populated by the same `CloudKitSyncer` the Mac uses.
-/// This app never captures clipboard content — it's strictly a
-/// search + view client of the shared CloudKit zone.
+///
+/// Capture is opt-in: by default this app is a read-only client of the
+/// shared CloudKit zone. When the user turns on "Capture clipboard on
+/// this device" in Settings, it can also save the current clipboard —
+/// via an explicit "Save clipboard now" action and (optionally)
+/// on foreground activation. Both paths are gated by `detectPatterns`
+/// so they never spam the system paste banner. See `AppContainer` and
+/// `IOSClipboardCapture` for the why behind that design.
 @main
 struct CpdbiOSApp: App {
     /// Single source of truth for the app's data layer. Created at
@@ -58,6 +64,10 @@ struct CpdbiOSApp: App {
             guard phase == .active, container.store != nil else { return }
             container.startForegroundPolling()
             Task { await container.pullNow() }
+            // Optional capture-on-foreground. No-ops unless the user
+            // enabled the toggle; even then it's gated by detectPatterns
+            // so an activation with nothing new copied shows no banner.
+            Task { await container.captureOnForegroundIfEnabled() }
             return
         }
         .onChange(of: scenePhase) { _, phase in
