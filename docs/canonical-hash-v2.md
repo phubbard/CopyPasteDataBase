@@ -410,8 +410,10 @@ Delete the 30s window + constant; delete the ±2s rescue (counter read zero); dr
 
 ---
 
-## 10. Open questions for the maintainer
+## 10. Maintainer decisions (resolved 2026-06-09)
 
-1. **Database filename**: the skew fence renames the live DB to `~/Library/Application Support/net.phfactor.cpdb/cpdb-v3.db`. Anything outside this repo that points at `cpdb.db` (backup scripts, the audit-snapshot workflow, launchd jobs) needs the new path. OK to rename, and is `cpdb-v3.db` the name you want?
-2. **cpdb-v2 disposal**: the design's default is whole-zone deletion, gated on verified fleet upgrade, no earlier than ~2 weeks post-cutover. The alternative is leaving it forever (private-DB quota cost is negligible; it preserves a wire-side archive of pre-v2 history). Delete or keep?
-3. **Tombstone reseed window**: 90 days is the proposed cutoff for carrying deletion state into cpdb-v3 (older tombstones have no live record in the new zone to contradict them, so they're inert). If you want deletion history preserved on the wire indefinitely, say so and the reseed includes all tombstones — the record count is small either way.
+1. **Database filename: `cpdb-v3.db`** — confirmed. The skew fence renames `~/Library/Application Support/net.phfactor.cpdb/cpdb.db` → `cpdb-v3.db` at first launch of the new build. Action items spawned to update anything outside the app that touches the old path (audit-snapshot workflow in `/tmp/cpdb-audit.db` copy step, any backup scripts, README's "open the SQLite file with…" section). The legacy `cpdb.db` path is left untouched on disk after the rename so a downgrade can in principle recover by restoring from snapshot.
+2. **cpdb-v2 CloudKit zone: delete** — confirmed. `cpdb sync gc-zone cpdb-v2` runs whole-zone deletion no earlier than two weeks post-cutover, gated on every known device having written into cpdb-v3 (per the design's refusal predicate). No targeted per-record deletes are ever issued against cpdb-v2, only the whole-zone deletion. After deletion, `prev_content_hash` is retained for forensics only.
+3. **Tombstone reseed window: 90 days** — confirmed. §4.3 step 5's `deleted_at >= :now - 90*86400 AND hash_version = 2` stays as written. Older tombstones become inert; standalone tombstones inside the window are rehashed and reseeded so deletion state has first-class wire presence in cpdb-v3.
+
+All three answers match the design's defaults, so §4 / §5 / §6 require no edits — this section is the audit trail.
