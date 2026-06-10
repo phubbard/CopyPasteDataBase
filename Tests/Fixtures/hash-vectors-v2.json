@@ -400,6 +400,20 @@
       ],
       "expect_tag": "file",
       "expect_hex": "d736d6baa5d3a8500507bf53bbacea4bebfa9db7f3ba6587843e2fee26b159a1"
+    },
+    {
+      "name": "file-percent-decoded",
+      "note": "file-url percent-decoding: %20 -> space (pins cross-platform decode)",
+      "items": [
+        [
+          {
+            "uti": "public.file-url",
+            "base64": "ZmlsZTovLy9Vc2Vycy9wZmgvTXklMjBSZXBvcnQucGRm"
+          }
+        ]
+      ],
+      "expect_tag": "file",
+      "expect_hex": "03de521267dfea66b8750be62dde1e1c28156ca3720b91fb016b11feb2b10224"
     }
   ]
 }

@@ -412,6 +412,10 @@ VECTORS = [
     dict(name="file-trailing-slash",
          note="directory file-url: one trailing slash stripped",
          items=_i(("public.file-url", b"file:///Users/pfh/Documents/"))),
+
+    dict(name="file-percent-decoded",
+         note="file-url percent-decoding: %20 -> space (pins cross-platform decode)",
+         items=_i(("public.file-url", b"file:///Users/pfh/My%20Report.pdf"))),
 ]
 
 

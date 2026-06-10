@@ -31,7 +31,16 @@ public enum CanonicalHash {
     public static func hash(items: [[Flavor]]) -> Data {
         var hasher = SHA256()
         for item in items {
-            let sorted = item.sorted { $0.uti < $1.uti }
+            // Byte-wise comparison of the UTF-8 encodings of the UTIs — NOT
+            // Swift `String <` (which is canonically-equivalent collation, not
+            // code-point/byte order) and NOT UTF-16 ordinal. For the ASCII
+            // UTIs in real pasteboards all three agree, so this is a no-op for
+            // existing v1 hashes; it pins the invariant the Windows port and
+            // the v2 fallback rung both rely on (see ContentIdentity.v1Emission
+            // and docs/canonical-hash-v2.md §2.3 fallback sort).
+            let sorted = item.sorted {
+                Array($0.uti.utf8).lexicographicallyPrecedes(Array($1.uti.utf8))
+            }
             for flavor in sorted {
                 hasher.update(data: Data(flavor.uti.utf8))
                 hasher.update(data: Data([0x00]))

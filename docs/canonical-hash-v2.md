@@ -385,9 +385,11 @@ Write `Tools/gen_hash_vectors.py` (reference implementation of §2.3); generate 
 
 *Tests: the generator is the test (`python3 Tools/gen_hash_vectors.py --check` exits non-zero on any broken `equals` relation; re-run `Tools/sim_identity_final.py` to reconfirm the gate against a fresh snapshot).*
 
-**Step 1 — identity core (mac/iOS lib).**
-`Sources/CpdbShared/Capture/ContentIdentity.swift` (rung chain, constants, rung indices, `IdentityRevision = "idv2-r1"` logged with every hash); byte-wise sort fix in `CanonicalHash.swift` (retained as fallback emission); rewrite `HashVectors.swift` as the JSON loop.
-*Tests: full vectors file green; rung-priority table tests; promotion negatives.*
+**Step 1 — identity core (mac/iOS lib). ✅ DONE 2026-06-10.**
+`Sources/CpdbShared/Capture/ContentIdentity.swift` (rung chain, constants, rung indices, `revision = "idv2-r1"`); byte-wise sort fix in `CanonicalHash.swift` (retained as fallback emission); rewrote `HashVectors.swift` as the JSON loop.
+*Tests: full vectors file green; rung-priority + promotion-negative spot checks.*
+
+> **Result.** `ContentIdentity` is a faithful Swift port of `Tools/gen_hash_vectors.py` (UTF-16 manual decoder for surrogate-strict cross-platform parity, manual percent-decoder matching `urllib.unquote`, byte-wise UTF-8 fallback sort). `HashVectors.testV2PinnedVectors` loads `Tests/Fixtures/hash-vectors-v2.json` via `#filePath` (single fixture, no SPM-resource duplication; Windows cites the same file) and asserts all **26** vectors' tag + hex — green. The `CanonicalHash` byte-wise sort change is a no-op for the ASCII-UTI v1 vectors (`b22187…`, `17a95c…` still pass), pinning the invariant Windows + the v2 fallback rung rely on. Full suite 142 + the 3 XCTest vector cases green. Lives in CpdbShared, so iOS links it unchanged. **Not yet wired into capture — that's Step 2.**
 
 **Step 2 — capture-path changes.**
 Move transient/concealed markers to CpdbShared + Ingestor enforcement; store `is-remote-clipboard` (delete `metadataOnlyUTIs`); file-reference URL resolution; shared-pasteboard sole-substantive skip; all-empty-snapshot skip; Ingestor/UrlImporter switch to `ContentIdentity` with `hash_version`/`identity_tag` stamping; union-preserving bump; 30s window → log-only.
