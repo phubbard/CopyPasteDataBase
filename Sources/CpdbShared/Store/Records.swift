@@ -47,6 +47,19 @@ public struct Entry: Codable, FetchableRecord, MutablePersistableRecord, Hashabl
     /// failure). The backfill query skips non-NULL rows by default.
     public var linkFetchedAt: Double?
 
+    /// Canonical-hash era of `contentHash`: 1 = legacy full-flavor-set
+    /// hash, 2 = semantic content identity (idv2-r1). Rows that cannot
+    /// be rehashed (body evicted, blob missing) stay 1 forever. See
+    /// docs/canonical-hash-v2.md.
+    public var hashVersion: Int = 1
+    /// v1 hash retained after the v2 rehash — forensics + the importer's
+    /// dual-era dedup probe. NULL on rows that were born v2.
+    public var prevContentHash: Data?
+    /// The identity rung that produced a v2 hash (image/file/url/text/
+    /// color/fallback). NULL on v1 rows. Carried on the CloudKit wire
+    /// for deterministic conflict resolution.
+    public var identityTag: String?
+
     public static let databaseTableName = "entries"
 
     enum CodingKeys: String, CodingKey {
@@ -69,6 +82,9 @@ public struct Entry: Codable, FetchableRecord, MutablePersistableRecord, Hashabl
         case bodyEvictedAt   = "body_evicted_at"
         case linkTitle       = "link_title"
         case linkFetchedAt   = "link_fetched_at"
+        case hashVersion     = "hash_version"
+        case prevContentHash = "prev_content_hash"
+        case identityTag     = "identity_tag"
     }
 
     public mutating func didInsert(_ inserted: InsertionSuccess) {
@@ -94,7 +110,10 @@ public struct Entry: Codable, FetchableRecord, MutablePersistableRecord, Hashabl
         pinned: Bool = false,
         bodyEvictedAt: Double? = nil,
         linkTitle: String? = nil,
-        linkFetchedAt: Double? = nil
+        linkFetchedAt: Double? = nil,
+        hashVersion: Int = 1,
+        prevContentHash: Data? = nil,
+        identityTag: String? = nil
     ) {
         self.id = id
         self.uuid = uuid
@@ -115,6 +134,9 @@ public struct Entry: Codable, FetchableRecord, MutablePersistableRecord, Hashabl
         self.bodyEvictedAt = bodyEvictedAt
         self.linkTitle = linkTitle
         self.linkFetchedAt = linkFetchedAt
+        self.hashVersion = hashVersion
+        self.prevContentHash = prevContentHash
+        self.identityTag = identityTag
     }
 }
 

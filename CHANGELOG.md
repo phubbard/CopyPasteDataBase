@@ -10,6 +10,37 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+> ⚠️ **Cutover release in progress (canonical-hash v2 / R1).** Code on
+> `main` between hash-v2 Step 2 and the completion of R1 must NOT be
+> installed or deployed: the capture path computes v2 semantic identity
+> while existing databases still hold v1 hashes — without the Step-3
+> migration, every re-copy of existing content forks instead of
+> deduplicating. Assemble and ship R1 (v2.11.0) only when §9 Steps 2–6
+> of docs/canonical-hash-v2.md are all complete.
+
+- **Canonical-hash v2 — semantic content identity (Steps 0–2).**
+  Entry identity is now the SHA-256 of the *primary* content only
+  (image bytes > file-url > url > normalized text > color > full-set
+  fallback) instead of the full flavor set, so volatile sidecar
+  flavors (Chromium session tokens, Universal Clipboard re-publication
+  noise, linkpresentation metadata) can never fork identity again. An
+  audit showed 86% of duplicate pairs were UC cross-device re-captures
+  that no time-window could ever catch; simulation over the production
+  corpus measured 475 would-merge clusters (538 excess rows, 5.6%)
+  with zero false merges. Shipped so far: frozen cross-platform
+  contract (`Tools/gen_hash_vectors.py` + 26 pinned vectors in
+  `Tests/Fixtures/hash-vectors-v2.json`), Swift `ContentIdentity`
+  engine, capture path switched to v2 with `hash_version`/
+  `identity_tag` stamping, union-preserving bump (a re-copy from a
+  different app ADDS missing rich flavors, never deletes or
+  overwrites), transient/concealed markers enforced at the Ingestor
+  entry point (shared with iOS), file-reference URLs resolved at
+  capture, UC file-echo noise skipped, `is-remote-clipboard` stored
+  instead of stripped, and the 30 s text window demoted to log-only.
+  Full design: docs/canonical-hash-v2.md.
+
+## [2.10.1] – 2026-06-09
+
 - **Secondary text-dedup window widened from 3 s to 30 s.** A
   library-wide audit of one user's 30-day capture history found
   87 dupe pairs that the prior 3 s window missed — 26 in the 3-10 s
@@ -36,6 +67,8 @@ human-readable — what's in `[Unreleased]` is what ships.
   text-bucket safety net) is on the table but deferred — it'd
   change the hash semantics and need a migration story.
 
+## [2.10.0] – 2026-06-09
+
 - **Time-pivot mode in the popup (`⌘T`).** Search lets you find a
   specific clip; time-pivot lets you find what was around it. Press
   `⌘T` on any selected card and the popup switches from
@@ -52,6 +85,8 @@ human-readable — what's in `[Unreleased]` is what ships.
   ofCapturedAt:windowSeconds:)` is the underlying primitive — 6
   tests pin its behaviour (range, boundary, tombstone-filter,
   kind-agnostic, empty, limit clipping). 138 tests green.
+
+## [2.9.9 – 2.9.11] – 2026-06-02 → 2026-06-08
 
 - **Suspect-throttle response classification (tiny-body + no
   title → transient).** Found while diagnosing "imported URLs not

@@ -406,5 +406,70 @@ enum Schema {
             try db.execute(sql: "ALTER TABLE entries ADD COLUMN link_retry_count INTEGER NOT NULL DEFAULT 0;")
             try db.execute(sql: "ALTER TABLE entries ADD COLUMN link_retry_after REAL;")
         }
+
+        migrator.registerMigration("v10_semantic_identity") { db in
+            // Canonical-hash v2 (semantic content identity) — schema only.
+            // The heavy work (chunked rehash, collision merge, CloudKit
+            // reseed) lives in the resumable cutover routine, NOT here: a
+            // single-transaction rehash would read ~GBs of spilled blobs
+            // inside the GRDB migration and hang iOS's first launch.
+            // See docs/canonical-hash-v2.md §4.
+            //
+            //   hash_version      — 1 = legacy full-flavor-set hash;
+            //                       2 = semantic identity (idv2-r1).
+            //                       Rows that cannot be rehashed (body
+            //                       evicted, blob missing) stay 1 forever.
+            //   prev_content_hash — v1 lineage after rehash: forensics +
+            //                       the importer's dual-era probe. Never
+            //                       used for targeted CloudKit deletes.
+            //   identity_tag      — the rung that produced the v2 hash
+            //                       (image/file/url/text/color/fallback);
+            //                       carried on the wire for deterministic
+            //                       conflict resolution (§5.3). NULL on
+            //                       v1 rows.
+            try db.execute(sql: "ALTER TABLE entries ADD COLUMN hash_version INTEGER NOT NULL DEFAULT 1;")
+            try db.execute(sql: "ALTER TABLE entries ADD COLUMN prev_content_hash BLOB;")
+            try db.execute(sql: "ALTER TABLE entries ADD COLUMN identity_tag TEXT;")
+            try db.execute(sql: """
+                CREATE INDEX idx_entries_prev_content_hash
+                    ON entries(prev_content_hash) WHERE prev_content_hash IS NOT NULL;
+                """)
+
+            // Stash for flavors that arrive on a pull before their parent
+            // entry record (cross-page ordering) — drained after entry
+            // upserts instead of dropped forever. Wired up in the sync
+            // changes (§5.2); created here so the cutover release has it.
+            try db.execute(sql: """
+                CREATE TABLE orphan_flavors (
+                    content_hash BLOB NOT NULL,
+                    uti          TEXT NOT NULL,
+                    data         BLOB,
+                    blob_key     TEXT,
+                    received_at  REAL NOT NULL,
+                    PRIMARY KEY (content_hash, uti)
+                );
+                """)
+
+            // Cutover bookkeeping: step-completion markers for the
+            // resumable migration routine (§4.3) + the pull-before-push
+            // latch (§5.2). Key-value so future migrations reuse it.
+            try db.execute(sql: """
+                CREATE TABLE cutover_state (
+                    key        TEXT PRIMARY KEY,
+                    value      TEXT NOT NULL,
+                    updated_at REAL NOT NULL
+                );
+                """)
+            // Only a database with pre-existing entries needs the cutover
+            // (rehash + merge + reseed). Fresh installs and in-memory test
+            // stores start directly on v2 semantics with nothing to
+            // migrate — for them, cutover_pending would only gate sync on
+            // a routine with no work to do.
+            try db.execute(sql: """
+                INSERT INTO cutover_state (key, value, updated_at)
+                SELECT 'cutover_pending', '1', strftime('%s','now')
+                WHERE EXISTS (SELECT 1 FROM entries LIMIT 1);
+                """)
+        }
     }
 }

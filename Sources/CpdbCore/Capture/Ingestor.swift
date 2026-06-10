@@ -12,11 +12,10 @@ public struct Ingestor {
     public let store: Store
     public let blobs: BlobStore
 
-    /// Time window for the secondary text-preview dedup (see the
-    /// long comment in `doIngest`). Public so callers / tests can
-    /// observe the same value the production path uses, but not
-    /// configurable — this is a behavioural choice that lives in
-    /// one place.
+    /// Time window for the secondary text-preview probe. LOG-ONLY since
+    /// canonical-hash v2 (the probe fires a counter, never merges — see
+    /// the comment in `doIngest` and docs/canonical-hash-v2.md §7).
+    /// Scheduled for deletion in R2 along with the probe itself.
     public static let secondaryDedupWindowSeconds: TimeInterval = 30.0
 
     public init(store: Store, blobs: BlobStore = BlobStore()) {
@@ -37,9 +36,45 @@ public struct Ingestor {
         deviceId: Int64
     ) throws -> Outcome {
         guard !snapshot.items.isEmpty else { return .skipped(reason: "empty") }
-        let hash = CanonicalHash.hash(items: snapshot.flavorItemsForHashing)
 
-        let outcome = try doIngest(snapshot, sourceApp: sourceApp, deviceId: deviceId, hash: hash)
+        // Concealed/transient markers (nspasteboard.org convention) are
+        // enforced HERE, not only in the macOS watcher: under semantic
+        // identity a leaked concealed capture would BUMP an existing
+        // visible entry fleet-wide instead of forking deletably, so the
+        // guard must sit below every capture path (macOS, iOS, importers).
+        // The watcher's NSPasteboardItem fast-path remains as the first
+        // line; this is the one that can't be bypassed.
+        if TransientGuard.shouldReject(snapshot) {
+            return .skipped(reason: "transient/concealed marker")
+        }
+
+        let flavorItems = snapshot.flavorItemsForHashing
+
+        // A snapshot whose every flavor is zero-length carries nothing.
+        if ContentIdentity.snapshotIsAllEmpty(items: flavorItems) {
+            return .skipped(reason: "all flavors empty")
+        }
+
+        // Universal Clipboard Mac-to-Mac *file* mirror: the shared-pasteboard
+        // file-url is materialized under a fresh UUID per transfer and is the
+        // snapshot's only substantive flavor — pure noise, skip. Echoes that
+        // carry image bytes or text (iPhone-origin copies) are kept and key
+        // via the image/text rungs. See docs/canonical-hash-v2.md §2.4.
+        if ContentIdentity.isSoleSharedPasteboardEcho(items: flavorItems) {
+            return .skipped(reason: "universal-clipboard file echo")
+        }
+
+        // Semantic content identity (canonical-hash v2): hash the PRIMARY
+        // content only, so volatile sidecar flavors (Chromium tokens, UC
+        // re-publication noise, linkpresentation metadata) can never fork
+        // identity. ContentIdentity is the shared engine pinned by
+        // Tests/Fixtures/hash-vectors-v2.json.
+        let (tag, hash) = ContentIdentity.compute(items: flavorItems)
+
+        let outcome = try doIngest(
+            snapshot, sourceApp: sourceApp, deviceId: deviceId,
+            hash: hash, identityTag: tag
+        )
 
         // Wake the CloudKit push loop so this entry uploads right
         // now instead of waiting up to 5 minutes for the safety-net
@@ -87,7 +122,8 @@ public struct Ingestor {
         _ snapshot: PasteboardSnapshot,
         sourceApp: FrontmostAppInfo?,
         deviceId: Int64,
-        hash: Data
+        hash: Data,
+        identityTag: ContentIdentity.Tag
     ) throws -> Outcome {
         try store.dbQueue.write { db in
             // Dedup: if the same hash already exists and isn't tombstoned, bump its created_at.
@@ -123,43 +159,63 @@ public struct Ingestor {
                         arguments: [now, existingId]
                     )
                 }
+                // Union-preserving bump (docs/canonical-hash-v2.md §3):
+                // semantic identity means "same text from Safari" and
+                // "same text from Warp" share one row, so a bump may
+                // carry flavors the stored row lacks (html from one
+                // route, rtf from another). Adopt UTIs the row is
+                // missing; NEVER delete and NEVER overwrite same-UTI
+                // bytes (first capture's rich bytes win — replace-on-
+                // bump + iOS's string-only copy would strip rich
+                // flavors fleet-wide via the UC echo). Skipped for
+                // body-evicted rows: their flavors were deliberately
+                // discarded, re-adding a partial set would make
+                // eviction state incoherent.
+                let evicted = try Bool.fetchOne(
+                    db,
+                    sql: "SELECT body_evicted_at IS NOT NULL FROM entries WHERE id = ?",
+                    arguments: [existingId]
+                ) ?? false
+                if !evicted {
+                    let added = try unionMissingFlavors(
+                        from: snapshot, into: existingId, db: db
+                    )
+                    if added > 0 {
+                        try db.execute(
+                            sql: """
+                                UPDATE entries SET total_size =
+                                    (SELECT COALESCE(SUM(size), 0) FROM entry_flavors WHERE entry_id = ?)
+                                WHERE id = ?
+                                """,
+                            arguments: [existingId, existingId]
+                        )
+                    }
+                }
                 // Bumped created_at is a visible change — other devices
                 // should see it float back to the top of their list.
                 try PushQueue.enqueue(entryId: existingId, in: db, now: now)
                 return .bumped(existingId)
             }
 
-            // Secondary dedup: some source apps publish a pasteboard,
-            // then rewrite it shortly after with a slightly different
-            // flavor set — same logical content, different canonical
-            // hash. Two known patterns:
-            //
-            //   1. **Tight-coupled rewrites** (Xcode's debug console).
-            //      Writes plain-text, then appends RTF a few ms later.
-            //   2. **Slow flavor jitter** (Chrome / Chromium browsers).
-            //      Re-emits the pasteboard with a tweaked internal
-            //      session token in `org.chromium.source-rfh-token` /
-            //      `org.chromium.source-url` seconds to a minute
-            //      after the initial copy. The user-visible text and
-            //      HTML are identical; only Chrome's internal
-            //      metadata UTI moves a byte or two.
-            //
-            // We widened the window to 30 s after a library-wide audit
-            // showed 26+31 = 57 dupe pairs in the 3-30 s gap buckets
-            // over 30 days (vs. 34 caught by the original 3 s window).
-            // 30 s catches the Chrome-jitter pattern while staying
-            // well below the "copy the same thing twice intentionally"
-            // threshold — typical human workflow is copy → use →
-            // copy *different*, not copy-then-copy-same in under
-            // half a minute. A still-broader fix (strip volatile
-            // metadata UTIs from the canonical hash itself) is
-            // tracked separately; it's a schema-impacting change.
+            // Secondary text-preview window — LOG-ONLY since canonical-hash
+            // v2 (docs §7, instrument-then-delete). Both of its reasons to
+            // exist die under semantic identity: same-copy volatile jitter
+            // is fixed by construction (sidecars never reach the hash) and
+            // the Xcode RTF-append pattern is a plain hash hit handled by
+            // primary dedup + union bump. The live window had no kind
+            // filter and matched on the 2048-char-truncated preview, so
+            // under v2 every hash-miss-plus-window-hit is by definition a
+            // DIFFERENT identity — each fire it acted on would be a false
+            // merge ("hello" vs "hello\n"; >2048-char prefix collisions).
+            // Expected telemetry: zero legitimate fires. The counter +
+            // log are kept for one release of observation; window AND
+            // `secondaryDedupWindowSeconds` are deleted in R2.
             let plain = snapshot.plainText
             if let text = plain?.trimmingCharacters(in: .whitespacesAndNewlines),
                !text.isEmpty
             {
                 let cutoff = snapshot.capturedAt.timeIntervalSince1970 - Self.secondaryDedupWindowSeconds
-                if let recentId = try Int64.fetchOne(
+                if let nearId = try Int64.fetchOne(
                     db,
                     sql: """
                         SELECT id FROM entries
@@ -171,13 +227,11 @@ public struct Ingestor {
                     """,
                     arguments: [cutoff, text]
                 ) {
-                    let now = snapshot.capturedAt.timeIntervalSince1970
-                    try db.execute(
-                        sql: "UPDATE entries SET created_at = ? WHERE id = ?",
-                        arguments: [now, recentId]
+                    Self.recordWindowFire()
+                    Log.cli.info(
+                        "secondary-window fire (log-only): new v2-distinct capture matches preview of entry \(nearId) — would have merged under v1"
                     )
-                    try PushQueue.enqueue(entryId: recentId, in: db, now: now)
-                    return .bumped(recentId)
+                    // fall through: insert as a genuinely distinct entry
                 }
             }
 
@@ -200,7 +254,9 @@ public struct Ingestor {
                 title: Self.deriveTitle(from: snapshot, plainText: plain),
                 textPreview: plain.map { String($0.prefix(2048)) },
                 contentHash: hash,
-                totalSize: snapshot.totalSize
+                totalSize: snapshot.totalSize,
+                hashVersion: 2,
+                identityTag: identityTag.rawValue
             )
             try entry.insert(db)
             let entryId = entry.id!
@@ -259,6 +315,56 @@ public struct Ingestor {
     }
 
     // MARK: - Helpers
+
+    /// Insert the snapshot's flavors that the stored row does NOT already
+    /// have (union-preserving bump, docs §3). Checks the existing UTI set
+    /// first so blob spillover (`storeForInsert`) only runs for flavors
+    /// that will actually land — a blind insert-with-ignore would write
+    /// orphaned blob files for every already-present spilled flavor.
+    /// Returns the number of flavor rows added.
+    private func unionMissingFlavors(
+        from snapshot: PasteboardSnapshot,
+        into entryId: Int64,
+        db: Database
+    ) throws -> Int {
+        let existing = try Set(String.fetchAll(
+            db,
+            sql: "SELECT uti FROM entry_flavors WHERE entry_id = ?",
+            arguments: [entryId]
+        ))
+        var added = 0
+        var seen = existing
+        for item in snapshot.items {
+            for flavor in item.flavors where !seen.contains(flavor.uti) {
+                seen.insert(flavor.uti)  // first occurrence wins (flatten rule)
+                let (inline, blobKey) = try blobs.storeForInsert(data: flavor.data)
+                var row = Flavor(
+                    entryId: entryId,
+                    uti: flavor.uti,
+                    size: Int64(flavor.data.count),
+                    data: inline,
+                    blobKey: blobKey
+                )
+                try row.insert(db, onConflict: .ignore)
+                added += 1
+            }
+        }
+        return added
+    }
+
+    /// Observation counter for the log-only secondary window (docs §7).
+    /// Read by `cpdb storage` diagnostics + tests; expected to stay at the
+    /// "fires happen but never merge" level until R2 deletes the window.
+    private nonisolated(unsafe) static var windowFireLock = NSLock()
+    private nonisolated(unsafe) static var _windowFireCount = 0
+    static func recordWindowFire() {
+        windowFireLock.lock(); defer { windowFireLock.unlock() }
+        _windowFireCount += 1
+    }
+    public static var secondaryWindowFireCount: Int {
+        windowFireLock.lock(); defer { windowFireLock.unlock() }
+        return _windowFireCount
+    }
 
     static func upsertApp(_ info: FrontmostAppInfo, in db: Database) throws -> Int64 {
         if let existing = try AppRecord

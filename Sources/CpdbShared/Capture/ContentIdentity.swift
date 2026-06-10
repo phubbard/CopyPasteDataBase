@@ -99,6 +99,39 @@ public enum ContentIdentity {
         compute(items: [flavors])
     }
 
+    // MARK: - Capture policy (§2.4 skip rules — NOT part of the hash contract)
+
+    /// True iff every flavor in the snapshot is zero-length. Such a snapshot
+    /// carries no content at all; the Ingestor skips it (belt over the
+    /// empty-after-normalization → fallback suspender in the rung chain).
+    public static func snapshotIsAllEmpty(items: [[CanonicalHash.Flavor]]) -> Bool {
+        let flat = flatten(items)
+        return flat.isEmpty || flat.values.allSatisfy { $0.isEmpty }
+    }
+
+    /// True iff the snapshot is a Universal Clipboard *file* echo with no
+    /// other substantive content: a `public.file-url` pointing into the
+    /// useractivityd shared-pasteboard container, and no image ≥ 1 KB, no
+    /// non-empty text source, no `public.url`, no color. These are
+    /// Mac-to-Mac Finder-copy mirrors — the receiving Mac materializes the
+    /// remote file under a fresh UUID per transfer, so the path can never
+    /// dedup and the row is pure noise. Echoes that DO carry image bytes or
+    /// text (iPhone-origin copies, for which the echo is the only record
+    /// anywhere) key via rungs 1/4 and are kept. See docs §2.4.
+    public static func isSoleSharedPasteboardEcho(items: [[CanonicalHash.Flavor]]) -> Bool {
+        let flat = flatten(items)
+        guard let b = flat["public.file-url"], let s = strictUTF8(b),
+              s.contains(sharedPasteboardMarker) else { return false }
+        // Any other substantive flavor rescues the snapshot.
+        for uti in imageUTIs {
+            if let img = flat[uti], img.count >= imageMinBytes { return false }
+        }
+        if let t = bestText(flat), !normalizeText(t).isEmpty { return false }
+        if flat["public.url"] != nil { return false }
+        for uti in colorUTIs where flat[uti] != nil { return false }
+        return true
+    }
+
     // MARK: - Flattening (§2.2 — first occurrence of each UTI wins)
 
     static func flatten(_ items: [[CanonicalHash.Flavor]]) -> [String: Data] {

@@ -391,9 +391,19 @@ Write `Tools/gen_hash_vectors.py` (reference implementation of §2.3); generate 
 
 > **Result.** `ContentIdentity` is a faithful Swift port of `Tools/gen_hash_vectors.py` (UTF-16 manual decoder for surrogate-strict cross-platform parity, manual percent-decoder matching `urllib.unquote`, byte-wise UTF-8 fallback sort). `HashVectors.testV2PinnedVectors` loads `Tests/Fixtures/hash-vectors-v2.json` via `#filePath` (single fixture, no SPM-resource duplication; Windows cites the same file) and asserts all **26** vectors' tag + hex — green. The `CanonicalHash` byte-wise sort change is a no-op for the ASCII-UTI v1 vectors (`b22187…`, `17a95c…` still pass), pinning the invariant Windows + the v2 fallback rung rely on. Full suite 142 + the 3 XCTest vector cases green. Lives in CpdbShared, so iOS links it unchanged. **Not yet wired into capture — that's Step 2.**
 
-**Step 2 — capture-path changes.**
+**Step 2 — capture-path changes. ✅ DONE 2026-06-10.**
 Move transient/concealed markers to CpdbShared + Ingestor enforcement; store `is-remote-clipboard` (delete `metadataOnlyUTIs`); file-reference URL resolution; shared-pasteboard sole-substantive skip; all-empty-snapshot skip; Ingestor/UrlImporter switch to `ContentIdentity` with `hash_version`/`identity_tag` stamping; union-preserving bump; 30s window → log-only.
 *Tests: concealed snapshot → `.skipped` not `.bumped`; echo-text bump preserves RTF/HTML; UC image echo keys as image; empty skip; window fires counter but never merges; `IngestorDedupTests` converted to hash-hit assertions.*
+
+> **Result.** All items landed; 149 tests green. Notes beyond the plan text:
+> - The `v10_semantic_identity` schema migration (columns + `orphan_flavors` + `cutover_state`) shipped here rather than Step 3 — the Ingestor stamping needs the columns to exist, and nothing has shipped so the migration body stays amendable until R1. `cutover_pending` is only set for databases that already contain entries, so fresh installs and in-memory test stores start directly on v2 with no cutover gating.
+> - `TransientGuard` was cherry-picked from the `claude/ios-readwrite` branch (identical file), so the branch rebases cleanly; macOS's watcher-side `TransientFilter.skipUTIs` now delegates to it — one marker set, enforced at both the NSPasteboardItem fast path and the Ingestor entry point.
+> - Union-bump checks the existing UTI set *before* `storeForInsert` so blob spillover never writes orphaned blob files for already-present flavors; `total_size` is recomputed after a union. Union is skipped for body-evicted rows (their flavors were deliberately discarded; under v2 their v1 hash is unreachable from new captures anyway — belt and suspenders).
+> - The capture-policy skips (`snapshotIsAllEmpty`, `isSoleSharedPasteboardEcho`) live on `ContentIdentity` (CpdbShared) since they need the rung chain's own definitions of "substantive" — explicitly marked as capture policy, NOT part of the hash contract.
+> - File-reference URL resolution has a live test (creates a temp file, obtains the genuine `/.file/id=` NSURL via the ObjC runtime to dodge Swift's eager URL bridging, asserts resolution) plus pass-through cases for dead references and undecodable bytes.
+> - `Ingestor.secondaryWindowFireCount` is the §7 observation counter; the probe logs and falls through to insert.
+> - **PasteDbImporter intentionally still computes v1 hashes** (rows stamp `hash_version=1` via the column default) — its `ContentIdentity` switch + dual-era probe is Step 5 as planned.
+> - ⚠️ **Do not install/deploy a build between this step and R1 completion**: a v2-hashing Ingestor against a v1 corpus would fork identities for every re-copy (no hash hits against existing rows) until the Step-3 migration rehashes the corpus.
 
 **Step 3 — migration + cutover routine.**
 `v10_semantic_identity` schema migration; `cpdb-v3.db` path rename fence; cutover routine (drain → VACUUM INTO → chunked rehash with rung-input guard → collision merge with coalesce helper + FTS reindex → zombie sweep → reseed + latch); launch reconcile sweep; `cpdb storage --verify-hashes`.
