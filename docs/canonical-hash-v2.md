@@ -374,9 +374,16 @@ Every blocking and serious finding is fixed in this design; minors are fixed or 
 
 ## 9. Implementation plan
 
-**Step 0 — freeze the contract (no ship).**
-Write `Tools/gen_hash_vectors.py` (reference implementation of §2.3); generate `Tests/Fixtures/hash-vectors-v2.json`. Re-run `/tmp/identity_sim.py` against `/tmp/cpdb-audit.db` with the final ruleset (slash-strip, URL-context trim, html ladder, empty→fallback); flavor-inspect every cluster the slash-strip adds beyond V4's 441; record the final expected cluster count for the migration assertion. **Gate: zero false merges, or the slash-strip is dropped and vectors regenerate without it.**
-*Tests: the generator is the test.*
+**Step 0 — freeze the contract (no ship). ✅ DONE 2026-06-09.**
+Write `Tools/gen_hash_vectors.py` (reference implementation of §2.3); generate `Tests/Fixtures/hash-vectors-v2.json`. Re-run the identity simulation against `/tmp/cpdb-audit.db` with the final ruleset (slash-strip, URL-context trim, html ladder, empty→fallback); flavor-inspect every cluster the slash-strip adds beyond V4's 441; record the final expected cluster count for the migration assertion. **Gate: zero false merges, or the slash-strip is dropped and vectors regenerate without it.**
+
+> **Result — GATE PASSED.**
+> - `Tools/gen_hash_vectors.py` is the frozen reference implementation; `Tests/Fixtures/hash-vectors-v2.json` (25 vectors) is the authoritative artifact. **Every hand-written hex in §2.6 reproduced exactly from the implementation** — including the two the synthesis flagged as hand-corrected (`342ef223…` sub-threshold PNG, `4d648625…` empty-text-fallback) and all `equals` relations. The contract is self-consistent; no §2.6 reconciliation was needed.
+> - `Tools/sim_identity_final.py` imports the *same* `identity()` from the generator (one implementation, not two) and runs it over the 9,624 rehashable live entries. Final ruleset: **475 would-merge clusters, 538 excess rows (5.6% of the live corpus)** — up from V4's 441/502; the +34 clusters are the URL-promotion rung converging rich-link (`public.url`) copies with plain-text copies of the same URL, exactly as intended. Tag distribution: image=209, text=134, url=128, fallback=2, file=2.
+> - **False merges: 0.** The detector flagged 7 candidate clusters (members whose stale `text_preview` display column differs); byte-level inspection of the identity *inputs* confirmed all 7 are legitimate — `public.utf8-plain-text` byte-identical (CWA address, preview rendering drifted over 262 days) or identical `public.url` / intended text→url promotion convergence. No cluster merges genuinely distinct content. The slash-strip + promotion stay in.
+> - **Number recorded for the migration step-3 assertion:** ~475 live clusters on this snapshot (the migration computes it live; this is the sanity-check expectation). No-flavor (evicted, un-rehashable) rows: 6.
+
+*Tests: the generator is the test (`python3 Tools/gen_hash_vectors.py --check` exits non-zero on any broken `equals` relation; re-run `Tools/sim_identity_final.py` to reconfirm the gate against a fresh snapshot).*
 
 **Step 1 — identity core (mac/iOS lib).**
 `Sources/CpdbShared/Capture/ContentIdentity.swift` (rung chain, constants, rung indices, `IdentityRevision = "idv2-r1"` logged with every hash); byte-wise sort fix in `CanonicalHash.swift` (retained as fallback emission); rewrite `HashVectors.swift` as the JSON loop.
