@@ -8,15 +8,37 @@ moves it into a new dated `[X.Y.Z]` heading at tag time and resets the
 working area to empty. Edit it freely if a commit message wasn't quite
 human-readable — what's in `[Unreleased]` is what ships.
 
-## [Unreleased]
+## [2.11.0] — canonical-hash v2 / R1
 
-> ⚠️ **Cutover release in progress (canonical-hash v2 / R1).** Code on
-> `main` between hash-v2 Step 2 and the completion of R1 must NOT be
-> installed or deployed: the capture path computes v2 semantic identity
-> while existing databases still hold v1 hashes — without the Step-3
-> migration, every re-copy of existing content forks instead of
-> deduplicating. Assemble and ship R1 (v2.11.0) only when §9 Steps 2–6
-> of docs/canonical-hash-v2.md are all complete.
+> ⚠️ **Multi-device rollout in progress.** The PRIMARY Mac has migrated
+> to the new `cpdb-v3` CloudKit zone (semantic content identity). Other
+> devices (axiom / thor / iPhone) are still on 2.10.x / `cpdb-v2` and
+> are SAFELY PARTITIONED — they keep working against the old zone until
+> each is upgraded + migrated via the §5.4 choreography (quiesce → drain
+> → migrate → pull → push). Do NOT deploy R1 to a secondary device
+> without first draining its push queue (the gate-bypassing
+> `drainLegacyQueue` for non-empty queues is still a follow-up; a
+> non-empty queue blocks the cutover safely until drained).
+
+- **Canonical-hash v2 — semantic content identity (Steps 0–4 / R1).**
+  Entry identity is now the SHA-256 of the *primary* content only
+  (image bytes > file-url > url > normalized text > color > full-set
+  fallback) instead of the full pasteboard flavor set, so volatile
+  sidecar flavors (Chromium session tokens, Universal Clipboard
+  re-publication noise, linkpresentation metadata) can never fork
+  identity again. An audit showed 86% of duplicate pairs were UC
+  cross-device re-captures no time-window could ever catch. The
+  primary Mac's cutover rehashed 9,856 entries, merged 479 duplicate
+  clusters (544 losers), with **0 hash mismatches** in verification.
+  Full design + step log: docs/canonical-hash-v2.md. Pieces: frozen
+  cross-platform contract (Tools/gen_hash_vectors.py + 26 pinned
+  vectors), Swift ContentIdentity engine, v2 capture path with
+  union-preserving bump + ingest-level transient guard, resumable
+  IdentityCutover migration (chunked rehash → collision merge → reseed
+  + latch) behind the cpdb-v3.db skew fence, §5.3 pull-side
+  uuid-conflict resolution by rung priority, orphan-flavor stash,
+  self-healing token errors, `cpdb migrate-identity` + `cpdb storage
+  --verify-hashes`, cross-process cutover lock, and scripts/backup-cpdb.sh.
 
 - **Canonical-hash v2 — semantic content identity (Steps 0–3).**
   Entry identity is now the SHA-256 of the *primary* content only
