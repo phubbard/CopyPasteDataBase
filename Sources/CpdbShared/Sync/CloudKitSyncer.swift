@@ -62,7 +62,7 @@ public actor CloudKitSyncer {
         }
     }
 
-    public static let zoneSubscriptionID = "cpdb-v2-zone-subscription"
+    public static let zoneSubscriptionID = "cpdb-v3-zone-subscription"
 
     /// UserDefaults key: Double (`timeIntervalSince1970`) of the most
     /// recent successful pull. The About dialog reads this so the user
@@ -1140,8 +1140,15 @@ public actor CloudKitSyncer {
         // applied tombstone will catch up the server" and NOT insert
         // a new row. Inserting would collide on the unique UUID
         // (same content → same record → same UUID arrived back).
+        // Live-preferred lookup: prefer a live row over a tombstoned
+        // sibling sharing the same content_hash (delete-then-recopy
+        // legitimately produces such pairs). Without the ordering, GRDB
+        // returns the lowest rowid and the tombstone-wins guard below
+        // would silently eat live updates and misroute inbound deletions
+        // (adversarial finding, §5.2).
         if var existing = try Entry
             .filter(Column("content_hash") == d.contentHash)
+            .order(sql: "(deleted_at IS NULL) DESC, created_at DESC")
             .fetchOne(db)
         {
             // Skip live-ifying a locally-tombstoned row. Our
@@ -1179,6 +1186,11 @@ public actor CloudKitSyncer {
                 existing.linkTitle     = d.linkTitle
                 existing.linkFetchedAt = d.linkFetchedAt
             }
+            // Keep the identity era + rung in sync. Same content_hash ⇒
+            // same era, so this is a no-op in the steady state; it matters
+            // only while the fleet is mixed during the cutover window.
+            existing.hashVersion = d.hashVersion
+            existing.identityTag = d.identityTag
             try existing.update(db)
             try FtsIndex.indexEntry(
                 db: db,
@@ -1203,7 +1215,18 @@ public actor CloudKitSyncer {
             // of inserting a parallel entry. Lookup is symmetric with
             // the Ingestor's within-window check (5s window here to
             // account for iCloud delivery lag vs. the 3s local one).
-            if let text = d.textPreview?
+            // Gated on hashVersion < 2: structurally DEAD from the first
+            // cpdb-v3 pull (every record in the new zone is v2, so this
+            // branch never runs there). Semantic identity already
+            // converges the Universal-Clipboard echoes this rescue
+            // existed to catch — keeping it live in cpdb-v3 would instead
+            // swallow legitimately-distinct same-preview records during
+            // the reseed storm (shared-pasteboard mirror pairs,
+            // partial-flavor forks). Retained only so a stray v1 record
+            // (e.g. a botched manual import) still collapses; deleted in
+            // R2 once telemetry confirms zero fires.
+            if d.hashVersion < 2,
+               let text = d.textPreview?
                 .trimmingCharacters(in: .whitespacesAndNewlines),
                !text.isEmpty,
                d.deletedAt == nil
@@ -1265,9 +1288,23 @@ public actor CloudKitSyncer {
                 pinned: d.pinned,
                 bodyEvictedAt: d.bodyEvictedAt,
                 linkTitle: d.linkTitle,
-                linkFetchedAt: d.linkFetchedAt
+                linkFetchedAt: d.linkFetchedAt,
+                hashVersion: d.hashVersion,
+                identityTag: d.identityTag
             )
-            try entry.insert(db)
+            // Insert hardening: a uuid (or content_hash) unique-constraint
+            // collision must NOT abort the whole page's write transaction
+            // and wedge the change token. Catch it, count it, treat as
+            // .unchanged — every re-encounter resolves identically. This
+            // is the belt under the §5.3 uuid-conflict resolution (which
+            // is meant to intercept collisions before they reach here).
+            do {
+                try entry.insert(db)
+            } catch let error as DatabaseError where error.resultCode == .SQLITE_CONSTRAINT {
+                Self.recordInsertConstraintHit()
+                Log.cli.error("pull: insert constraint hit for uuid/hash — treating as unchanged (count=\(Self.insertConstraintHits, privacy: .public))")
+                return .unchanged
+            }
             try FtsIndex.indexEntry(
                 db: db,
                 entryId: entry.id!,
@@ -1284,6 +1321,20 @@ public actor CloudKitSyncer {
             )
             return .inserted
         }
+    }
+
+    /// Observability counter for pull-side insert constraint collisions
+    /// (§5.2 insert hardening). Expected to stay near zero; a rising
+    /// count means the §5.3 conflict resolution is missing a case.
+    private nonisolated(unsafe) static var insertConstraintLock = NSLock()
+    private nonisolated(unsafe) static var _insertConstraintHits = 0
+    static func recordInsertConstraintHit() {
+        insertConstraintLock.lock(); defer { insertConstraintLock.unlock() }
+        _insertConstraintHits += 1
+    }
+    public static var insertConstraintHits: Int {
+        insertConstraintLock.lock(); defer { insertConstraintLock.unlock() }
+        return _insertConstraintHits
     }
 
     /// Copy CKAsset-backed thumbnail bytes into the local `previews`

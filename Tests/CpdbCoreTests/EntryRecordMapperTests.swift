@@ -124,6 +124,41 @@ struct EntryRecordMapperTests {
         #expect(decoded.pinned == false)
     }
 
+    @Test("round-trip: hash_version + identity_tag survive the wire trip")
+    func identityFieldsRoundTrip() throws {
+        var entry = fullEntry()
+        entry.hashVersion = 2
+        entry.identityTag = "url"
+        let decoded = try roundTrip(entry, source: defaultSource())
+        #expect(decoded.hashVersion == 2)
+        #expect(decoded.identityTag == "url")
+    }
+
+    @Test("decode: hash_version stamped FROM THE ROW, not a constant (evicted row ships v1)")
+    func identityVersionFromRow() throws {
+        // A reseeded evicted/missing-blob row keeps hash_version 1 under
+        // its v1 hash; the mapper must ship that 1, not a hardcoded 2.
+        var entry = fullEntry()
+        entry.hashVersion = 1
+        entry.identityTag = nil
+        let decoded = try roundTrip(entry, source: defaultSource())
+        #expect(decoded.hashVersion == 1)
+        #expect(decoded.identityTag == nil)
+    }
+
+    @Test("decode: missing hash_version defaults to 1 (pre-v2 record)")
+    func identityFieldsMissingDefault() throws {
+        let entry = fullEntry()
+        let id = EntryRecordMapper.recordID(forContentHash: entry.contentHash, in: Self.zone)
+        let record = CKRecord(recordType: CKSchema.RecordType.entry, recordID: id)
+        EntryRecordMapper.populate(record: record, entry: entry, source: defaultSource())
+        record[CKSchema.EntryField.hashVersion] = nil
+        record[CKSchema.EntryField.identityTag] = nil
+        let decoded = try EntryRecordMapper.decode(record)
+        #expect(decoded.hashVersion == 1)
+        #expect(decoded.identityTag == nil)
+    }
+
     @Test("round-trip covers every EntryKind")
     func everyKind() throws {
         for kind in EntryKind.allCases {

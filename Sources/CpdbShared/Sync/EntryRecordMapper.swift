@@ -86,6 +86,12 @@ public enum EntryRecordMapper {
         record[CKSchema.EntryField.bodyEvictedAt] = entry.bodyEvictedAt.map { $0 as NSNumber }
         record[CKSchema.EntryField.linkTitle]     = entry.linkTitle as NSString?
         record[CKSchema.EntryField.linkFetchedAt] = entry.linkFetchedAt.map { $0 as NSNumber }
+        // canonical-hash v2: stamp the identity era + rung FROM THE ROW.
+        // Never a constant — an evicted/missing-blob row reseeded under
+        // its v1 hash must ship hashVersion=1 (§5.2), or peers' uuid-merge
+        // upgrade predicate is corrupted.
+        record[CKSchema.EntryField.hashVersion] = Int64(entry.hashVersion) as NSNumber
+        record[CKSchema.EntryField.identityTag] = entry.identityTag as NSString?
     }
 
     /// Attach thumbnail `CKAsset`s to the record. Pass nil URLs to clear
@@ -140,6 +146,14 @@ public enum EntryRecordMapper {
         /// fetch?" (v2.7+). Nil = no device has tried; non-nil =
         /// at least one device completed an attempt.
         public var linkFetchedAt: Double?
+        /// canonical-hash v2 identity era of `contentHash`: 1 = legacy
+        /// full-flavor-set hash, 2 = semantic identity. Absent on records
+        /// from pre-v2 clients → defaults to 1.
+        public var hashVersion: Int = 1
+        /// The rung that produced a v2 hash (image/file/url/text/color/
+        /// fallback). Nil on v1 records. Used by the pull-side
+        /// equal-version conflict resolution (§5.3).
+        public var identityTag: String?
     }
 
     public enum DecodeError: Error, CustomStringConvertible {
@@ -207,7 +221,10 @@ public enum EntryRecordMapper {
             pinned: ((record[CKSchema.EntryField.pinned] as? NSNumber)?.int64Value ?? 0) == 1,
             bodyEvictedAt: (record[CKSchema.EntryField.bodyEvictedAt] as? NSNumber)?.doubleValue,
             linkTitle:      record[CKSchema.EntryField.linkTitle] as? String,
-            linkFetchedAt: (record[CKSchema.EntryField.linkFetchedAt] as? NSNumber)?.doubleValue
+            linkFetchedAt: (record[CKSchema.EntryField.linkFetchedAt] as? NSNumber)?.doubleValue,
+            // Absent (pre-v2 record) → hashVersion 1, nil tag.
+            hashVersion: Int((record[CKSchema.EntryField.hashVersion] as? NSNumber)?.int64Value ?? 1),
+            identityTag: record[CKSchema.EntryField.identityTag] as? String
         )
     }
 

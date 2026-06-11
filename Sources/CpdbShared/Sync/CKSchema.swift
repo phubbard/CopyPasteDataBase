@@ -21,7 +21,19 @@ public enum CKSchema {
     /// Custom zone inside the Private Database. Using a named zone (not
     /// the default zone) lets us use zone-wide change tokens and zone-
     /// level subscriptions for efficient incremental pulls.
-    public static let zoneName = "cpdb-v2"
+    ///
+    /// `cpdb-v3` is the canonical-hash-v2 zone (docs/canonical-hash-v2.md
+    /// §5.1): a brand-new zone, so a not-yet-upgraded device keeps
+    /// operating against `cpdb-v2` fully partitioned — no v1-era record
+    /// can ever arrive in v3 and fork identity. Record names stay
+    /// `entry-<64hex>` (same length, same parsers) precisely because the
+    /// new zone guarantees that.
+    public static let zoneName = "cpdb-v3"
+
+    /// The pre-cutover zone (cpdb ≤ 2.10.x). Retained ONLY for the
+    /// cutover's step-0 drain of pending old-zone pushes and the gated
+    /// `gc-zone` command. Never written to as part of normal v3 sync.
+    public static let legacyZoneName = "cpdb-v2"
 
     public enum RecordType {
         public static let entry         = "Entry"
@@ -66,6 +78,14 @@ public enum CKSchema {
         // free.
         public static let linkTitle          = "linkTitle"        // String?
         public static let linkFetchedAt      = "linkFetchedAt"    // Double?
+        // canonical-hash v2: the identity era of `contentHash` and the
+        // rung that produced it. Written FROM THE ROW, never a constant —
+        // a reseeded evicted/missing-blob row ships hashVersion=1 under
+        // its v1 hash, and mislabeling it 2 would corrupt the pull-side
+        // uuid-merge upgrade predicate (§5.2). Absent on records from
+        // pre-v2 clients → decode defaults to (1, nil).
+        public static let hashVersion        = "hashVersion"      // Int64 (1 or 2)
+        public static let identityTag        = "identityTag"      // String? (image/file/url/text/color/fallback)
     }
 
     public enum FlavorField {

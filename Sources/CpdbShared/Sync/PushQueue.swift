@@ -129,9 +129,12 @@ public enum PushQueue {
     /// Well-known keys for the state table. Defined here so the syncer
     /// doesn't sprinkle magic strings through its logic.
     public enum StateKey {
-        /// NSSecureCoding-archived `CKServerChangeToken` for the cpdb-v2
-        /// zone. Used by `CKFetchRecordZoneChangesOperation` to ask
-        /// CloudKit for "only records changed since this token".
-        public static let zoneChangeToken = "zoneChangeToken"
+        /// NSSecureCoding-archived `CKServerChangeToken`, namespaced by
+        /// zone (canonical-hash v2 cutover to `cpdb-v3`). A bare
+        /// un-namespaced key would risk a v3 fetch resuming against a
+        /// token minted for the cpdb-v2 zone; the cutover's reseed wipes
+        /// `cloudkit_state` regardless, but the explicit namespacing
+        /// survives any future zone migration cleanly.
+        public static let zoneChangeToken = "zoneChangeToken.cpdb-v3"
     }
 }
