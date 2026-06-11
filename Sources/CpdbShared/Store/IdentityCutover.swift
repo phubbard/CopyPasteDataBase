@@ -80,6 +80,10 @@ public enum IdentityCutover {
         /// hook couldn't empty it (offline). Retry next launch; the
         /// cutover never proceeds past step 0 with pending pushes.
         case blockedOnPushQueue(pending: Int)
+        /// Another process (the app's launch run vs. a `cpdb
+        /// migrate-identity` CLI invocation) already holds the cutover
+        /// lock. The caller should do nothing; the other process owns it.
+        case alreadyRunning
         case completed(Report)
     }
 
@@ -111,6 +115,28 @@ public enum IdentityCutover {
         progress: (@Sendable (String) -> Void)? = nil
     ) async throws -> Outcome {
         guard try isPending(store) else { return .notNeeded }
+
+        // Cross-process exclusion: only one process runs the cutover
+        // against a given database. The lock file sits next to the DB so
+        // it's per-database; in-memory stores (tests) have no file path
+        // and skip it (they can't be shared across processes anyway).
+        // flock releases when `lock` leaves scope. A second process bails.
+        var lock: DaemonLock?
+        let dbPath = store.dbQueue.path
+        if dbPath != ":memory:", !dbPath.isEmpty {
+            let lockPath = (dbPath as NSString).deletingLastPathComponent + "/cutover.lock"
+            let l = DaemonLock(path: lockPath, owner: .cutover)
+            do {
+                try l.acquire()
+            } catch {
+                progress?("cutover already running in another process — skipping")
+                return .alreadyRunning
+            }
+            lock = l
+            // Re-check under the lock (another process may have JUST finished).
+            guard try isPending(store) else { lock?.release(); return .notNeeded }
+        }
+        defer { lock?.release() }
 
         // Step 0 — enforced quiesce. Runs ONCE: a completion marker stops
         // a resume from re-checking the queue, which by then may hold

@@ -63,6 +63,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             PopupController.shared.configure(store: store, captureMode: captureMode)
             AboutWindowController.shared.configure(store: store)
             PreferencesWindowController.shared.configure(store: store)
+            // canonical-hash v2: run the identity cutover (if this DB still
+            // needs it) off the main actor, then heal any skew rows. Sync
+            // stays gated until it completes (CloudKitSyncer checks
+            // cutover_pending). Capturing-mode only — in read-only mode
+            // another process owns DB writes and will run it.
+            runIdentityCutoverIfNeeded(store: store)
         }
 
         statusItem = StatusItemController()
@@ -159,6 +165,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 } catch {
                     Log.cli.error("pull now failed: \(String(describing: error), privacy: .public)")
                 }
+            }
+        }
+    }
+
+    /// Run the canonical-hash v2 identity cutover off the main actor at
+    /// launch, if this database still needs it, then heal any binary-skew
+    /// rows. Sync is gated on `cutover_pending`, so it stays silent until
+    /// this finishes; we post `.cpdbSyncNow` afterward to re-enable
+    /// promptly instead of waiting for the periodic poll. The cross-process
+    /// `cutover.lock` makes this mutually exclusive with a `cpdb
+    /// migrate-identity` CLI run (whichever fires first wins; the other
+    /// no-ops).
+    private func runIdentityCutoverIfNeeded(store: Store) {
+        guard lifecycle.mode == .capturing else { return }
+        let snapshotURL = IdentityCutover.defaultSnapshotURL(forDatabaseAt: Paths.databaseURL.path)
+        Task.detached(priority: .utility) {
+            do {
+                if try IdentityCutover.isPending(store) {
+                    Log.cli.info("identity cutover pending — running at launch")
+                    let outcome = try await IdentityCutover.run(
+                        store: store,
+                        snapshotURL: snapshotURL,
+                        // Primary device's queue is drained before upgrade;
+                        // a non-empty queue blocks safely. The gate-bypassing
+                        // legacy-zone drain for secondary devices is a
+                        // follow-up.
+                        drainPushQueue: nil,
+                        progress: { Log.cli.info("cutover: \($0, privacy: .public)") }
+                    )
+                    Log.cli.info("identity cutover outcome: \(String(describing: outcome), privacy: .public)")
+                }
+                // Heal skew-era v1 rows (no-op in the normal case).
+                _ = try IdentityCutover.reconcileSweep(store: store)
+                // Re-enable sync now that the cutover (if any) is done.
+                await MainActor.run {
+                    NotificationCenter.default.post(name: .cpdbSyncNow, object: nil)
+                }
+            } catch {
+                Log.cli.error("identity cutover failed: \(String(describing: error), privacy: .public)")
             }
         }
     }

@@ -25,6 +25,17 @@ public final class DaemonLock {
     public enum Owner: String, Sendable {
         case cli
         case app
+        /// The identity cutover (canonical-hash v2). A separate lock file
+        /// (`cutover.lock`) so the daemon's app-launch run and a `cpdb
+        /// migrate-identity` CLI invocation can never run the migration
+        /// against the same database concurrently.
+        case cutover
+    }
+
+    /// Lock path for the identity cutover — distinct from the capture
+    /// `daemon.lock` so the two don't contend.
+    public static var cutoverPath: String {
+        Paths.supportDirectory.appendingPathComponent("cutover.lock").path
     }
 
     public enum LockError: Error, CustomStringConvertible {

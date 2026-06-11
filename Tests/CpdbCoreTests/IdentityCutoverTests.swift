@@ -574,6 +574,36 @@ struct IdentityCutoverTests {
         #expect(!queued.contains(oldTomb))
     }
 
+    // MARK: - Cross-process lock
+
+    @Test("A held cutover lock makes run() return .alreadyRunning")
+    func crossProcessLock() async throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cpdb-lock-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let dbPath = dir.appendingPathComponent("cpdb-v3.db").path
+        let store = try Store(path: dbPath)
+        _ = try insertV1(store, flavors: [("public.utf8-plain-text", Data("x".utf8))],
+                         capturedAt: 100, uuidByte: 1)
+        try markPending(store)
+
+        // Simulate another process holding the cutover lock.
+        let held = DaemonLock(path: dir.appendingPathComponent("cutover.lock").path, owner: .cutover)
+        try held.acquire()
+        defer { held.release() }
+
+        #expect(try await IdentityCutover.run(store: store) == .alreadyRunning)
+        // Still pending — nothing ran.
+        #expect(try IdentityCutover.isPending(store))
+
+        // Release → now it runs.
+        held.release()
+        guard case .completed = try await IdentityCutover.run(store: store) else {
+            Issue.record("expected completion after lock release"); return
+        }
+    }
+
     // MARK: - Path fence
 
     @Test("cpdb.db (+ -wal/-shm) renames to cpdb-v3.db exactly once")
