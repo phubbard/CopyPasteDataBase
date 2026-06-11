@@ -44,13 +44,18 @@ public enum PushQueue {
     public struct Pending: Sendable, Equatable {
         public var entryId: Int64
         public var attemptCount: Int
+        /// The `enqueued_at` observed when this row was peeked. Passed
+        /// back to `remove` so a concurrent re-enqueue (which bumps
+        /// `enqueued_at`) survives the in-flight batch's success path —
+        /// see `remove`.
+        public var enqueuedAt: Double
     }
 
     public static func peek(limit: Int, in db: Database) throws -> [Pending] {
         let rows = try Row.fetchAll(
             db,
             sql: """
-                SELECT entry_id, attempt_count
+                SELECT entry_id, attempt_count, enqueued_at
                 FROM cloudkit_push_queue
                 ORDER BY enqueued_at ASC
                 LIMIT ?
@@ -58,11 +63,30 @@ public enum PushQueue {
             arguments: [limit]
         )
         return rows.map {
-            Pending(entryId: $0["entry_id"], attemptCount: $0["attempt_count"])
+            Pending(entryId: $0["entry_id"], attemptCount: $0["attempt_count"], enqueuedAt: $0["enqueued_at"])
         }
     }
 
-    /// Remove an entry from the queue — push succeeded.
+    /// Remove an entry from the queue after a successful push, BUT only if
+    /// it hasn't been re-enqueued since it was peeked. A push spends
+    /// seconds-to-minutes staging assets + round-tripping CloudKit; any
+    /// mutation to the entry in that window (pin, tombstone, union-bump,
+    /// reconcile) calls `enqueue`, bumping `enqueued_at`. Deleting
+    /// unconditionally would drop that re-enqueue and lose the edit. The
+    /// `enqueued_at <= peeked` guard keeps the newer enqueue so it pushes
+    /// next tick. Pass the `enqueuedAt` from the `Pending` that was
+    /// peeked; the legacy unqualified form is retained for callers that
+    /// don't have it (e.g. retireLoser dequeuing a doomed row).
+    public static func remove(entryId: Int64, peekedEnqueuedAt: Double, in db: Database) throws {
+        try db.execute(
+            sql: "DELETE FROM cloudkit_push_queue WHERE entry_id = ? AND enqueued_at <= ?",
+            arguments: [entryId, peekedEnqueuedAt]
+        )
+    }
+
+    /// Unconditional remove — for callers that genuinely want the row
+    /// gone regardless of re-enqueue (e.g. a hard-deleted entry). Push
+    /// success should use the `peekedEnqueuedAt:` overload.
     public static func remove(entryId: Int64, in db: Database) throws {
         try db.execute(
             sql: "DELETE FROM cloudkit_push_queue WHERE entry_id = ?",

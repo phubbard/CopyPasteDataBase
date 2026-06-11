@@ -44,6 +44,11 @@ public enum IdentityCutover {
     static let mergeDoneKey = "cutover_merge_done"
     static let zombieDoneKey = "cutover_zombie_done"
     static let completedAtKey = "cutover_completed_at"
+    /// High-water id for the launch reconcile sweep. Advances past every
+    /// row examined so permanently-unrehashable rows (missing blob) are
+    /// scanned ONCE, never every launch — and so a backlog of real skew
+    /// rows can never be starved behind them by the batch limit.
+    static let reconcileCursorKey = "reconcile_cursor"
     /// Read by the syncer (Step 4): push returns empty until one full
     /// successful pull has completed post-cutover.
     public static let pullBeforePushLatchKey = "pull_before_push_latch"
@@ -456,6 +461,9 @@ public enum IdentityCutover {
         limit: Int = 500
     ) throws -> Int {
         guard try !isPending(store) else { return 0 }
+        let cursor = try store.dbQueue.read { db in
+            Int64(try state(db, reconcileCursorKey) ?? "0") ?? 0
+        }
         let candidates = try store.dbQueue.read { db in
             try Int64.fetchAll(
                 db,
@@ -463,10 +471,11 @@ public enum IdentityCutover {
                     SELECT e.id FROM entries e
                     WHERE e.deleted_at IS NULL AND e.hash_version = 1
                       AND e.body_evicted_at IS NULL
+                      AND e.id > ?
                       AND EXISTS (SELECT 1 FROM entry_flavors f WHERE f.entry_id = e.id)
                     ORDER BY e.id LIMIT ?
                     """,
-                arguments: [limit]
+                arguments: [cursor, limit]
             )
         }
         var healed = 0
@@ -487,8 +496,15 @@ public enum IdentityCutover {
                 )
                 var flavors: [CanonicalHash.Flavor] = []
                 for f in flavorRows {
-                    guard let bytes = try? blobs.load(inline: f["data"], blobKey: f["blob_key"]) else { return }
-                    flavors.append(.init(uti: f["uti"], data: bytes))
+                    do {
+                        flavors.append(.init(uti: f["uti"], data: try blobs.load(inline: f["data"], blobKey: f["blob_key"])))
+                    } catch {
+                        // Missing/unreadable blob — keep v1, log (not
+                        // swallow). The cursor advances past this row so we
+                        // don't re-attempt it every launch.
+                        Log.store.error("reconcile: blob unreadable for entry \(id) — keeping v1")
+                        return
+                    }
                 }
                 guard !flavors.isEmpty else { return }
                 let (tag, hash) = ContentIdentity.compute(flavors: flavors)
@@ -533,6 +549,13 @@ public enum IdentityCutover {
                 }
                 healed += 1
             }
+        }
+        // Advance the cursor past everything examined this pass. Healable
+        // rows have left the candidate set (now v2); unrehashable ones are
+        // intentionally skipped from here on. ids are monotonic, so no
+        // future skew row can land below the cursor.
+        if let maxId = candidates.max() {
+            try store.dbQueue.write { db in try setState(db, reconcileCursorKey, String(maxId)) }
         }
         if healed > 0 {
             Log.store.info("reconcile sweep healed \(healed) skew-era v1 rows")

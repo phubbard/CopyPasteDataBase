@@ -475,6 +475,11 @@ public actor CloudKitSyncer {
             var successfulRecordIDs: Set<CKRecord.ID>
             var errorKindCounts: [String: Int]
         }
+        // enqueued_at observed at peek time, per entry — so the
+        // post-success removal can't drop a re-enqueue that landed during
+        // the (seconds-to-minutes) CloudKit round-trip.
+        let enqueuedAtByEntryId = Dictionary(pending.map { ($0.entryId, $0.enqueuedAt) },
+                                             uniquingKeysWith: { a, _ in a })
         let entryOutcome = try await store.dbQueue.write { db -> EntryWriteOutcome in
             var out = EntryWriteOutcome(
                 saved: 0, failed: 0,
@@ -484,7 +489,14 @@ public actor CloudKitSyncer {
                 switch outcome {
                 case .success:
                     if let entryId = idMap[recordID] {
-                        try PushQueue.remove(entryId: entryId, in: db)
+                        // Race-safe: keep a re-enqueue that arrived since
+                        // peek (its enqueued_at is newer). Falls back to
+                        // unconditional if we somehow lack the peek value.
+                        if let peekedAt = enqueuedAtByEntryId[entryId] {
+                            try PushQueue.remove(entryId: entryId, peekedEnqueuedAt: peekedAt, in: db)
+                        } else {
+                            try PushQueue.remove(entryId: entryId, in: db)
+                        }
                         out.successfulRecordIDs.insert(recordID)
                         out.saved += 1
                     }
