@@ -816,9 +816,26 @@ public actor CloudKitSyncer {
         // multiple fetch calls. We persist the token after every page
         // so a crash mid-pull doesn't lose progress.
         var pageIndex = 0
+        var selfHealed = false
         repeat {
             let token = try await loadChangeToken()
-            let result = try await client.fetchRecordZoneChanges(zoneID: zoneID, sinceToken: token)
+            let result: CKFetchResult
+            do {
+                result = try await client.fetchRecordZoneChanges(zoneID: zoneID, sinceToken: token)
+            } catch let ck as CKError where
+                ck.code == .changeTokenExpired || ck.code == .zoneNotFound || ck.code == .userDeletedZone {
+                // Self-heal the only manual-intervention failure classes
+                // (no token-reset UI on iOS): drop the token + zone-ensured
+                // cache and retry from scratch. Once per pull to avoid a
+                // loop. zoneNotFound also means we must re-create the zone.
+                guard !selfHealed else { throw ck }
+                selfHealed = true
+                Log.cli.error("cloudkit pull self-heal: \(ck.code.rawValue, privacy: .public) — resetting change token")
+                try await resetChangeToken()
+                zoneEnsured = false
+                try await ensureZoneIfNeeded()
+                continue
+            }
 
             let page = try await applyFetchResult(result)
             totals.inserted   += page.inserted
@@ -847,6 +864,17 @@ public actor CloudKitSyncer {
         } while totals.moreComing
 
         UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: Self.lastSyncSuccessKey)
+
+        // A full pull has completed: clear the pull-before-push latch the
+        // cutover set (§5.2), and reap any expired orphan-flavor stash
+        // entries. After this, push is unblocked — the post-cutover state
+        // is now pull-merge-PUSH, so this device won't clobber peers'
+        // cutover-window edits.
+        try await store.dbQueue.write { db in
+            try IdentityCutover.clearState(db, IdentityCutover.pullBeforePushLatchKey)
+            let ttlCutoff = Date().timeIntervalSince1970 - 7 * 86400
+            try db.execute(sql: "DELETE FROM orphan_flavors WHERE received_at < ?", arguments: [ttlCutoff])
+        }
         return totals
     }
 
@@ -950,7 +978,7 @@ public actor CloudKitSyncer {
         let (pageInserted, pageUpdated, pageTombstoned) = try await store.dbQueue.write { db -> (Int, Int, Int) in
             var ins = 0, upd = 0, tomb = 0
             for d in entriesSnapshot {
-                let outcome = try Self.upsert(decoded: d, in: db, fallbackDeviceID: fallbackID, fallbackDeviceName: fallbackName)
+                let outcome = try Self.upsert(decoded: d, in: db, fallbackDeviceID: fallbackID, fallbackDeviceName: fallbackName, blobs: blobStore)
                 switch outcome {
                 case .inserted:  ins += 1
                 case .updated:   upd += 1
@@ -1019,7 +1047,7 @@ public actor CloudKitSyncer {
         )
     }
 
-    private enum UpsertOutcome { case inserted, updated, unchanged }
+    enum UpsertOutcome { case inserted, updated, unchanged }
 
     /// Decoded-and-read-from-disk form of a pulled Flavor record.
     /// Bytes are extracted from the CKAsset's fileURL eagerly because
@@ -1059,6 +1087,22 @@ public actor CloudKitSyncer {
             """,
             arguments: [contentHash]
         ) else {
+            // Parent entry not present yet — stash instead of dropping.
+            // The flavor record arrived before its entry (cross-page
+            // ordering) or before a uuid-merge re-keys a row onto this
+            // hash. drainOrphanFlavors replays it once the entry exists;
+            // a 7-day TTL sweep reaps any that never get a parent.
+            let now = Date().timeIntervalSince1970
+            let (inline, blobKey) = try blobs.storeForInsert(data: bytes)
+            try db.execute(
+                sql: """
+                    INSERT INTO orphan_flavors (content_hash, uti, data, blob_key, received_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(content_hash, uti) DO UPDATE SET
+                        data = excluded.data, blob_key = excluded.blob_key, received_at = excluded.received_at
+                    """,
+                arguments: [contentHash, uti, inline, blobKey, now]
+            )
             return
         }
         if row["body_evicted_at"] as Double? != nil {
@@ -1088,11 +1132,12 @@ public actor CloudKitSyncer {
     ///
     /// Static so it can run inside the GRDB write closure without
     /// capturing `self`. Pulls what it needs via parameters.
-    private static func upsert(
+    static func upsert(
         decoded d: EntryRecordMapper.Decoded,
         in db: Database,
         fallbackDeviceID: String,
-        fallbackDeviceName: String
+        fallbackDeviceName: String,
+        blobs: BlobStore = BlobStore()
     ) throws -> UpsertOutcome {
         // App — upsert by bundle id. Null bundle id (unknown source) →
         // no app row.
@@ -1203,7 +1248,17 @@ public actor CloudKitSyncer {
                 linkTitle: existing.linkTitle
             )
             try applyThumbnails(d, entryId: existing.id!, in: db)
+            try drainOrphanFlavors(forHash: d.contentHash, entryId: existing.id!, blobs: blobs, in: db)
             return .updated
+        } else if let localByUuid = try Entry.filter(Column("uuid") == d.uuid).fetchOne(db) {
+            // content_hash miss + uuid match = the SAME logical entry
+            // arrived with a DIFFERENT hash than our local copy (a
+            // straggler v1→v2 upgrade, or an equal-version fork from a
+            // partial-flavor capture). Resolve deterministically by
+            // §5.3 — this MUST intercept the collision before the insert
+            // below, or the uuid unique constraint aborts the page.
+            return try resolveUuidConflict(
+                decoded: d, local: localByUuid, appId: appId, devId: devId, blobs: blobs, in: db)
         } else {
             // Cross-device dedup. Same text landing here from
             // CloudKit within a few seconds of a row we already have
@@ -1316,11 +1371,158 @@ public actor CloudKitSyncer {
                 linkTitle: entry.linkTitle
             )
             try applyThumbnails(d, entryId: entry.id!, in: db)
+            try drainOrphanFlavors(forHash: d.contentHash, entryId: entry.id!, blobs: blobs, in: db)
             Log.cli.info(
                 "pull: inserted id=\(entry.id ?? -1, privacy: .public) kind=\(d.kind.rawValue, privacy: .public) textprev=\"\(d.textPreview?.prefix(40) ?? "", privacy: .public)\""
             )
             return .inserted
         }
+    }
+
+    /// §5.3 — resolve a pull where the content_hash misses but the uuid
+    /// matches a local row (the same logical entry arrived under a
+    /// different hash). `local` is that row; the decoded record `d` is
+    /// the inbound version. Returns the outcome and mutates as needed.
+    /// `internal` so it's directly unit-testable.
+    static func resolveUuidConflict(
+        decoded d: EntryRecordMapper.Decoded,
+        local: Entry,
+        appId: Int64?,
+        devId: Int64,
+        blobs: BlobStore,
+        in db: Database
+    ) throws -> UpsertOutcome {
+        let now = Date().timeIntervalSince1970
+        let remoteWins: Bool
+        if d.hashVersion > local.hashVersion {
+            remoteWins = true                       // straggler v1→v2 upgrade
+        } else if d.hashVersion < local.hashVersion {
+            return .unchanged                       // never downgrade
+        } else {
+            // Equal version, different hash → deterministic rung priority:
+            // lower rung index = computed from more-authoritative input
+            // (missing flavors only demote identity DOWN the chain, so the
+            // higher-rung hash was computed from a superset). Tie → smaller
+            // hash bytes win. Both devices resolve identically.
+            let rr = Self.rungIndex(d.identityTag)
+            let lr = Self.rungIndex(local.identityTag)
+            if rr != lr {
+                remoteWins = rr < lr
+            } else {
+                remoteWins = d.contentHash.lexicographicallyPrecedes(local.contentHash)
+            }
+        }
+        guard remoteWins else {
+            // Local wins; the peer converges symmetrically when it pulls
+            // OUR record. (Orphan lower-rung record on the server is
+            // benign — every re-encounter resolves the same way. A
+            // cloudkit_record_deletions cleanup queue is a deferred
+            // optimization, see docs §5.3.)
+            Self.recordForkResolved()
+            return .unchanged
+        }
+
+        // Remote wins. If a DIFFERENT live local row already holds the
+        // remote hash, the uuid-row must MERGE into it (coalesce + retire)
+        // rather than re-key onto a colliding hash.
+        if let survivor = try Entry
+            .filter(Column("content_hash") == d.contentHash)
+            .order(sql: "(deleted_at IS NULL) DESC, created_at DESC")
+            .fetchOne(db),
+           survivor.id != local.id, survivor.deletedAt == nil {
+            try EntryCoalesce.merge(db: db, survivorId: survivor.id!, loserIds: [local.id!], now: now)
+            try IdentityCutover.retireLoser(db: db, loserId: local.id!, now: now)
+            try drainOrphanFlavors(forHash: d.contentHash, entryId: survivor.id!, blobs: blobs, in: db)
+            Self.recordForkResolved()
+            return .updated
+        }
+
+        // Re-key the uuid-row onto the remote identity + adopt the remote
+        // scalar fields (it is the newer record by definition of winning).
+        // prev_content_hash keeps the v1 lineage (COALESCE so a prior
+        // rehash's prev is preserved).
+        try db.execute(
+            sql: """
+                UPDATE entries SET
+                    prev_content_hash = COALESCE(prev_content_hash, content_hash),
+                    content_hash = ?, hash_version = ?, identity_tag = ?,
+                    created_at = ?, captured_at = ?, kind = ?,
+                    source_app_id = ?, source_device_id = ?,
+                    title = ?, text_preview = ?, total_size = ?, deleted_at = ?,
+                    ocr_text = ?, image_tags = ?, analyzed_at = ?,
+                    pinned = ?, body_evicted_at = ?
+                WHERE id = ?
+                """,
+            arguments: [
+                d.contentHash, d.hashVersion, d.identityTag,
+                d.createdAt, d.capturedAt, d.kind.rawValue,
+                appId, devId,
+                d.title, d.textPreview, d.totalSize, d.deletedAt,
+                d.ocrText, d.imageTags, d.analyzedAt,
+                d.pinned ? 1 : 0, d.bodyEvictedAt,
+                local.id!,
+            ]
+        )
+        if d.linkFetchedAt != nil {
+            try db.execute(
+                sql: "UPDATE entries SET link_title = ?, link_fetched_at = ? WHERE id = ?",
+                arguments: [d.linkTitle, d.linkFetchedAt, local.id!])
+        }
+        try FtsIndex.indexEntry(
+            db: db, entryId: local.id!, title: d.title, text: d.textPreview,
+            appName: d.source.appName, ocrText: d.ocrText, imageTags: d.imageTags,
+            linkTitle: d.linkFetchedAt != nil ? d.linkTitle : local.linkTitle)
+        try applyThumbnails(d, entryId: local.id!, in: db)
+        try drainOrphanFlavors(forHash: d.contentHash, entryId: local.id!, blobs: blobs, in: db)
+        // Re-enqueue: our re-keyed row now matches the remote record name,
+        // so the push is an idempotent LWW upsert that also revives the
+        // record if we were mid-flight.
+        try PushQueue.enqueue(entryId: local.id!, in: db, now: now)
+        Self.recordForkResolved()
+        return .updated
+    }
+
+    /// Rung index for an `identityTag` string. Unknown / nil (a v1 record,
+    /// or schema drift) sorts LAST so any real v2 rung outranks it.
+    static func rungIndex(_ tag: String?) -> Int {
+        guard let tag, let t = ContentIdentity.Tag(rawValue: tag) else { return Int.max }
+        return t.rungIndex
+    }
+
+    /// Flavors can arrive on a pull page BEFORE their parent entry record
+    /// (cross-page ordering) or before a uuid-merge re-keys a row onto
+    /// their hash. `upsertFlavor` stashes such orphans into
+    /// `orphan_flavors` (7-day TTL); this drains the stash for a hash once
+    /// its entry exists. Idempotent.
+    static func drainOrphanFlavors(forHash hash: Data, entryId: Int64, blobs: BlobStore, in db: Database) throws {
+        // Skip if the entry is body-evicted — same rule as upsertFlavor.
+        let evicted = try Bool.fetchOne(
+            db, sql: "SELECT body_evicted_at IS NOT NULL FROM entries WHERE id = ?", arguments: [entryId]) ?? false
+        let rows = try Row.fetchAll(
+            db, sql: "SELECT uti, data, blob_key FROM orphan_flavors WHERE content_hash = ?", arguments: [hash])
+        guard !rows.isEmpty else { return }
+        if !evicted {
+            for r in rows {
+                let bytes = try blobs.load(inline: r["data"], blobKey: r["blob_key"])
+                let (inline, blobKey) = try blobs.storeForInsert(data: bytes)
+                var flavor = Flavor(entryId: entryId, uti: r["uti"], size: Int64(bytes.count),
+                                    data: inline, blobKey: blobKey)
+                try flavor.insert(db, onConflict: .ignore)
+            }
+        }
+        try db.execute(sql: "DELETE FROM orphan_flavors WHERE content_hash = ?", arguments: [hash])
+    }
+
+    /// Observability counter for §5.3 fork resolutions.
+    private nonisolated(unsafe) static var forkLock = NSLock()
+    private nonisolated(unsafe) static var _forkResolved = 0
+    static func recordForkResolved() {
+        forkLock.lock(); defer { forkLock.unlock() }
+        _forkResolved += 1
+    }
+    public static var forksResolved: Int {
+        forkLock.lock(); defer { forkLock.unlock() }
+        return _forkResolved
     }
 
     /// Observability counter for pull-side insert constraint collisions

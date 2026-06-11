@@ -462,31 +462,41 @@ struct CloudKitSyncerTests {
         }
     }
 
-    @Test("pull flavor for an entry we don't have locally is silently dropped")
-    func pullFlavorWithoutParentIsDropped() async throws {
+    @Test("pull flavor without a parent is STASHED, then replayed when the entry arrives")
+    func pullFlavorWithoutParentIsStashedAndReplayed() async throws {
         let (store, _) = try seed(entryCount: 0)
-        let client = FakeCloudKitClient()
-
         let orphanHash = Data(repeating: 0x99, count: 32)
+        let orphanBytes = Data("orphan flavor".utf8)
+
+        // Page 1: only the flavor record arrives (cross-page ordering).
+        let client1 = FakeCloudKitClient()
         let (flavorRecord, tmpURL) = try makeFlavorRecord(
-            contentHash: orphanHash,
-            uti: "public.plain-text",
-            bytes: Data("orphan".utf8)
-        )
+            contentHash: orphanHash, uti: "public.utf8-plain-text", bytes: orphanBytes)
         defer { try? FileManager.default.removeItem(at: tmpURL) }
-
-        await client.seedPull(changed: [flavorRecord])
-
-        let syncer = makeSyncer(store: store, client: client)
-        let report = try await syncer.pullRemoteChanges()
-        // No entry inserted; flavor silently dropped. Not counted as
-        // skipped because decode succeeded — we just had nowhere to
-        // put it.
-        #expect(report.inserted == 0)
+        await client1.seedPull(changed: [flavorRecord])
+        _ = try await makeSyncer(store: store, client: client1).pullRemoteChanges()
 
         try await store.dbQueue.read { db in
-            let count = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM entry_flavors") ?? 0
-            #expect(count == 0)
+            // Not in entry_flavors yet (no parent), but stashed.
+            let ef = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM entry_flavors") ?? -1
+            let of = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM orphan_flavors WHERE content_hash = ?", arguments: [orphanHash]) ?? -1
+            #expect(ef == 0)
+            #expect(of == 1)
+        }
+
+        // Page 2 (a later pull): the parent entry arrives → the stash drains.
+        let client2 = FakeCloudKitClient()
+        await client2.seedPull(changed: [makeRecord(contentHash: orphanHash, title: "late parent")])
+        _ = try await makeSyncer(store: store, client: client2).pullRemoteChanges()
+
+        try await store.dbQueue.read { db in
+            let entry = try Entry.filter(Column("content_hash") == orphanHash).fetchOne(db)
+            #expect(entry != nil)
+            let flavor = try Flavor.filter(Column("entry_id") == entry!.id!).fetchOne(db)
+            #expect(flavor?.data == orphanBytes)
+            // Stash drained.
+            let remaining = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM orphan_flavors") ?? -1
+            #expect(remaining == 0)
         }
     }
 
