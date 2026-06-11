@@ -18,6 +18,12 @@ public final class Store {
     /// fresh at the new path.
     public static func open() throws -> Store {
         Paths.migrateFromLegacySupportDirectoryIfNeeded()
+        // Canonical-hash v2 skew fence: cpdb.db → cpdb-v3.db before any
+        // connection opens, so pre-v10 binaries can never touch a
+        // migrated database. Throws (rather than opening an empty DB at
+        // the new path and stranding history) if the rename half-fails.
+        // See Paths.databaseURL / migrateToV3DatabaseFilenameIfNeeded.
+        try Paths.migrateToV3DatabaseFilenameIfNeeded()
         try Paths.ensureDirectoriesExist()
         return try Store(path: Paths.databaseURL.path)
     }

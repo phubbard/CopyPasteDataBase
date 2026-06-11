@@ -200,6 +200,25 @@ public actor CloudKitSyncer {
         if Self.isPaused {
             return PushReport(attempted: 0, saved: 0, failed: 0, remaining: try await remainingCount())
         }
+        // Identity cutover in progress: sync is fully disabled until the
+        // local rehash + reseed completes (docs/canonical-hash-v2.md §4.1)
+        // — pushing mid-rehash would upload records under hashes the
+        // migration is about to change. The pull-before-push latch keeps
+        // push silent even AFTER the cutover finishes, until one full
+        // post-cutover pull has merged remote state (§5.2) — without it,
+        // the last device to cut over would clobber every cutover-window
+        // edit fleet-wide and resurrect server tombstones. (The latch is
+        // SET by the cutover; the code that CLEARS it after a successful
+        // pull lands in Step 4 with the cpdb-v3 zone switch. Gating on it
+        // now makes a pre-Step-4 build fail safe — push stays silent
+        // rather than pushing v2 records into the still-cpdb-v2 zone.)
+        let blockedByCutover = try await store.dbQueue.read { db in
+            try IdentityCutover.isPending(db)
+                || IdentityCutover.state(db, IdentityCutover.pullBeforePushLatchKey) != nil
+        }
+        if blockedByCutover {
+            return PushReport(attempted: 0, saved: 0, failed: 0, remaining: 0)
+        }
         if pushing {
             return PushReport(attempted: 0, saved: 0, failed: 0, remaining: try await remainingCount())
         }
@@ -781,6 +800,12 @@ public actor CloudKitSyncer {
         progress: (@Sendable (PullReport) -> Void)? = nil
     ) async throws -> PullReport {
         if Self.isPaused {
+            return PullReport(inserted: 0, updated: 0, tombstoned: 0, skipped: 0, moreComing: false)
+        }
+        // Identity cutover in progress — see pushPendingChanges. Pulls
+        // are equally unsafe: the pull upsert keys by content_hash, which
+        // the migration is mid-way through rewriting.
+        if try await store.dbQueue.read({ try IdentityCutover.isPending($0) }) {
             return PullReport(inserted: 0, updated: 0, tombstoned: 0, skipped: 0, moreComing: false)
         }
         try await ensureZoneIfNeeded()

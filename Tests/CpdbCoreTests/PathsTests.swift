@@ -15,7 +15,11 @@ struct PathsTests {
 
     @Test("databaseURL lives under supportDirectory")
     func databaseLocation() {
-        #expect(Paths.databaseURL.lastPathComponent == "cpdb.db")
+        // "-v3" is the canonical-hash-v2 binary-skew fence: pre-v10
+        // binaries look for cpdb.db and find nothing. The rename is
+        // performed once by Paths.migrateToV3DatabaseFilenameIfNeeded().
+        #expect(Paths.databaseURL.lastPathComponent == "cpdb-v3.db")
+        #expect(Paths.preV3DatabaseURL.lastPathComponent == "cpdb.db")
         #expect(Paths.databaseURL.deletingLastPathComponent() == Paths.supportDirectory)
     }
 }

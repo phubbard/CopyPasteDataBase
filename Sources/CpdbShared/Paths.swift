@@ -56,9 +56,69 @@ public enum Paths {
         #endif
     }
 
-    /// `~/Library/Application Support/net.phfactor.cpdb/cpdb.db`
+    /// `~/Library/Application Support/net.phfactor.cpdb/cpdb-v3.db`
+    ///
+    /// The `-v3` filename is the canonical-hash-v2 binary-skew fence
+    /// (docs/canonical-hash-v2.md §4.2): GRDB silently ignores unknown
+    /// migrations, so a pre-v10 binary (stale CLI, mid-choreography Mac)
+    /// would open a migrated `cpdb.db` without error, insert v1-hash rows,
+    /// and poison the cutover. Renaming the file is the only fence that
+    /// stops binaries that can't be retrofitted: old builds see no
+    /// database at their path (a stale CLI creates a fresh empty
+    /// `cpdb.db` — stranded but harmless). `migrateToV3DatabaseFilename-
+    /// IfNeeded()` performs the one-time rename before `Store.open()`.
     public static var databaseURL: URL {
+        supportDirectory.appendingPathComponent("cpdb-v3.db", isDirectory: false)
+    }
+
+    /// Pre-cutover filename (cpdb ≤ 2.10.x). Source of the one-time rename.
+    public static var preV3DatabaseURL: URL {
         supportDirectory.appendingPathComponent("cpdb.db", isDirectory: false)
+    }
+
+    /// One-time rename `cpdb.db` → `cpdb-v3.db`, carrying the `-wal`/`-shm`
+    /// sidecars (the WAL holds committed-but-uncheckpointed pages — the
+    /// newest captures — so dropping it silently loses data).
+    ///
+    /// Crash-safe by ORDER: the `-shm`/`-wal` sidecars move FIRST, the main
+    /// file LAST, and the idempotency guard keys on the main file. So at
+    /// every interruptible instant the state is recoverable — if the
+    /// process dies after a sidecar move but before the main move, the
+    /// next launch sees `cpdb-v3.db` still absent, re-enters, finds the
+    /// sidecars already in place (skipped), and moves the main file,
+    /// reuniting it with its WAL. Moving the main file first (the previous
+    /// order) would orphan the WAL under the old name with no path back.
+    ///
+    /// THROWS on a real filesystem error (vs. a clean crash): the caller
+    /// (`Store.open`) must propagate rather than fall through and create a
+    /// fresh empty database at the new path, which would strand the user's
+    /// entire history behind an empty DB.
+    ///
+    /// Idempotent: v3 present → no-op (a leftover `cpdb.db` is a
+    /// stale-binary artifact, left alone); neither present → fresh install.
+    ///
+    /// Returns true iff a rename was performed.
+    @discardableResult
+    public static func migrateToV3DatabaseFilenameIfNeeded() throws -> Bool {
+        let fm = FileManager.default
+        let old = preV3DatabaseURL
+        let new = databaseURL
+        guard !fm.fileExists(atPath: new.path), fm.fileExists(atPath: old.path) else {
+            return false
+        }
+        // Sidecars first (so a crash mid-sequence self-heals on the next
+        // launch, which re-runs this with the main file still at `old`).
+        for suffix in ["-shm", "-wal"] {
+            let oldSide = URL(fileURLWithPath: old.path + suffix)
+            let newSide = URL(fileURLWithPath: new.path + suffix)
+            if fm.fileExists(atPath: oldSide.path) && !fm.fileExists(atPath: newSide.path) {
+                try fm.moveItem(at: oldSide, to: newSide)
+            }
+        }
+        // Main file last — this is the commit point of the rename.
+        try fm.moveItem(at: old, to: new)
+        Log.store.info("renamed database to \(new.lastPathComponent, privacy: .public) (canonical-hash v2 skew fence)")
+        return true
     }
 
     /// `~/Library/Application Support/net.phfactor.cpdb/blobs/`

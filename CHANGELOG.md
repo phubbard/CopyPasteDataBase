@@ -18,7 +18,7 @@ human-readable — what's in `[Unreleased]` is what ships.
 > deduplicating. Assemble and ship R1 (v2.11.0) only when §9 Steps 2–6
 > of docs/canonical-hash-v2.md are all complete.
 
-- **Canonical-hash v2 — semantic content identity (Steps 0–2).**
+- **Canonical-hash v2 — semantic content identity (Steps 0–3).**
   Entry identity is now the SHA-256 of the *primary* content only
   (image bytes > file-url > url > normalized text > color > full-set
   fallback) instead of the full flavor set, so volatile sidecar

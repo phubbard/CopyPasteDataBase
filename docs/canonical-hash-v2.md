@@ -405,12 +405,31 @@ Move transient/concealed markers to CpdbShared + Ingestor enforcement; store `is
 > - **PasteDbImporter intentionally still computes v1 hashes** (rows stamp `hash_version=1` via the column default) — its `ContentIdentity` switch + dual-era probe is Step 5 as planned.
 > - ⚠️ **Do not install/deploy a build between this step and R1 completion**: a v2-hashing Ingestor against a v1 corpus would fork identities for every re-copy (no hash hits against existing rows) until the Step-3 migration rehashes the corpus.
 
-**Step 3 — migration + cutover routine.**
+**Step 3 — migration + cutover routine. ✅ DONE 2026-06-10.**
 `v10_semantic_identity` schema migration; `cpdb-v3.db` path rename fence; cutover routine (drain → VACUUM INTO → chunked rehash with rung-input guard → collision merge with coalesce helper + FTS reindex → zombie sweep → reseed + latch); launch reconcile sweep; `cpdb storage --verify-hashes`.
-*Tests (against fixture DBs incl. a copy of the audit snapshot): idempotent resume after kill at every step boundary; kept-v1 taxonomy assertion (=7 on audit data); cluster count matches step-0 expectation; merged pins/pinboards/previews/FTS; losers keep v1 hash; reseed includes evicted + recent tombstones, excludes stragglers/losers; restore-from-snapshot re-runs cleanly.*
+
+> **Result.** `IdentityCutover` (runner + `reconcileSweep` + `verifyHashes`), `EntryCoalesce` (shared merge), the throwing `cpdb-v3.db` rename fence, the syncer cutover/latch gates, and `cpdb storage --verify-hashes` all landed. **162 tests + a real-data integration test** (`IdentityCutoverAuditTests`, gated on a `/tmp/cpdb-audit.db` copy) that runs the full cutover on the production snapshot: 479 clusters / 543 losers / **0 hash mismatches / 0 live duplicate hashes** / caddy pair 9807-9808 collapsed (counts drift slightly above the Step-0 frozen 475 as the live DB grows — invariants asserted, not exact counts).
+>
+> **Adversarial review** (4-lens workflow, 29 raw findings). Fixed in this step:
+> - **Born-v2 loser kept the survivor's live v2 hash** (BLOCKING data-loss via `reconcileSweep` pushing a tombstone for the survivor's record). `retireLoser` now hard-deletes born-v2 losers (`hash_version=2 ∧ prev IS NULL` — never pushed under the cutover gate, byte-identical to the survivor) and tombstones rehashed/skew-v1 losers with an inert v1 hash. Two tests.
+> - **`EntryCoalesce` injected flavors into a body-evicted survivor** — now guarded (mirrors the Ingestor union-bump), metadata salvage still runs. Test.
+> - **Interrupted `VACUUM INTO` blessed a partial snapshot** — step 1 now trusts the completion marker, deleting + re-vacuuming when unset (safe: rehash hasn't started). Test.
+> - **Rename fence orphaned the WAL** (main moved before `-wal`) and swallowed failures (→ `Store.open` created an empty DB stranding history) — now moves sidecars first / main last (crash self-heals) and throws so `Store.open` fails loudly. Test (asserts `-wal` moved).
+> - **Step 0 re-ran the drain on every resume** — added a `cutover_drain_done` marker.
+> - **Latch was write-only** — `pushPendingChanges` now also returns empty while `pull_before_push_latch` is set, so a pre-Step-4 build fails safe (push silent until Step 4 clears it after a full pull).
+>
+> **Deferred to Step 4** (recorded so they aren't lost — verified real but out of this step's scope):
+> - **Step-0 drain hook is structurally a no-op** while the cutover push gate is live: the app's drain must be a dedicated `drainLegacyQueue()` that BYPASSES the `isPending` gate and targets the retained `cpdb-v2` zone. Until Step 4 wires it, `drainPushQueue` is nil and a non-empty queue simply blocks (conservative, correct).
+> - **No production call site yet**: `IdentityCutover.run`/`reconcileSweep` are invoked only by tests. Step 4 (with the zone switch) wires them into `DaemonLifecycle`/`AppDelegate` — off-main, foreground-only, with the latch-clearing pull. Wiring them before the zone switch would re-enable sync against `cpdb-v2` with v2 hashes (the fork the "do not deploy" rule prevents), so this is correctly Step 4.
+> - **`PushQueue.remove` races re-enqueue** (deletes by `entry_id` with no `enqueued_at` guard): a mutation during an in-flight batch loses its re-enqueue on batch success. Pre-existing syncer bug, amplified by the 9.3k-row reseed drain. Fix in Step 4 (peek returns `enqueued_at`, remove qualifies by it).
+> - **No cross-process exclusion** around `run()` (daemon + CLI both `Store.open`). Moot until wired; add an flock sentinel (DaemonLock pattern) in Step 4.
+> - **`reconcileSweep` re-selects permanent missing-blob rows every launch** (silent `try?`, 500-row limit can starve real skew rows). Persist a kept-v1 watermark / log blob-load failures in Step 4.
+> - Minor/observability: persist Report counters across resume; §4.3 step-2.3 migration assertion + §4.5 expectation logging; loser-flavor blobs need `cpdb gc` orphan cleanup (existing gap); mid-cutover deletion of an un-rehashable v1 row gets no wire presence. Tracked for Step 4/5.
+
+*Tests: idempotent resume (mid-step-2 kill); kept-v1 taxonomy (evicted/zero-flavor/missing-blob); merged pins/pinboards/previews/FTS; born-v2 hard-delete (merge + reconcile); body-evicted coalesce guard; partial-snapshot replacement; recent-vs-90-day tombstone reseed; rename fence + WAL; real-snapshot integration with 0 mismatches.*
 
 **Step 4 — sync changes.**
-Zone `cpdb-v3` + subscription + namespaced token key; `hashVersion`/`identityTag` per-row in `EntryRecordMapper`; pull-insert stamping; live-preferred lookups; full uuid-conflict resolution + shared coalesce helper; orphan-flavor stash; insert constraint catch; self-healing token errors; pull-before-push latch; ±2s rescue `hashVersion < 2` gate; `cloudkit_record_deletions` queue.
+Zone `cpdb-v3` + subscription + namespaced token key; `hashVersion`/`identityTag` per-row in `EntryRecordMapper`; pull-insert stamping; live-preferred lookups; full uuid-conflict resolution + shared coalesce helper; orphan-flavor stash; insert constraint catch; self-healing token errors; pull-before-push latch (SET in Step 3 / gate added in Step 3; Step 4 adds the **clear-after-first-full-pull**); ±2s rescue `hashVersion < 2` gate; `cloudkit_record_deletions` queue. **Plus the Step-3 deferred items above**: gate-bypassing `drainLegacyQueue()`, production launch wiring of `run()`/`reconcileSweep` (off-main, foreground-only), `PushQueue.remove` enqueued_at fix, cross-process cutover lock, reconcileSweep missing-blob watermark.
 *Tests: the §5.3 list, verbatim — every branch, both devices' perspectives.*
 
 **Step 5 — importer + CLI.**
