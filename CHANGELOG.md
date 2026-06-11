@@ -8,17 +8,30 @@ moves it into a new dated `[X.Y.Z]` heading at tag time and resets the
 working area to empty. Edit it freely if a commit message wasn't quite
 human-readable — what's in `[Unreleased]` is what ships.
 
-## [2.11.0] — canonical-hash v2 / R1
+## [3.0.0] — semantic content identity (canonical-hash v2)
 
-> ⚠️ **Multi-device rollout in progress.** The PRIMARY Mac has migrated
-> to the new `cpdb-v3` CloudKit zone (semantic content identity). Other
-> devices (axiom / thor / iPhone) are still on 2.10.x / `cpdb-v2` and
-> are SAFELY PARTITIONED — they keep working against the old zone until
-> each is upgraded + migrated via the §5.4 choreography (quiesce → drain
-> → migrate → pull → push). Do NOT deploy R1 to a secondary device
-> without first draining its push queue (the gate-bypassing
-> `drainLegacyQueue` for non-empty queues is still a follow-up; a
-> non-empty queue blocks the cutover safely until drained).
+Major version bump: a wire-format break (new CloudKit zone `cpdb-v3`,
+new entry identity). On first launch each device runs a one-time,
+resumable, backed-up migration of its existing library, then re-seeds
+the new zone. Un-upgraded devices stay safely partitioned on the old
+`cpdb-v2` zone until they update.
+
+- **The migration is robust on any device.** First launch renames the
+  database to `cpdb-v3.db` (skew fence), runs the cutover off the main
+  actor (rehash → collision merge → reseed), and writes a pre-rehash
+  snapshot you can revert from. A non-empty push queue at upgrade no
+  longer blocks the cutover — those unpushed changes are subsumed by the
+  reseed (every live row + recent tombstone is re-pushed to cpdb-v3), so
+  there's no deadlock and no manual drain step. A cross-process lock
+  keeps the app's launch run and a `cpdb migrate-identity` CLI run
+  mutually exclusive.
+- **Faster, more resilient sync drain.** The periodic sync loop used to
+  back off the full safety-net interval (5–15 min) on any push failure —
+  so a transient CloudKit 429 (rate limit), common during a bulk push
+  like the migration reseed, stalled the device for minutes. It now
+  drains continuously while work remains, with only a short backoff
+  (~8 s, respecting the server's retry-after) on throttling. A one-time
+  reseed of thousands of records now settles in minutes, not hours.
 
 - **Canonical-hash v2 — semantic content identity (Steps 0–4 / R1).**
   Entry identity is now the SHA-256 of the *primary* content only

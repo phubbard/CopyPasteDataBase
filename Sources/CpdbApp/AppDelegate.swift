@@ -322,7 +322,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             while !Task.isCancelled {
                 tick &+= 1
                 Log.cli.info("periodic tick \(tick, privacy: .public) start")
-                var shouldPause = true
+                // Backoff for the END of this tick. Default: idle the full
+                // safety-net interval (nothing to do). Overridden below to
+                // drain promptly while there's push work.
+                var backoffSeconds = CloudKitSyncer.safetyNetIntervalSeconds
                 do {
                     Log.cli.info("periodic tick \(tick, privacy: .public): pull begin")
                     let pull = try await syncer.pullRemoteChanges()
@@ -344,11 +347,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             "cloudkit push: attempted=\(push.attempted) saved=\(push.saved) failed=\(push.failed) remaining=\(push.remaining)"
                         )
                     }
-                    if push.failed == 0 && push.remaining > 0 {
-                        shouldPause = false
+                    // Keep draining while work remains. A batch failure is
+                    // almost always a transient CloudKit 429 (rate limit) —
+                    // common during a bulk push like the canonical-hash v2
+                    // reseed (thousands of records). Backing off the FULL
+                    // safety-net interval (5–15 min) on every 429 would
+                    // stretch a one-time reseed into hours. Instead: loop
+                    // immediately when clean, back off briefly (respecting
+                    // the server's CKRetryAfter, ~1s, with headroom) when
+                    // throttled — never the full idle interval while there's
+                    // work to push.
+                    if push.remaining > 0 {
+                        backoffSeconds = push.failed > 0 ? 8 : 0
                     }
                 } catch {
                     Log.cli.error("cloudkit push failed: \(String(describing: error), privacy: .public)")
+                    // A thrown (whole-batch) failure is also typically a
+                    // transient 429 — short backoff, don't idle the full
+                    // interval if there might be work left.
+                    backoffSeconds = min(backoffSeconds, 8)
                 }
                 // Time-window eviction tick. The check is cheap (a
                 // single UserDefaults read + a date compare) so we
@@ -375,13 +392,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // detached batches from piling up.
                 Log.cli.info("periodic tick \(tick, privacy: .public): spawning detached backfill")
                 Task.detached { await Self.runLinkTitleBackfillIfDue(store: store) }
-                Log.cli.info("periodic tick \(tick, privacy: .public): tick complete (shouldPause=\(shouldPause, privacy: .public))")
-                if shouldPause {
-                    // Honour the user's safety-net interval pref on
-                    // every cycle, so changes in Preferences take
-                    // effect within one idle period without restart.
-                    let seconds = CloudKitSyncer.safetyNetIntervalSeconds
-                    try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                Log.cli.info("periodic tick \(tick, privacy: .public): tick complete (backoff=\(backoffSeconds, privacy: .public)s)")
+                if backoffSeconds > 0 {
+                    try? await Task.sleep(nanoseconds: UInt64(backoffSeconds * 1_000_000_000))
                 }
                 _ = self
             }

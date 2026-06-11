@@ -138,23 +138,27 @@ public enum IdentityCutover {
         }
         defer { lock?.release() }
 
-        // Step 0 — enforced quiesce. Runs ONCE: a completion marker stops
-        // a resume from re-checking the queue, which by then may hold
-        // mid-cutover v2 captures that step 5 wipes-and-reseeds anyway.
-        // Re-running it would also dead-end against the cutover-gated push
-        // (the drain hook must bypass that gate — Step 4 wiring; until
-        // then `drainPushQueue` is nil and a non-empty queue simply
-        // blocks, which is the correct conservative behavior).
+        // Step 0 — handle the pre-cutover push queue. Runs ONCE (a
+        // completion marker skips it on resume). The stale queue targets
+        // the OLD cpdb-v2 zone with v1-hash record names; we do NOT push
+        // it there and we do NOT block on it. Step 5 wipes the queue and
+        // reseeds EVERY live row + recent tombstone to cpdb-v3, so the
+        // unpushed changes are subsumed: a capture is a live row, a pin is
+        // row state, a recent deletion is a reseeded v2 tombstone. The
+        // only thing forgone is propagating them to a device that STAYS on
+        // cpdb-v2 — moot for a full-fleet migration, and the accepted
+        // "minutes-to-hours exposure" otherwise. An optional
+        // `drainPushQueue` hook can still flush to cpdb-v2 for a deliberate
+        // mixed-zone deployment; absent (the default), we just proceed.
+        // (This replaces the old block-on-non-empty-queue behavior, which
+        // could DEADLOCK a device whose queue never drained — sync is
+        // gated during the cutover, so the queue couldn't drain through
+        // the normal push path.)
         if try await store.dbQueue.read({ try state($0, drainDoneKey) == nil }) {
-            var queued = try await store.dbQueue.read { db in try PushQueue.count(in: db) }
+            let queued = try await store.dbQueue.read { db in try PushQueue.count(in: db) }
             if queued > 0 {
-                progress?("draining \(queued) pending old-zone pushes")
+                progress?("\(queued) stale cpdb-v2 queue rows — subsumed by the reseed, proceeding")
                 try await drainPushQueue?()
-                queued = try await store.dbQueue.read { db in try PushQueue.count(in: db) }
-                if queued > 0 {
-                    progress?("still \(queued) pending — cutover blocked until the drain succeeds")
-                    return .blockedOnPushQueue(pending: queued)
-                }
             }
             try await store.dbQueue.write { db in try setState(db, drainDoneKey, "1") }
         }

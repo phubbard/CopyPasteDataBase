@@ -12,6 +12,12 @@ import GRDB
 /// (full-flavor-set) hashes and `hash_version = 1`, then the
 /// `cutover_pending` marker is set manually (fresh test stores skip it
 /// because v10 only marks non-empty databases).
+/// Tiny Sendable flag for asserting an async closure fired.
+actor LockedFlag {
+    private(set) var value = false
+    func set() { value = true }
+}
+
 @Suite("Identity cutover (hash-v2 §4)")
 struct IdentityCutoverTests {
 
@@ -323,29 +329,44 @@ struct IdentityCutoverTests {
         #expect(doubleRehashed == 0)
     }
 
-    @Test("Non-empty push queue blocks; drain hook unblocks")
-    func blockedOnQueue() async throws {
+    @Test("Non-empty push queue does NOT block — it's subsumed by the reseed")
+    func nonEmptyQueueProceeds() async throws {
         let store = try makeStore()
         let id = try insertV1(store, flavors: [("public.utf8-plain-text", Data("queued".utf8))],
                               capturedAt: 100, uuidByte: 1)
+        // A stale cpdb-v2 queue row (an unpushed local change at upgrade).
         try await store.dbQueue.write { db in
-            try PushQueue.enqueue(entryId: id, in: db)
+            try PushQueue.enqueue(entryId: id, in: db, now: 50)
         }
         try markPending(store)
 
-        let blocked = try await IdentityCutover.run(store: store)
-        #expect(blocked == .blockedOnPushQueue(pending: 1))
-        // Still pending — nothing was mutated.
-        #expect(try IdentityCutover.isPending(store))
-
-        let drained = try await IdentityCutover.run(store: store, drainPushQueue: {
-            try await store.dbQueue.write { db in
-                try db.execute(sql: "DELETE FROM cloudkit_push_queue")
-            }
-        })
-        guard case .completed = drained else {
-            Issue.record("expected completion after drain"); return
+        // The cutover proceeds (no deadlock) and completes — the old queue
+        // is wiped + the live row reseeded to cpdb-v3.
+        guard case .completed(let report) = try await IdentityCutover.run(store: store) else {
+            Issue.record("expected completion, not a block"); return
         }
+        #expect(report.reseeded == 1)
+        #expect(!(try IdentityCutover.isPending(store)))
+        // The queue now holds the reseed (the live v2 row), not the stale
+        // pre-cutover row — verified by its fresh enqueued_at.
+        let queued = try await store.dbQueue.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM cloudkit_push_queue WHERE entry_id = ? AND enqueued_at > 50", arguments: [id]) ?? -1
+        }
+        #expect(queued == 1)
+    }
+
+    @Test("Optional drain hook still fires for a mixed-zone deployment")
+    func drainHookFires() async throws {
+        let store = try makeStore()
+        _ = try insertV1(store, flavors: [("public.utf8-plain-text", Data("x".utf8))],
+                         capturedAt: 100, uuidByte: 1)
+        try await store.dbQueue.write { db in try PushQueue.enqueue(entryId: 1, in: db) }
+        try markPending(store)
+        let drained = LockedFlag()
+        guard case .completed = try await IdentityCutover.run(store: store, drainPushQueue: {
+            await drained.set()
+        }) else { Issue.record("expected completion"); return }
+        #expect(await drained.value)
     }
 
     // MARK: - Reconcile sweep (§4.2 layer 2)
