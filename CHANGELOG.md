@@ -8,6 +8,24 @@ moves it into a new dated `[X.Y.Z]` heading at tag time and resets the
 working area to empty. Edit it freely if a commit message wasn't quite
 human-readable — what's in `[Unreleased]` is what ships.
 
+## [3.1.0] — reversible delete + pin (undo)
+
+- **Undo for delete and pin.** Deleting or pinning an entry is now
+  reversible. On the Mac, `⌘Z` undoes and `⌘⇧Z` redoes from the popup,
+  with a brief "Deleted · ⌘Z to undo" hint; every delete path (⌫, the
+  context menu, the keyboard) and pin/unpin route through it. On iOS, a
+  Mail-style undo snackbar floats up after a swipe-delete/pin, and
+  shake-to-undo works too. It's a multi-level undo/redo stack
+  (`UndoCoordinator`), session-scoped per device.
+- **Cross-device-correct.** A new `modified_at` column (schema v11, a
+  trivial additive migration) timestamps every user mutation, and the
+  CloudKit pull now resolves deletes/pins by last-writer-wins —
+  replacing the old "tombstone always wins" rule. So an undone delete
+  *propagates* to your other devices instead of staying deleted there,
+  and two devices pinning/unpinning the same entry concurrently
+  converge deterministically. (Older builds ignore the new field and
+  keep working; same-zone mixed-version sync is fine.)
+
 ## [3.0.0] — semantic content identity (canonical-hash v2)
 
 Major version bump: a wire-format break (new CloudKit zone `cpdb-v3`,
