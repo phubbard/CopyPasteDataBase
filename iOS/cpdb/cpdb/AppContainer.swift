@@ -28,6 +28,11 @@ final class AppContainer {
     static weak var shared: AppContainer?
 
     private(set) var store: Store?
+
+    /// Undo/redo for delete + pin (shared logic in CpdbShared). Created
+    /// once the store opens; SearchView drives it and shows the undo
+    /// snackbar. nil until `bootstrap` runs.
+    private(set) var undo: UndoCoordinator?
     private var syncer: CloudKitSyncer?
 
     /// iOS clipboard capture controller. Built during `bootstrap()` once
@@ -104,6 +109,7 @@ final class AppContainer {
         do {
             let store = try Store.open()
             self.store = store
+            self.undo = UndoCoordinator(repo: EntryRepository(store: store))
             print("[cpdb] bootstrap: store open at \(Paths.databaseURL.path)")
             let deviceID = await Self.iosDeviceIdentifier()
             let deviceName = await Self.iosDeviceName()

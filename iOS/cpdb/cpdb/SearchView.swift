@@ -59,6 +59,12 @@ struct SearchView: View {
     /// per device — see `SettingsSheet` / `IOSClipboardCapture`.
     @State private var showSettings: Bool = false
 
+    /// Undo snackbar after a delete/pin. Auto-dismisses; the token
+    /// guards against a stale dismissal cancelling a newer toast.
+    @State private var undoToast: UndoToastState? = nil
+    @State private var undoToastToken: Int = 0
+    struct UndoToastState: Equatable { let message: String; let token: Int }
+
     var body: some View {
         NavigationStack {
             // No more VStack-wrapped progress banner — it used to sit
@@ -183,6 +189,21 @@ struct SearchView: View {
             .onAppear {
                 Task { await runQuery() }
             }
+            // Shake-to-undo (the iOS system gesture). Works when the
+            // search field isn't first responder; the snackbar is the
+            // always-available path. Wired to the same coordinator.
+            .background(ShakeDetector { Task { await performUndo() } })
+            // Undo snackbar — the Mail-style toast with an Undo button.
+            .overlay(alignment: .bottom) {
+                if let toast = undoToast {
+                    UndoSnackbar(message: toast.message) {
+                        Task { await performUndo() }
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 10)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+            }
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     HStack(spacing: 10) {
@@ -302,28 +323,52 @@ struct SearchView: View {
     /// run the DB write off-main, refresh, kick a push so the
     /// other devices learn about it within seconds.
     private func togglePin(id: Int64, currentlyPinned: Bool) async {
-        guard let store = container.store else { return }
+        guard let undo = container.undo else { return }
         do {
-            let repo = EntryRepository(store: store)
-            try await Task.detached {
-                try repo.setPinned(id: id, pinned: !currentlyPinned)
-            }.value
+            // Through the UndoCoordinator so it's reversible. The
+            // single-row write runs on the main actor (sub-ms).
+            let desc = try await MainActor.run { try undo.setPinned(id: id, pinned: !currentlyPinned) }
             await runQuery()
             await container.pushNow()
+            if let desc { await MainActor.run { showUndoToast(desc) } }
         } catch {
             print("[cpdb] pin toggle failed for id=\(id): \(error)")
         }
     }
 
     private func deleteEntry(id: Int64) async {
-        guard let store = container.store else { return }
+        guard let undo = container.undo else { return }
         do {
-            let repo = EntryRepository(store: store)
-            try await Task.detached { try repo.tombstone(id: id) }.value
+            let desc = try await MainActor.run { try undo.delete(id: id) }
             await runQuery()
             await container.pushNow()
+            await MainActor.run { showUndoToast(desc) }
         } catch {
             print("[cpdb] delete failed for id=\(id): \(error)")
+        }
+    }
+
+    /// Apply the most recent undo (from the snackbar's Undo button or a
+    /// shake) and propagate.
+    private func performUndo() async {
+        guard let undo = container.undo, undo.canUndo else { return }
+        do {
+            _ = try await MainActor.run { try undo.undo() }
+            await runQuery()
+            await container.pushNow()
+            await MainActor.run { undoToast = nil }
+        } catch {
+            print("[cpdb] undo failed: \(error)")
+        }
+    }
+
+    private func showUndoToast(_ desc: UndoCoordinator.ActionDescription) {
+        undoToastToken += 1
+        let token = undoToastToken
+        withAnimation { undoToast = UndoToastState(message: desc.pastTense, token: token) }
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 4_000_000_000)
+            if undoToast?.token == token { withAnimation { undoToast = nil } }
         }
     }
 
@@ -657,6 +702,65 @@ struct SettingsSheet: View {
                     Button("Done") { dismiss() }
                 }
             }
+        }
+    }
+}
+
+/// Mail-style undo snackbar: a floating capsule with a message and an
+/// Undo button. Auto-dismissal is owned by the caller (SearchView).
+struct UndoSnackbar: View {
+    let message: String
+    let onUndo: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "arrow.uturn.backward")
+                .font(.system(size: 13, weight: .semibold))
+            Text(message)
+                .font(.subheadline)
+            Spacer(minLength: 8)
+            Button("Undo", action: onUndo)
+                .font(.subheadline.weight(.semibold))
+                .buttonStyle(.borderless)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .background(.ultraThinMaterial, in: Capsule())
+        .overlay(Capsule().strokeBorder(.quaternary))
+        .shadow(color: .black.opacity(0.15), radius: 8, y: 3)
+        .frame(maxWidth: 480)
+    }
+}
+
+/// Detects the iOS shake gesture and reports it. Implemented as a
+/// first-responder `UIView` overriding `motionEnded`. It yields first
+/// responder to the search field when the user taps it (so typing's own
+/// shake-to-undo still works); the snackbar is the always-available
+/// affordance when the detector isn't focused.
+struct ShakeDetector: UIViewRepresentable {
+    let onShake: () -> Void
+
+    func makeUIView(context: Context) -> ShakeView {
+        let v = ShakeView()
+        v.onShake = onShake
+        return v
+    }
+    func updateUIView(_ uiView: ShakeView, context: Context) {
+        uiView.onShake = onShake
+    }
+
+    final class ShakeView: UIView {
+        var onShake: (() -> Void)?
+        override var canBecomeFirstResponder: Bool { true }
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            // Grab first responder when nothing else (e.g. the search
+            // field) currently holds it, so shakes route here.
+            if window != nil { becomeFirstResponder() }
+        }
+        override func motionEnded(_ motion: UIEvent.EventSubtype, with event: UIEvent?) {
+            if motion == .motionShake { onShake?() }
+            super.motionEnded(motion, with: event)
         }
     }
 }
