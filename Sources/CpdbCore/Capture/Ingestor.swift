@@ -263,7 +263,8 @@ public struct Ingestor {
                 contentHash: hash,
                 totalSize: snapshot.totalSize,
                 hashVersion: 2,
-                identityTag: identityTag.rawValue
+                identityTag: identityTag.rawValue,
+                modifiedAt: now
             )
             try entry.insert(db)
             let entryId = entry.id!

@@ -86,6 +86,11 @@ public enum CKSchema {
         // pre-v2 clients → decode defaults to (1, nil).
         public static let hashVersion        = "hashVersion"      // Int64 (1 or 2)
         public static let identityTag        = "identityTag"      // String? (image/file/url/text/color/fallback)
+        // Last user-mutation timestamp; drives last-writer-wins on pull
+        // for deleted_at + pinned. Absent on pre-undo records → decode
+        // defaults to 0 (so a record carrying real mutations always wins
+        // over a legacy 0). See EntryRepository / CloudKitSyncer.upsert.
+        public static let modifiedAt         = "modifiedAt"       // Double (unix seconds)
     }
 
     public enum FlavorField {

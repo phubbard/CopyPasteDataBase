@@ -60,6 +60,12 @@ public struct Entry: Codable, FetchableRecord, MutablePersistableRecord, Hashabl
     /// for deterministic conflict resolution.
     public var identityTag: String?
 
+    /// Unix-epoch seconds of the last user-visible mutable-state change
+    /// (pin, delete, restore). Drives last-writer-wins on pull so undo
+    /// propagates and pin/unpin races resolve deterministically. Set to
+    /// `created_at` on insert; bumped on every mutation.
+    public var modifiedAt: Double = 0
+
     public static let databaseTableName = "entries"
 
     enum CodingKeys: String, CodingKey {
@@ -85,6 +91,7 @@ public struct Entry: Codable, FetchableRecord, MutablePersistableRecord, Hashabl
         case hashVersion     = "hash_version"
         case prevContentHash = "prev_content_hash"
         case identityTag     = "identity_tag"
+        case modifiedAt      = "modified_at"
     }
 
     public mutating func didInsert(_ inserted: InsertionSuccess) {
@@ -113,7 +120,8 @@ public struct Entry: Codable, FetchableRecord, MutablePersistableRecord, Hashabl
         linkFetchedAt: Double? = nil,
         hashVersion: Int = 1,
         prevContentHash: Data? = nil,
-        identityTag: String? = nil
+        identityTag: String? = nil,
+        modifiedAt: Double = 0
     ) {
         self.id = id
         self.uuid = uuid
@@ -137,6 +145,7 @@ public struct Entry: Codable, FetchableRecord, MutablePersistableRecord, Hashabl
         self.hashVersion = hashVersion
         self.prevContentHash = prevContentHash
         self.identityTag = identityTag
+        self.modifiedAt = modifiedAt
     }
 }
 

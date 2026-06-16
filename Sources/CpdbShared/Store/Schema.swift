@@ -471,5 +471,25 @@ enum Schema {
                 WHERE EXISTS (SELECT 1 FROM entries LIMIT 1);
                 """)
         }
+
+        migrator.registerMigration("v11_modified_at") { db in
+            // `modified_at` — the timestamp of the last USER-VISIBLE state
+            // change to an entry's mutable fields (pin, delete, restore).
+            // Drives last-writer-wins resolution on pull so undo-of-delete
+            // propagates correctly (an un-delete with a newer modified_at
+            // beats a sibling's older tombstone) and concurrent pin/unpin
+            // races resolve deterministically — replacing the old
+            // unconditional "tombstone always wins" guard.
+            //
+            // Set on insert (= created_at), bumped on pin/delete/restore.
+            // On pull, a device adopts the REMOTE's modified_at so both
+            // sides agree on "as of when" the state was set.
+            //
+            // Backfill: a live row's baseline is its created_at; a
+            // tombstoned row's is its deleted_at (when the delete
+            // happened) so a later undo, with a newer timestamp, wins.
+            try db.execute(sql: "ALTER TABLE entries ADD COLUMN modified_at REAL NOT NULL DEFAULT 0;")
+            try db.execute(sql: "UPDATE entries SET modified_at = COALESCE(deleted_at, created_at);")
+        }
     }
 }

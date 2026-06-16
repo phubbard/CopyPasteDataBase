@@ -456,15 +456,24 @@ public struct EntryRepository {
             try db.execute(
                 sql: """
                     UPDATE entries
-                    SET pinned = ?
+                    SET pinned = ?, modified_at = ?
                     WHERE id = ? AND deleted_at IS NULL AND pinned != ?
                 """,
-                arguments: [pinned ? 1 : 0, id, pinned ? 1 : 0]
+                arguments: [pinned ? 1 : 0, now, id, pinned ? 1 : 0]
             )
             // Only push if we actually changed state.
             if db.changesCount > 0 {
                 try PushQueue.enqueue(entryId: id, in: db, now: now)
             }
+        }
+    }
+
+    /// Current pin state of a live entry (for undo bookkeeping). Returns
+    /// nil if the entry is missing or tombstoned.
+    public func pinnedState(id: Int64) throws -> Bool? {
+        try store.dbQueue.read { db in
+            try Bool.fetchOne(
+                db, sql: "SELECT pinned FROM entries WHERE id = ? AND deleted_at IS NULL", arguments: [id])
         }
     }
 
@@ -479,10 +488,10 @@ public struct EntryRepository {
             try db.execute(
                 sql: """
                     UPDATE entries
-                    SET deleted_at = ?
+                    SET deleted_at = ?, modified_at = ?
                     WHERE id = ? AND deleted_at IS NULL
                 """,
-                arguments: [now, id]
+                arguments: [now, now, id]
             )
             // db.execute returns Void; row count comes from the
             // separate changesCount property. Skip the FTS + push
@@ -497,6 +506,40 @@ public struct EntryRepository {
                 )
                 try PushQueue.enqueue(entryId: id, in: db, now: now)
             }
+        }
+    }
+
+    /// Undo a tombstone — clear `deleted_at`, re-index FTS, bump
+    /// `modified_at` (newer than the delete, so the un-delete wins the
+    /// last-writer-wins race on sibling devices), and re-enqueue for
+    /// push. Idempotent: restoring a live row no-ops. The blobs were
+    /// never removed (gc only touches tombstoned rows), so nothing has
+    /// to be re-fetched.
+    public func restore(id: Int64) throws {
+        let now = Date().timeIntervalSince1970
+        try store.dbQueue.write { db in
+            try db.execute(
+                sql: "UPDATE entries SET deleted_at = NULL, modified_at = ? WHERE id = ? AND deleted_at IS NOT NULL",
+                arguments: [now, id]
+            )
+            guard db.changesCount > 0 else { return }
+            // Re-index FTS from the row's current fields.
+            if let row = try Row.fetchOne(
+                db,
+                sql: """
+                    SELECT e.title, e.text_preview, e.ocr_text, e.image_tags, e.link_title,
+                           a.name AS app_name
+                    FROM entries e LEFT JOIN apps a ON a.id = e.source_app_id
+                    WHERE e.id = ?
+                    """,
+                arguments: [id]
+            ) {
+                try FtsIndex.indexEntry(
+                    db: db, entryId: id,
+                    title: row["title"], text: row["text_preview"], appName: row["app_name"],
+                    ocrText: row["ocr_text"], imageTags: row["image_tags"], linkTitle: row["link_title"])
+            }
+            try PushQueue.enqueue(entryId: id, in: db, now: now)
         }
     }
 

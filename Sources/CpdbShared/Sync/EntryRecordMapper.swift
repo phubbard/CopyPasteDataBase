@@ -92,6 +92,7 @@ public enum EntryRecordMapper {
         // upgrade predicate is corrupted.
         record[CKSchema.EntryField.hashVersion] = Int64(entry.hashVersion) as NSNumber
         record[CKSchema.EntryField.identityTag] = entry.identityTag as NSString?
+        record[CKSchema.EntryField.modifiedAt]  = entry.modifiedAt as NSNumber
     }
 
     /// Attach thumbnail `CKAsset`s to the record. Pass nil URLs to clear
@@ -154,6 +155,10 @@ public enum EntryRecordMapper {
         /// fallback). Nil on v1 records. Used by the pull-side
         /// equal-version conflict resolution (§5.3).
         public var identityTag: String?
+        /// Last user-mutation timestamp (pin/delete/restore). Drives
+        /// last-writer-wins for `deletedAt` + `pinned` on pull. Absent on
+        /// pre-undo records → 0.
+        public var modifiedAt: Double = 0
     }
 
     public enum DecodeError: Error, CustomStringConvertible {
@@ -224,7 +229,10 @@ public enum EntryRecordMapper {
             linkFetchedAt: (record[CKSchema.EntryField.linkFetchedAt] as? NSNumber)?.doubleValue,
             // Absent (pre-v2 record) → hashVersion 1, nil tag.
             hashVersion: Int((record[CKSchema.EntryField.hashVersion] as? NSNumber)?.int64Value ?? 1),
-            identityTag: record[CKSchema.EntryField.identityTag] as? String
+            identityTag: record[CKSchema.EntryField.identityTag] as? String,
+            // Absent (pre-undo record) → 0, so any record carrying a real
+            // mutation timestamp wins the LWW comparison against it.
+            modifiedAt: (record[CKSchema.EntryField.modifiedAt] as? NSNumber)?.doubleValue ?? 0
         )
     }
 

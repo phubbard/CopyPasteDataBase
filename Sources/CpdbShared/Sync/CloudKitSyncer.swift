@@ -1208,11 +1208,27 @@ public actor CloudKitSyncer {
             .order(sql: "(deleted_at IS NULL) DESC, created_at DESC")
             .fetchOne(db)
         {
-            // Skip live-ifying a locally-tombstoned row. Our
-            // pending tombstone push is the source of truth.
-            if existing.deletedAt != nil, d.deletedAt == nil {
-                return .unchanged
+            // Last-writer-wins on the USER-MUTATION fields (deleted_at,
+            // pinned) by `modified_at`. This replaces the old
+            // unconditional "tombstone wins" guard, which permanently
+            // blocked undo-of-delete from propagating (a sibling holding a
+            // tombstone ignored an incoming live copy, so an entry stayed
+            // live here / deleted there). Now: a delete and a later undo
+            // each bump modified_at, and the more recent action wins on
+            // every device. Ties (>=) go to the remote, deterministically.
+            let remoteMutationWins = d.modifiedAt >= existing.modifiedAt
+            if remoteMutationWins {
+                existing.deletedAt  = d.deletedAt
+                existing.pinned     = d.pinned
+                existing.modifiedAt = d.modifiedAt
             }
+            // else keep local deleted_at / pinned / modified_at — our
+            // local mutation is newer and already pushed; the sibling that
+            // sent this older state will converge when it pulls ours.
+
+            // Content + enrichment fields are content-addressed or
+            // adopt-once enrichment, so take remote regardless of the
+            // mutation LWW above.
             existing.createdAt   = d.createdAt
             existing.capturedAt  = d.capturedAt
             existing.kind        = d.kind
@@ -1221,44 +1237,41 @@ public actor CloudKitSyncer {
             existing.title       = d.title
             existing.textPreview = d.textPreview
             existing.totalSize   = d.totalSize
-            existing.deletedAt   = d.deletedAt
             existing.ocrText     = d.ocrText
             existing.imageTags   = d.imageTags
             existing.analyzedAt  = d.analyzedAt
-            existing.pinned      = d.pinned
             // bodyEvictedAt is sticky once set — if any device
             // evicted the bodies, sibling devices learn about it
-            // here. We don't undo a remote eviction either: if
-            // upstream cleared the field (rare; means the user
-            // deliberately re-hydrated), we honour that too. The
-            // straightforward "last writer wins" assignment is
-            // correct for both directions.
+            // here. Last-writer-wins assignment is correct both ways.
             existing.bodyEvictedAt = d.bodyEvictedAt
             // Link metadata: prefer remote when remote has fetched
             // and we haven't, so the "any device fetches → all
-            // devices benefit" pattern works. If both have fetched,
-            // last-writer-wins (the remote update arrives because
-            // its timestamp is more recent).
+            // devices benefit" pattern works.
             if d.linkFetchedAt != nil {
                 existing.linkTitle     = d.linkTitle
                 existing.linkFetchedAt = d.linkFetchedAt
             }
-            // Keep the identity era + rung in sync. Same content_hash ⇒
-            // same era, so this is a no-op in the steady state; it matters
-            // only while the fleet is mixed during the cutover window.
             existing.hashVersion = d.hashVersion
             existing.identityTag = d.identityTag
             try existing.update(db)
-            try FtsIndex.indexEntry(
-                db: db,
-                entryId: existing.id!,
-                title: existing.title,
-                text: existing.textPreview,
-                appName: d.source.appName,
-                ocrText: existing.ocrText,
-                imageTags: existing.imageTags,
-                linkTitle: existing.linkTitle
-            )
+            // FTS follows the RESOLVED liveness: a row that ends up live
+            // is searchable; one that ends up tombstoned must not be (so
+            // an inbound delete that wins drops it from search, and an
+            // undo that wins restores it).
+            if existing.deletedAt == nil {
+                try FtsIndex.indexEntry(
+                    db: db,
+                    entryId: existing.id!,
+                    title: existing.title,
+                    text: existing.textPreview,
+                    appName: d.source.appName,
+                    ocrText: existing.ocrText,
+                    imageTags: existing.imageTags,
+                    linkTitle: existing.linkTitle
+                )
+            } else {
+                try FtsIndex.removeEntry(db: db, entryId: existing.id!)
+            }
             try applyThumbnails(d, entryId: existing.id!, in: db)
             try drainOrphanFlavors(forHash: d.contentHash, entryId: existing.id!, blobs: blobs, in: db)
             return .updated
@@ -1357,7 +1370,8 @@ public actor CloudKitSyncer {
                 linkTitle: d.linkTitle,
                 linkFetchedAt: d.linkFetchedAt,
                 hashVersion: d.hashVersion,
-                identityTag: d.identityTag
+                identityTag: d.identityTag,
+                modifiedAt: d.modifiedAt
             )
             // Insert hardening: a uuid (or content_hash) unique-constraint
             // collision must NOT abort the whole page's write transaction

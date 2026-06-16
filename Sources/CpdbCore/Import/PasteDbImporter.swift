@@ -174,7 +174,8 @@ public struct PasteDbImporter {
                     title: Self.title(for: snippet, snapshot: snapshot, plainText: plain),
                     textPreview: plain.map { String($0.prefix(2048)) },
                     contentHash: hash,
-                    totalSize: snapshot.totalSize
+                    totalSize: snapshot.totalSize,
+                    modifiedAt: createdAt
                 )
                 try entry.insert(db)
                 let entryId = entry.id!
