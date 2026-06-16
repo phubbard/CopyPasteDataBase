@@ -125,19 +125,8 @@ struct EntryStripView: View {
     /// to iOS and sibling Macs.
     private func togglePin(row: EntryRepository.EntryRow) {
         guard let id = row.entry.id else { return }
-        let newState = !row.entry.pinned
-        let store = state.store
-        Task.detached {
-            do {
-                let repo = EntryRepository(store: store)
-                try repo.setPinned(id: id, pinned: newState)
-            } catch {
-                Log.cli.error(
-                    "pin toggle failed for entry id=\(id, privacy: .public): \(String(describing: error), privacy: .public)"
-                )
-            }
-            await MainActor.run { state.refresh() }
-        }
+        // Through PopupState → UndoCoordinator so pin/unpin is undoable.
+        state.togglePin(id: id, currentlyPinned: row.entry.pinned)
     }
 
     /// Build the best representation of the entry's payload we can
@@ -232,19 +221,7 @@ struct EntryStripView: View {
     /// immediately instead of one GRDB debounce later.
     private func delete(row: EntryRepository.EntryRow) {
         guard let id = row.entry.id else { return }
-        let store = state.store
-        Task.detached {
-            do {
-                let repo = EntryRepository(store: store)
-                try repo.tombstone(id: id)
-            } catch {
-                Log.cli.error(
-                    "delete failed for entry id=\(id, privacy: .public): \(String(describing: error), privacy: .public)"
-                )
-            }
-            await MainActor.run {
-                state.refresh()
-            }
-        }
+        // Through PopupState → UndoCoordinator so the delete is undoable (⌘Z).
+        state.delete(id: id)
     }
 }

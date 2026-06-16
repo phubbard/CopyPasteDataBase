@@ -125,18 +125,9 @@ final class PopupController {
     /// by `PopupState.refresh()` so focus lands on the next row.
     func deleteSelected() {
         guard let state = state, let id = state.selectedEntry?.id else { return }
-        let store = state.store
-        Task.detached {
-            do {
-                let repo = EntryRepository(store: store)
-                try repo.tombstone(id: id)
-            } catch {
-                Log.cli.error(
-                    "deleteSelected failed for entry id=\(id, privacy: .public): \(String(describing: error), privacy: .public)"
-                )
-            }
-            await MainActor.run { state.refresh() }
-        }
+        // Routed through PopupState → UndoCoordinator so the delete is
+        // recorded for ⌘Z. The single-row tombstone is a sub-ms write.
+        state.delete(id: id)
     }
 
     // MARK: - Positioning
@@ -204,6 +195,15 @@ final class PopupController {
                     if let entry = self.state?.selectedEntry {
                         self.state?.enterTimePivot(anchoredOn: entry)
                     }
+                    return true
+                case 6 where cmdHeld && event.modifierFlags.contains(.shift):
+                    // ⌘⇧Z — redo the last undone delete/pin.
+                    self.state?.performRedo()
+                    return true
+                case 6 where cmdHeld:
+                    // ⌘Z — undo the last delete/pin. Reversible across the
+                    // session's action stack.
+                    self.state?.performUndo()
                     return true
                 case 33 where (self.state?.timePivot != nil):
                     // [ — narrow the time-pivot window. Gated to

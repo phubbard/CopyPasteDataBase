@@ -24,6 +24,22 @@ struct PopupRootView: View {
             } else {
                 EntryStripView(state: state, onPaste: onPaste)
             }
+            if let hint = state.undoHint {
+                // Transient action hint ("Deleted · ⌘Z to undo"). Auto-
+                // clears after a few seconds (PopupState.flashHint).
+                HStack(spacing: 6) {
+                    Image(systemName: "arrow.uturn.backward")
+                        .font(.system(size: 10))
+                    Text(hint)
+                        .font(.system(size: 11, design: .monospaced))
+                }
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 5)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(.quaternary.opacity(0.5))
+                .transition(.opacity)
+            }
             if case .readOnly(let holder) = state.captureMode {
                 readOnlyBanner(holder: holder)
             }

@@ -143,10 +143,78 @@ final class PopupState {
     /// run refresh() once. Bumping this cancels any prior pending task.
     private var liveRefreshGeneration: Int = 0
 
+    /// Undo/redo for delete + pin. Shared logic in CpdbShared; the popup
+    /// drives it via `delete`/`togglePin`/`performUndo`/`performRedo` and
+    /// surfaces `undoHint`.
+    let undo: UndoCoordinator
+
+    /// Transient one-line status hint after an undoable action ("Deleted ·
+    /// ⌘Z to undo"). Auto-clears; rendered in the popup header.
+    var undoHint: String?
+    private var undoHintToken = 0
+
     init(store: Store, recentLimit: Int = 200) {
         self.store = store
         self.repository = EntryRepository(store: store)
+        self.undo = UndoCoordinator(repo: EntryRepository(store: store))
         self.searchLimit = recentLimit
+    }
+
+    // MARK: - Undoable mutations (popup entry points)
+
+    /// Delete an entry (tombstone) with undo recorded. Refreshes the strip.
+    func delete(id: Int64) {
+        do {
+            let d = try undo.delete(id: id)
+            flashHint("\(d.pastTense) · ⌘Z to undo")
+        } catch {
+            Log.cli.error("delete failed id=\(id, privacy: .public): \(String(describing: error), privacy: .public)")
+        }
+        refresh()
+    }
+
+    /// Toggle pin with undo recorded.
+    func togglePin(id: Int64, currentlyPinned: Bool) {
+        do {
+            if let d = try undo.setPinned(id: id, pinned: !currentlyPinned) {
+                flashHint("\(d.pastTense) · ⌘Z to undo")
+            }
+        } catch {
+            Log.cli.error("pin toggle failed id=\(id, privacy: .public): \(String(describing: error), privacy: .public)")
+        }
+        refresh()
+    }
+
+    func performUndo() {
+        do {
+            if let d = try undo.undo() {
+                flashHint("\(d.pastTense)\(undo.canRedo ? " · ⌘⇧Z to redo" : "")")
+            }
+        } catch {
+            Log.cli.error("undo failed: \(String(describing: error), privacy: .public)")
+        }
+        refresh()
+    }
+
+    func performRedo() {
+        do {
+            if let d = try undo.redo() {
+                flashHint("\(d.pastTense)\(undo.canUndo ? " · ⌘Z to undo" : "")")
+            }
+        } catch {
+            Log.cli.error("redo failed: \(String(describing: error), privacy: .public)")
+        }
+        refresh()
+    }
+
+    private func flashHint(_ message: String) {
+        undoHint = message
+        undoHintToken += 1
+        let token = undoHintToken
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 4_000_000_000)
+            if undoHintToken == token { undoHint = nil }
+        }
     }
 
     /// Re-run the current query. Called when the popup is shown, when
