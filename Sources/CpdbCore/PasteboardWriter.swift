@@ -63,9 +63,33 @@ public struct PasteboardWriter {
         }
 
         let item = NSPasteboardItem()
+        var writtenUTIs = Set<String>()
+        var urlString: String?
         for flavor in flavors {
             let bytes = try blobs.load(inline: flavor.data, blobKey: flavor.blobKey)
             item.setData(bytes, forType: NSPasteboard.PasteboardType(flavor.uti))
+            writtenUTIs.insert(flavor.uti)
+            if flavor.uti == "public.url", urlString == nil {
+                urlString = String(data: bytes, encoding: .utf8)
+            }
+        }
+        // Synthesize a plain-text flavor for a URL-only entry. A link
+        // captured as bare `public.url` (e.g. a Universal Clipboard echo
+        // of an iPhone Safari copy, landing on an idle Mac via
+        // loginwindow) has no text flavor, so pasting it into a text
+        // field — which reads `public.utf8-plain-text`, not
+        // `public.url` — drops nothing on the page. Add the URL string
+        // as plain text so it pastes everywhere. Ephemeral: this is only
+        // on the pasteboard, never stored, so entry identity is
+        // unchanged. (`writeObjects` natively does this for an NSURL, but
+        // we rebuild from raw flavor bytes, so we do it explicitly.)
+        let textUTIs: Set<String> = [
+            "public.utf8-plain-text", "public.text", "public.plain-text",
+            "public.utf16-external-plain-text", "public.utf16-plain-text",
+        ]
+        if writtenUTIs.isDisjoint(with: textUTIs),
+           let url = urlString, !url.isEmpty {
+            item.setData(Data(url.utf8), forType: .init("public.utf8-plain-text"))
         }
         return [item]
     }

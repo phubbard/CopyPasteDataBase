@@ -8,6 +8,19 @@ moves it into a new dated `[X.Y.Z]` heading at tag time and resets the
 working area to empty. Edit it freely if a commit message wasn't quite
 human-readable — what's in `[Unreleased]` is what ships.
 
+## [Unreleased]
+
+- **Fix: URL-only entries now paste into text fields.** A link captured
+  as a bare `public.url` flavor (e.g. a Universal Clipboard echo of an
+  iPhone Safari copy landing on an idle Mac via `loginwindow`) had no
+  plain-text flavor, so pasting it — or double-clicking it — into a
+  text field dropped nothing on the page, because text fields read
+  `public.utf8-plain-text`, not `public.url`. The paste path now
+  synthesizes a plain-text flavor from the URL when an entry has none
+  (ephemeral, on the pasteboard only — stored data and entry identity
+  are unchanged), so these entries paste everywhere. Fixed ~68 existing
+  entries in the reporter's library with no re-capture needed.
+
 ## [3.1.0] — reversible delete + pin (undo)
 
 - **Undo for delete and pin.** Deleting or pinning an entry is now

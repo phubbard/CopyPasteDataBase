@@ -129,7 +129,10 @@ been ported to iOS and Windows.
   flavor (Mac) / clipboard format (Windows) is stored verbatim.
   Restore puts the full set back on the pasteboard so RTF copied out
   of TextEdit pastes as RTF into Pages, and an Excel cell range
-  pastes back as a real cell range.
+  pastes back as a real cell range. A URL captured as a bare
+  `public.url` (e.g. a Universal Clipboard echo) also gets a
+  synthesized plain-text flavor on paste, so it lands in text fields
+  too.
 - **Quick Look** on Mac/iOS — `⌘Y` / Space-when-empty pops the full
   Quick Look panel: full-resolution images, scrollable multi-page
   text, real PDF/Keynote rendering for file entries whose underlying
