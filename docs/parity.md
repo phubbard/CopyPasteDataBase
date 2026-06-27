@@ -18,9 +18,11 @@ Legend:
 
 | Feature | macOS | iOS | Windows | Contract / notes |
 |---|---|---|---|---|
-| Capture daemon | ✅ v1.0 | — | ✅ v1.0 | iOS doesn't capture (privacy decision) |
+| Capture daemon | ✅ v1.0 | ✅ v3.0 (read/write) | ✅ v1.0 | iOS was reader-only until v3.0, which added an opt-in clipboard *writer* (text/links, default-off toggle, `detectPatterns`-gated). |
 | FTS5 search index | ✅ v1.0 | ✅ v2.5 | ✅ v1.0 | tokenizer chain in `docs/schema.md` § FTS5 |
-| Canonical content_hash | ✅ v1.0 | ✅ v2.5 | ✅ v1.0 | byte-exact algorithm in `docs/schema.md` § Canonical hash; pinned vectors in `Tests/CpdbCoreTests/HashVectors.swift` |
+| Canonical content_hash | ✅ v1.0 | ✅ v2.5 | ✅ v1.0 | **v1 (full-flavor-set) algorithm.** Superseded by semantic identity below — see the next row. Byte-exact v1 algorithm in `docs/schema.md` § Canonical hash. |
+| **Semantic content identity (canonical-hash v2)** | ✅ v3.0 | ✅ v3.0 | ⏳ | Identity = SHA-256 of the *primary* content only (image → file → url → normalized text → color → fallback), so volatile sidecar formats can't fork an entry. Authoritative spec: [`docs/canonical-hash-v2.md`](canonical-hash-v2.md) + the shared **`Tests/Fixtures/hash-vectors-v2.json`** (26 pinned cross-platform vectors). Windows: see [`docs/handoffs/windows-hash-v2.md`](handoffs/windows-hash-v2.md) — port `ContentIdentity`, add `hash_version`/`prev_content_hash`/`identity_tag` columns + a rehash migration, fix the `StringComparer.Ordinal`→byte-wise-UTF-8 sort. text/url/file identities converge cross-platform; image + html-only are platform-local. |
+| Transient/concealed-marker skip at ingest | ✅ v3.0 (`TransientGuard`, CpdbShared) | ✅ v3.0 | ⏳ | Whole-clip skip when a password-manager / "don't store" marker is present, enforced below the platform pasteboard so every capture path inherits it. Windows analogues: `ExcludeClipboardContentFromMonitorProcessing`, `CanIncludeInClipboardHistory`. |
 | Inline / blob spillover (256 KB) | ✅ v1.0 | ✅ v2.5 | ✅ v1.0 | rule in `docs/schema.md` § Blob store |
 | Kind classification | ✅ v1.0 | ✅ v2.5 | ✅ v1.0 | rules + Windows-clipboard-format → UTI table in `docs/schema.md` § Kind classification |
 | OCR (image → searchable text) | ✅ v1.2 (Vision) | ✅ v2.5 | ✅ v1.22.0 | Windows: `Windows.Media.Ocr` (built-in, no model bundle). `ImageAnalysisService` mirrors the link-backfill loop — capture-wake + periodic sweep + `analyzed_at` sentinel; text folded into the same FTS5 `ocr_text` column. CLI `cpdb-win analyze-images [--force]`; Preferences → "Re-OCR images" |
@@ -44,8 +46,10 @@ Legend:
 | Feature | macOS | iOS | Windows | Contract / notes |
 |---|---|---|---|---|
 | CloudKit Private Database sync | ✅ v2.0 | ✅ v2.5 | — | Apple-only substrate; Windows v1 is standalone |
-| Content-addressed CKRecord IDs | ✅ v2.0 | ✅ v2.5 | — | wire-format v2.1; recordName = `entry-<sha256-hex>` |
-| Cross-device dedup (Universal Clipboard echo) | ✅ v2.5.2 | — | — | Apple-specific marker; strip in `PasteboardSnapshot` before hashing |
+| Content-addressed CKRecord IDs | ✅ v2.0 | ✅ v2.5 | — | wire-format **v3** (zone `cpdb-v3`, canonical-hash v2); recordName = `entry-<sha256-hex>` |
+| `modified_at` last-writer-wins | ✅ v3.1 | ✅ v3.1 | ⏳ (column only) | `entries.modified_at` timestamps the last user mutation (pin/delete/restore); pull resolves deletes/pins by LWW so an undone delete propagates instead of stranding. Windows needs the **column** for schema parity + future sync (set on insert, bump on mutation); the pull-side LWW is sync-only, so N/A until Windows syncs. See [`docs/handoffs/windows-hash-v2.md`](handoffs/windows-hash-v2.md) § modified_at. |
+| §5.3 pull-side conflict resolution (rung-priority + uuid merge) | ✅ v3.0 | ✅ v3.0 | — | sync-only; deterministic identity-fork resolution. |
+| Cross-device dedup (Universal Clipboard echo) | ✅ v2.5.2 → subsumed by semantic identity v3.0 | — | — | Now handled by semantic content identity (the echo's volatile sidecars are hash-invisible); the old strip is gone. |
 | Push-to-device (`ActionRequest`) | ✅ v2.5 (consume) | ✅ v2.5 (send) | — | iOS → Mac paste flow |
 | Cross-platform sync substrate | ⏳ planned | ⏳ planned | ⏳ planned | brainstorm in earlier session — Cloudflare Worker + HMAC; not yet started |
 

@@ -325,6 +325,21 @@ with paths.
 
 ## Canonical hash — `content_hash`
 
+> **⚠️ Superseded for primary identity (cpdb 3.0, macOS/iOS).** Entry
+> identity is now **semantic content identity (canonical-hash v2)** — a
+> SHA-256 over the *primary* content only (image → file → url →
+> normalized text → color → fallback), not the full flavor set. The
+> authoritative v2 spec is [`canonical-hash-v2.md`](canonical-hash-v2.md)
+> and the executable contract is **`Tests/Fixtures/hash-vectors-v2.json`**
+> (which wins over any prose). The full-flavor-set algorithm below is
+> retained because it is still (a) the **fallback rung** emission, (b)
+> what `prev_content_hash` holds after the v2 rehash, and (c) the
+> permanent hash of body-evicted entries (`hash_version = 1`). Windows
+> still computes v1 as primary identity pending
+> [`handoffs/windows-hash-v2.md`](handoffs/windows-hash-v2.md).
+> *TODO: fold a full §Content identity v2 section in here; for now the
+> design doc + JSON vectors are authoritative.*
+
 Order-independent SHA-256 over the flavor set. Byte-exact
 reproducible from any client:
 
