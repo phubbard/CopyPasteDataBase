@@ -8,7 +8,7 @@ moves it into a new dated `[X.Y.Z]` heading at tag time and resets the
 working area to empty. Edit it freely if a commit message wasn't quite
 human-readable — what's in `[Unreleased]` is what ships.
 
-## [Unreleased]
+## [3.1.1] — paste fix for URL-only entries
 
 - **Fix: URL-only entries now paste into text fields.** A link captured
   as a bare `public.url` flavor (e.g. a Universal Clipboard echo of an
