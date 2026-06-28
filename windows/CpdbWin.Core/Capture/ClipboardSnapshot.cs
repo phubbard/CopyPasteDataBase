@@ -11,9 +11,19 @@ namespace CpdbWin.Core.Capture;
 /// </summary>
 public readonly record struct ClipboardSnapshot(IReadOnlyList<CanonicalHash.Flavor> Flavors)
 {
-    /// <summary>Order-independent SHA-256 over this snapshot's flavors.</summary>
+    /// <summary>Legacy v1 (full-set) SHA-256. Kept for the rare caller
+    /// that needs to compute v1 explicitly; production capture should
+    /// use <see cref="ContentIdentityV2"/> so dedup converges with
+    /// macOS / iOS on the same semantic identity.</summary>
     public byte[] ContentHash() =>
         CanonicalHash.Compute(new IReadOnlyList<CanonicalHash.Flavor>[] { Flavors });
+
+    /// <summary>Canonical-hash v2 identity: returns the rung tag (stored
+    /// in <c>entries.identity_tag</c>) and the 32-byte SHA-256 used as
+    /// the dedup key. See <see cref="ContentIdentity"/> for the
+    /// rung-chain spec and the shared cross-platform vectors.</summary>
+    public (ContentIdentity.Tag Tag, byte[] Hash) ContentIdentityV2() =>
+        ContentIdentity.Compute(Flavors);
 
     /// <summary>
     /// Read the system clipboard once. OpenClipboard can fail because

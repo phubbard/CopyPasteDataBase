@@ -40,7 +40,7 @@ public sealed class Ingestor
             return new IngestOutcome(IngestKind.Skipped, 0,
                 $"ignored app: {sourceApp!.Value.BundleId}");
 
-        var hash = snapshot.ContentHash();
+        var (idTag, hash) = snapshot.ContentIdentityV2();
         var ts = (capturedAt ?? DateTimeOffset.UtcNow).ToUnixTimeMilliseconds() / 1000.0;
 
         using var tx = _db.BeginTransaction();
@@ -86,7 +86,7 @@ public sealed class Ingestor
         foreach (var f in snapshot.Flavors) totalSize += f.Data.Length;
 
         var entryId = InsertEntry(tx, NewUuidBigEndian(), ts, kind, appId, deviceId,
-            title, preview, hash, totalSize);
+            title, preview, hash, totalSize, ContentIdentity.TagString(idTag));
 
         foreach (var flavor in snapshot.Flavors)
             InsertFlavor(tx, entryId, flavor);
@@ -235,19 +235,25 @@ public sealed class Ingestor
     private long InsertEntry(
         SqliteTransaction tx, byte[] uuid, double ts, string kind,
         long? appId, long deviceId, string? title, string? preview,
-        byte[] hash, long totalSize)
+        byte[] hash, long totalSize, string identityTag)
     {
         using var cmd = _db.CreateCommand();
         cmd.Transaction = tx;
         // captured_at is set to the same value as created_at on insert; only
         // created_at moves on dedup-bump (captured_at stays immutable).
+        // modified_at = created_at on insert; bumped by user mutations
+        // (pin / delete) elsewhere — see EntryRepository.SetPinned /
+        // TombstoneMany. hash_version is always 2 for fresh captures
+        // (legacy rows on disk stay at 1 until the v11 migration runs).
         cmd.CommandText = """
             INSERT INTO entries
                 (uuid, created_at, captured_at, kind, source_app_id, source_device_id,
-                 title, text_preview, content_hash, total_size)
+                 title, text_preview, content_hash, total_size,
+                 hash_version, identity_tag, modified_at)
             VALUES
                 ($uuid, $ts, $ts, $kind, $appId, $devId,
-                 $title, $preview, $hash, $size)
+                 $title, $preview, $hash, $size,
+                 2, $tag, $ts)
             """;
         cmd.Parameters.AddWithValue("$uuid", uuid);
         cmd.Parameters.AddWithValue("$ts", ts);
@@ -258,6 +264,7 @@ public sealed class Ingestor
         cmd.Parameters.AddWithValue("$preview", (object?)preview ?? DBNull.Value);
         cmd.Parameters.AddWithValue("$hash", hash);
         cmd.Parameters.AddWithValue("$size", totalSize);
+        cmd.Parameters.AddWithValue("$tag", identityTag);
         cmd.ExecuteNonQuery();
         return LastInsertRowId(tx);
     }

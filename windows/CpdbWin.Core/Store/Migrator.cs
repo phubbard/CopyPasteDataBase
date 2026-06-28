@@ -32,7 +32,7 @@ public static class Migrator
     /// already-applied step. Throws on SQL errors so the caller (AppHost
     /// boot) can fail loudly rather than silently corrupt state.
     /// </summary>
-    public static void Migrate(SqliteConnection conn)
+    public static void Migrate(SqliteConnection conn, BlobStore? blobs = null)
     {
         var applied = ReadAppliedMigrations(conn);
 
@@ -41,6 +41,13 @@ public static class Migrator
         if (!applied.Contains("v8_link_metadata")) ApplyV8LinkMetadata(conn);
         if (!applied.Contains("v9_link_retry_backoff")) ApplyV9LinkRetryBackoff(conn);
         if (!applied.Contains("v10_image_per_pass_timestamps")) ApplyV10ImagePerPassTimestamps(conn);
+        // v12 runs BEFORE v11: the v11 collision-merge SQL references
+        // modified_at when retiring losers, so the column must exist
+        // first. The migration *identifiers* keep their numeric ordering
+        // (it's just a naming convention; grdb_migrations records them
+        // independently of execution order).
+        if (!applied.Contains("v12_modified_at")) ApplyV12ModifiedAt(conn);
+        if (!applied.Contains("v11_semantic_identity")) ApplyV11SemanticIdentity(conn, blobs);
     }
 
     /// <summary>
@@ -48,15 +55,23 @@ public static class Migrator
     /// hit <see cref="Schema.Initialize"/>; existing installs flow
     /// through <see cref="Migrate"/>. Either way the DB ends at the
     /// current schema with <c>grdb_migrations</c> in agreement.
+    ///
+    /// <para>
+    /// <paramref name="blobs"/> is required only for the
+    /// <c>v11_semantic_identity</c> rehash (reads out-of-line flavor
+    /// bytes by blob_key). Pass null in tests that use inline flavors
+    /// only — rows with unreadable flavors keep their v1 hash, same
+    /// as real body-evicted rows.
+    /// </para>
     /// </summary>
-    public static void EnsureSchema(SqliteConnection conn)
+    public static void EnsureSchema(SqliteConnection conn, BlobStore? blobs = null)
     {
         if (!Database.IsInitialized(conn))
         {
             Schema.Initialize(conn);
             return;
         }
-        Migrate(conn);
+        Migrate(conn, blobs);
     }
 
     private static HashSet<string> ReadAppliedMigrations(SqliteConnection conn)
@@ -297,6 +312,128 @@ public static class Migrator
         }
 
         RecordApplied(conn, tx, "v10_image_per_pass_timestamps");
+        tx.Commit();
+    }
+
+    // ─── v11: semantic identity (canonical-hash v2) ─────────────────────
+
+    /// <summary>
+    /// Add the v2 identity columns, recompute every readable row's
+    /// content_hash via <see cref="Capture.ContentIdentity"/>, then
+    /// collision-merge rows that collapse to the same identity. Per
+    /// <c>docs/handoffs/windows-hash-v2.md</c>: ContentIdentity + the
+    /// rehash MUST ship in the same release — otherwise the capture
+    /// path's new dedup key and the existing rows disagree and every
+    /// re-capture forks the library.
+    /// </summary>
+    private static void ApplyV11SemanticIdentity(SqliteConnection conn, BlobStore? blobs)
+    {
+        using var tx = conn.BeginTransaction();
+
+        // 1. Add columns (idempotent guards).
+        if (!HasColumn(conn, "entries", "hash_version"))
+        {
+            using var cmd = conn.CreateCommand();
+            cmd.Transaction = tx;
+            cmd.CommandText = "ALTER TABLE entries ADD COLUMN hash_version INTEGER NOT NULL DEFAULT 1";
+            cmd.ExecuteNonQuery();
+        }
+        if (!HasColumn(conn, "entries", "prev_content_hash"))
+        {
+            using var cmd = conn.CreateCommand();
+            cmd.Transaction = tx;
+            cmd.CommandText = "ALTER TABLE entries ADD COLUMN prev_content_hash BLOB";
+            cmd.ExecuteNonQuery();
+        }
+        if (!HasColumn(conn, "entries", "identity_tag"))
+        {
+            using var cmd = conn.CreateCommand();
+            cmd.Transaction = tx;
+            cmd.CommandText = "ALTER TABLE entries ADD COLUMN identity_tag TEXT";
+            cmd.ExecuteNonQuery();
+        }
+
+        // Idempotence: if any row is already at hash_version=2 the rehash
+        // has run. Just record the migration name and exit.
+        long alreadyV2;
+        using (var probe = conn.CreateCommand())
+        {
+            probe.Transaction = tx;
+            probe.CommandText = "SELECT COUNT(*) FROM entries WHERE hash_version = 2";
+            alreadyV2 = (long)probe.ExecuteScalar()!;
+        }
+        if (alreadyV2 > 0)
+        {
+            RecordApplied(conn, tx, "v11_semantic_identity");
+            tx.Commit();
+            return;
+        }
+
+        // 2. Drop the unique-on-live index — rehash will transiently
+        // produce duplicate content_hash values; collision-merge cleans
+        // them up; index is recreated below.
+        using (var cmd = conn.CreateCommand())
+        {
+            cmd.Transaction = tx;
+            cmd.CommandText = "DROP INDEX IF EXISTS idx_entries_live_content_hash";
+            cmd.ExecuteNonQuery();
+        }
+
+        // 3. Recompute every row's identity. Body-evicted rows / rows
+        // with unresolvable blob_key keep v1 hash + hash_version=1.
+        IdentityRehash.Run(conn, tx, blobs);
+
+        // 4. Collision-merge: collapse rows now sharing a v2 hash.
+        double now = ((DateTimeOffset)DateTime.UtcNow).ToUnixTimeMilliseconds() / 1000.0;
+        IdentityRehash.MergeCollisions(conn, tx, now);
+
+        // 5. Recreate the unique-on-live index.
+        using (var cmd = conn.CreateCommand())
+        {
+            cmd.Transaction = tx;
+            cmd.CommandText = """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_entries_live_content_hash
+                    ON entries(content_hash) WHERE deleted_at IS NULL
+                """;
+            cmd.ExecuteNonQuery();
+        }
+
+        RecordApplied(conn, tx, "v11_semantic_identity");
+        tx.Commit();
+    }
+
+    // ─── v12: modified_at (LWW timestamp for future sync) ──────────────
+
+    /// <summary>
+    /// Add <c>modified_at</c> tracking the last user mutation (pin /
+    /// delete / restore). On macOS this drives last-writer-wins
+    /// resolution on sync pull; Windows is standalone today so the
+    /// column is here for schema parity + future sync. Backfill from
+    /// <c>created_at</c> so the value is meaningful from day one.
+    /// </summary>
+    private static void ApplyV12ModifiedAt(SqliteConnection conn)
+    {
+        using var tx = conn.BeginTransaction();
+
+        if (!HasColumn(conn, "entries", "modified_at"))
+        {
+            using var cmd = conn.CreateCommand();
+            cmd.Transaction = tx;
+            // ADD COLUMN with NOT NULL DEFAULT 0 lets existing rows take
+            // the default; the UPDATE below replaces 0 with created_at.
+            // Fresh installs land at the same place via Schema.UnionDdl.
+            cmd.CommandText = "ALTER TABLE entries ADD COLUMN modified_at REAL NOT NULL DEFAULT 0";
+            cmd.ExecuteNonQuery();
+        }
+
+        using (var cmd = conn.CreateCommand())
+        {
+            cmd.Transaction = tx;
+            cmd.CommandText = "UPDATE entries SET modified_at = created_at WHERE modified_at = 0";
+            cmd.ExecuteNonQuery();
+        }
+
+        RecordApplied(conn, tx, "v12_modified_at");
         tx.Commit();
     }
 }
