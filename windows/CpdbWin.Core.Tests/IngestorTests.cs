@@ -195,11 +195,22 @@ public class IngestorTests : IDisposable
     [Fact]
     public void Ingest_PopulatesContentHash_MatchingSwiftReference()
     {
+        // Pinned v2 (semantic identity) vector for "hello" — matches the
+        // text-hello entry in Tests/Fixtures/hash-vectors-v2.json that
+        // ContentIdentityVectorsTests exercises directly. Asserted here
+        // again to prove the *persisted* content_hash column is v2 and
+        // hash_version + identity_tag travelled with it.
         var outcome = _ingest.Ingest(TextSnapshot("hello"), null, _device);
-        var hash = (byte[])ScalarObject("SELECT content_hash FROM entries WHERE id = $id", outcome.EntryId)!;
+        using var cmd = _db.CreateCommand();
+        cmd.CommandText = "SELECT content_hash, hash_version, identity_tag FROM entries WHERE id = $id";
+        cmd.Parameters.AddWithValue("$id", outcome.EntryId);
+        using var r = cmd.ExecuteReader();
+        Assert.True(r.Read());
         Assert.Equal(
-            "b22187611777c1e9c84c3fdd054ed311a47d12f33cba6d1e7761bd3a7314073a",
-            CanonicalHash.ToHex(hash));
+            "306f89347195cc05509ddca47462e259aac6fd01943d2557004ea6f26370cd58",
+            CanonicalHash.ToHex((byte[])r.GetValue(0)));
+        Assert.Equal(2,      r.GetInt64(1));
+        Assert.Equal("text", r.GetString(2));
     }
 
     [Fact]

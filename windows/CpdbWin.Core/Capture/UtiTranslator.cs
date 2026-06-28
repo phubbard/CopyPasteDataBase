@@ -18,6 +18,24 @@ public static class UtiTranslator
     public const uint CF_HDROP       = 15;
     public const uint CF_DIBV5       = 17;
 
+    /// <summary>
+    /// Exhaustive set of UTI strings this translator can ever emit. Used by
+    /// <c>UtiTranslatorDisjointnessTests</c> to assert disjointness with
+    /// <see cref="ContentIdentity.VolatileExact"/> + <c>VolatilePrefixes</c>:
+    /// keeping the v2 fallback rung dormant-by-construction means no
+    /// translator output can collide with the volatile denylist. If a new
+    /// emission branch lands below, add its UTI here too or the test fires.
+    /// </summary>
+    public static readonly IReadOnlySet<string> EmittedUtis = new HashSet<string>(StringComparer.Ordinal)
+    {
+        "public.utf8-plain-text",
+        "public.png",
+        "public.jpeg",
+        "public.url",
+        "public.html",
+        "public.file-url",
+    };
+
     public readonly record struct Translation(string Uti, byte[] Data);
 
     /// <summary>

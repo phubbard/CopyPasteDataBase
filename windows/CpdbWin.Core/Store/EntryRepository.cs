@@ -83,9 +83,18 @@ public sealed class EntryRepository
     /// </summary>
     public void SetPinned(long entryId, bool pinned)
     {
+        // Bump modified_at: pin is a user mutation, so the cross-platform
+        // LWW sync contract (mac docs/canonical-hash-v2.md §undo) requires
+        // we mark when it happened. Windows is standalone today but the
+        // column is wired in for future sync.
+        var ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0;
         using var cmd = _db.CreateCommand();
-        cmd.CommandText = "UPDATE entries SET pinned = $p WHERE id = $id AND deleted_at IS NULL";
+        cmd.CommandText = """
+            UPDATE entries SET pinned = $p, modified_at = $t
+            WHERE id = $id AND deleted_at IS NULL
+            """;
         cmd.Parameters.AddWithValue("$p", pinned ? 1 : 0);
+        cmd.Parameters.AddWithValue("$t", ts);
         cmd.Parameters.AddWithValue("$id", entryId);
         cmd.ExecuteNonQuery();
     }
@@ -565,7 +574,9 @@ public sealed class EntryRepository
         using var tx = _db.BeginTransaction();
         using var update = _db.CreateCommand();
         update.Transaction = tx;
-        update.CommandText = "UPDATE entries SET deleted_at=$t WHERE id=$id AND deleted_at IS NULL";
+        // Bump modified_at alongside deleted_at — delete is a user
+        // mutation, same LWW contract as pin (see SetPinned).
+        update.CommandText = "UPDATE entries SET deleted_at=$t, modified_at=$t WHERE id=$id AND deleted_at IS NULL";
         var pT = update.CreateParameter(); pT.ParameterName = "$t"; pT.Value = ts;
         var pId = update.CreateParameter(); pId.ParameterName = "$id";
         update.Parameters.Add(pT); update.Parameters.Add(pId);

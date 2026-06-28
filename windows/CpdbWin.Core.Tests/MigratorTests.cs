@@ -371,4 +371,249 @@ public class MigratorTests : IDisposable
         Assert.Contains("v6_pinned",             applied);
         Assert.Contains("v9_link_retry_backoff", applied);
     }
+
+    // ─── v11_semantic_identity + v12_modified_at ───────────────────────
+
+    /// <summary>
+    /// Create the supplementary tables that <see cref="IdentityRehash.Coalesce"/>
+    /// expects to exist on a real install. The v5 seed predates these in
+    /// the test fixture's history, but every shipped DB has them — fresh
+    /// installs via <see cref="Schema.Initialize"/>, and pre-v5 installs
+    /// via earlier migrations not modeled here. Without them
+    /// collision-merge SQL fails with "no such table".
+    /// </summary>
+    private void SeedSupplementaryTables()
+    {
+        using var cmd = _db.CreateCommand();
+        cmd.CommandText = """
+            CREATE TABLE IF NOT EXISTS pinboards (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                uuid          BLOB UNIQUE NOT NULL,
+                name          TEXT NOT NULL,
+                color_argb    INTEGER,
+                display_order INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS pinboard_entries (
+                pinboard_id   INTEGER NOT NULL REFERENCES pinboards(id) ON DELETE CASCADE,
+                entry_id      INTEGER NOT NULL REFERENCES entries(id)  ON DELETE CASCADE,
+                display_order INTEGER NOT NULL,
+                PRIMARY KEY (pinboard_id, entry_id)
+            );
+            CREATE TABLE IF NOT EXISTS previews (
+                entry_id    INTEGER PRIMARY KEY REFERENCES entries(id) ON DELETE CASCADE,
+                thumb_small BLOB,
+                thumb_large BLOB
+            );
+            """;
+        cmd.ExecuteNonQuery();
+    }
+
+    /// <summary>Insert a row + its flavors. Uses the v1 full-set hash as
+    /// the seeded content_hash so the test mirrors what a real pre-v11
+    /// install would have on disk.</summary>
+    private void SeedEntryWithFlavors(
+        long id, long createdAt, bool pinned, params (string Uti, byte[] Bytes)[] flavors)
+    {
+        var flavorList = flavors.Select(f => new CpdbWin.Core.Capture.CanonicalHash.Flavor(f.Uti, f.Bytes)).ToList();
+        var v1Hash = CpdbWin.Core.Capture.CanonicalHash.Compute(
+            new[] { (IReadOnlyList<CpdbWin.Core.Capture.CanonicalHash.Flavor>)flavorList });
+
+        using (var cmd = _db.CreateCommand())
+        {
+            cmd.CommandText = """
+                INSERT INTO entries
+                    (id, uuid, created_at, captured_at, kind, source_device_id,
+                     title, text_preview, content_hash, total_size)
+                VALUES
+                    ($id, randomblob(16), $ts, $ts, 'text', 1,
+                     NULL, NULL, $hash, $size)
+                """;
+            cmd.Parameters.AddWithValue("$id",   id);
+            cmd.Parameters.AddWithValue("$ts",   (double)createdAt);
+            cmd.Parameters.AddWithValue("$hash", v1Hash);
+            cmd.Parameters.AddWithValue("$size", flavors.Sum(f => f.Bytes.Length));
+            cmd.ExecuteNonQuery();
+        }
+        foreach (var (uti, bytes) in flavors)
+        {
+            using var f = _db.CreateCommand();
+            f.CommandText = "INSERT INTO entry_flavors (entry_id, uti, size, data) VALUES ($id, $u, $s, $d)";
+            f.Parameters.AddWithValue("$id", id);
+            f.Parameters.AddWithValue("$u",  uti);
+            f.Parameters.AddWithValue("$s",  bytes.Length);
+            f.Parameters.AddWithValue("$d",  bytes);
+            f.ExecuteNonQuery();
+        }
+
+        // SetPinned needs the pinned column which v5 doesn't have, but
+        // by the time we'd call it the v6 migration has already run.
+        // The fixture seeds raw inserts that target the post-v6 column
+        // set indirectly: just patch pinned after the fact.
+        if (pinned)
+        {
+            using var cmd = _db.CreateCommand();
+            cmd.CommandText = "UPDATE entries SET pinned = 1 WHERE id = $id";
+            cmd.Parameters.AddWithValue("$id", id);
+            cmd.ExecuteNonQuery();
+        }
+    }
+
+    [Fact]
+    public void V11Migration_RehashesV1RowsToV2AndCollisionMerges()
+    {
+        SeedV5Schema();
+        SeedSupplementaryTables();
+        SeedDevice();
+
+        // Plain v6+ schema first so the seed rows have pinned column,
+        // then seed the entries. Migrations v6-v10 add columns the
+        // helper relies on.
+        Migrator.Migrate(_db);
+
+        // Chrome-sidecar collision pattern: two rows with identical text
+        // but different volatile sidecars. v1 hashes them as different
+        // entries (full-set varies); v2 collapses to a single text-rung
+        // identity. Test pins this real-world dedup case.
+        var hello = System.Text.Encoding.UTF8.GetBytes("hello");
+        var sidecarA = System.Text.Encoding.UTF8.GetBytes("https://chromium.example/A");
+        var sidecarB = System.Text.Encoding.UTF8.GetBytes("https://chromium.example/B");
+
+        SeedEntryWithFlavors(id: 1, createdAt: 1700000000, pinned: false,
+            ("public.utf8-plain-text", hello),
+            ("org.chromium.source-url", sidecarA));
+        SeedEntryWithFlavors(id: 2, createdAt: 1700000060, pinned: true,
+            ("public.utf8-plain-text", hello),
+            ("org.chromium.source-url", sidecarB));
+        SeedEntryWithFlavors(id: 3, createdAt: 1700000120, pinned: false,
+            ("public.utf8-plain-text", System.Text.Encoding.UTF8.GetBytes("unique entry")));
+
+        // Mark v11/v12 as not-applied even though Migrate just ran them
+        // implicitly — Migrate is idempotent and we want to re-run v11
+        // against the seeded rows. (The first Migrate-after-seed pass
+        // sees no entries; we seed after.)
+        using (var cmd = _db.CreateCommand())
+        {
+            cmd.CommandText = "DELETE FROM grdb_migrations WHERE identifier IN ('v11_semantic_identity', 'v12_modified_at')";
+            cmd.ExecuteNonQuery();
+        }
+        // Reset the rehashed rows so v11 sees them as hash_version=1.
+        using (var cmd = _db.CreateCommand())
+        {
+            cmd.CommandText = "UPDATE entries SET hash_version = 1, prev_content_hash = NULL, identity_tag = NULL";
+            cmd.ExecuteNonQuery();
+        }
+
+        Migrator.Migrate(_db, blobs: null);
+
+        // 1. Survivor id=1 (earliest created_at) holds v2 hash; pinned
+        //    inherited from id=2 via the OR-collapse rule.
+        var survivor = ReadEntry(1);
+        Assert.Equal(2L, survivor.HashVersion);
+        Assert.Equal("text", survivor.IdentityTag);
+        Assert.True(survivor.Pinned, "Pin should have salvaged onto the survivor (OR-collapse).");
+        Assert.NotNull(survivor.PrevContentHash);
+        Assert.Null(survivor.DeletedAt);
+        // created_at bumps to MAX(group) = 1700000060.
+        Assert.Equal(1700000060.0, survivor.CreatedAt);
+
+        // 2. Loser id=2 tombstoned, reverted to v1 hash.
+        var loser = ReadEntry(2);
+        Assert.NotNull(loser.DeletedAt);
+        Assert.Equal(1L, loser.HashVersion);
+        Assert.Null(loser.IdentityTag);
+
+        // 3. Unique row id=3 untouched (different identity, no collision).
+        var lone = ReadEntry(3);
+        Assert.Equal(2L, lone.HashVersion);
+        Assert.Equal("text", lone.IdentityTag);
+        Assert.Null(lone.DeletedAt);
+        Assert.NotEqual(survivor.ContentHash, lone.ContentHash);
+
+        // 4. The "live unique content_hash" invariant holds — each v2
+        //    hash is held by exactly one live row.
+        Assert.Equal(2L, ScalarLong("SELECT COUNT(DISTINCT content_hash) FROM entries WHERE deleted_at IS NULL"));
+        Assert.Equal(2L, ScalarLong("SELECT COUNT(*) FROM entries WHERE deleted_at IS NULL"));
+
+        // 5. modified_at backfilled from created_at for all rows.
+        Assert.True(ScalarDouble("SELECT MIN(modified_at) FROM entries") > 0,
+            "v12 backfill should have populated modified_at from created_at.");
+    }
+
+    [Fact]
+    public void V11Migration_IdempotentReRunIsNoOp()
+    {
+        SeedV5Schema();
+        SeedSupplementaryTables();
+        SeedDevice();
+        Migrator.Migrate(_db);
+        var hello = System.Text.Encoding.UTF8.GetBytes("hello");
+        SeedEntryWithFlavors(1, 1700000000, false, ("public.utf8-plain-text", hello));
+
+        // Reset so v11 will rehash on first call.
+        using (var cmd = _db.CreateCommand())
+        {
+            cmd.CommandText = "DELETE FROM grdb_migrations WHERE identifier IN ('v11_semantic_identity', 'v12_modified_at')";
+            cmd.ExecuteNonQuery();
+            cmd.CommandText = "UPDATE entries SET hash_version = 1, prev_content_hash = NULL, identity_tag = NULL";
+            cmd.ExecuteNonQuery();
+        }
+
+        Migrator.Migrate(_db, blobs: null);
+        var afterFirst = ReadEntry(1);
+
+        // Re-run should observe hash_version=2 already, skip the rehash,
+        // and leave the row exactly as-is.
+        using (var cmd = _db.CreateCommand())
+        {
+            cmd.CommandText = "DELETE FROM grdb_migrations WHERE identifier = 'v11_semantic_identity'";
+            cmd.ExecuteNonQuery();
+        }
+        Migrator.Migrate(_db, blobs: null);
+        var afterSecond = ReadEntry(1);
+
+        Assert.Equal(afterFirst.ContentHash,    afterSecond.ContentHash);
+        Assert.Equal(afterFirst.HashVersion,    afterSecond.HashVersion);
+        Assert.Equal(afterFirst.IdentityTag,    afterSecond.IdentityTag);
+        Assert.Equal(afterFirst.PrevContentHash, afterSecond.PrevContentHash);
+    }
+
+    private record EntryRow(
+        long Id, byte[] ContentHash, long HashVersion, string? IdentityTag,
+        byte[]? PrevContentHash, bool Pinned, double CreatedAt, double? DeletedAt);
+
+    private EntryRow ReadEntry(long id)
+    {
+        using var cmd = _db.CreateCommand();
+        cmd.CommandText = """
+            SELECT id, content_hash, hash_version, identity_tag,
+                   prev_content_hash, pinned, created_at, deleted_at
+            FROM entries WHERE id = $id
+            """;
+        cmd.Parameters.AddWithValue("$id", id);
+        using var r = cmd.ExecuteReader();
+        Assert.True(r.Read(), $"entry id={id} missing");
+        return new EntryRow(
+            r.GetInt64(0),
+            (byte[])r.GetValue(1),
+            r.GetInt64(2),
+            r.IsDBNull(3) ? null : r.GetString(3),
+            r.IsDBNull(4) ? null : (byte[])r.GetValue(4),
+            r.GetInt64(5) != 0,
+            r.GetDouble(6),
+            r.IsDBNull(7) ? (double?)null : r.GetDouble(7));
+    }
+
+    private long ScalarLong(string sql)
+    {
+        using var cmd = _db.CreateCommand();
+        cmd.CommandText = sql;
+        return (long)cmd.ExecuteScalar()!;
+    }
+
+    private double ScalarDouble(string sql)
+    {
+        using var cmd = _db.CreateCommand();
+        cmd.CommandText = sql;
+        return Convert.ToDouble(cmd.ExecuteScalar()!);
+    }
 }

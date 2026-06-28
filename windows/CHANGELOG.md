@@ -12,6 +12,84 @@ dated `[1.X.Y]` heading and reset `[Unreleased]` to empty.
 
 ## [Unreleased]
 
+- **Canonical-hash v2 — semantic content identity (v1.38.0).**
+  Windows port of the cross-platform identity algorithm Mac shipped in
+  cpdb 3.0.0 / 3.1.0. Driven by `docs/handoffs/windows-hash-v2.md`.
+
+  Entry identity changed from a SHA-256 over the **full** clipboard
+  flavor/format set to a SHA-256 over the **primary content only**,
+  chosen by a deterministic rung chain:
+  `image (≥1 KB) → file-url → url → normalized text → color → full-set fallback`.
+  Volatile sidecar formats (Chromium session tokens, link-preview
+  metadata, encoding variants) used to jitter the full-set hash and
+  fork one logical clip into many rows — Mac's audit of a real library
+  found 86% of duplicate pairs were exactly this. Hashing only the
+  primary content makes "the same thing copied twice" converge to one
+  entry on every platform.
+
+  - **New `CpdbWin.Core.Capture.ContentIdentity`** — full rung-chain
+    port of `Tools/gen_hash_vectors.py` (the language-neutral reference
+    implementation). All 26 vectors in the shared
+    `Tests/Fixtures/hash-vectors-v2.json` reproduce byte-for-byte;
+    the JSON file is copied into the test output and a `[Theory]`
+    runs every vector + every `equals` relation on every build.
+  - **`CanonicalHash` sort fix.** The fallback rung sorts by byte-wise
+    UTF-8 of the UTI, not `StringComparer.Ordinal` (UTF-16 code units).
+    Latent bug — ASCII UTIs sort identically under both, but a non-
+    ASCII UTI spanning the BMP/supplementary-plane boundary diverges.
+    `CanonicalHash` retained as the fallback-rung emission helper;
+    `EmitV1` exposed separately so `ContentIdentity` can wrap the raw
+    bytes without double-hashing.
+  - **Four new `entries` columns:** `hash_version`,
+    `prev_content_hash`, `identity_tag`, `modified_at`. Fresh installs
+    land at v2 from the union DDL; existing installs flow through a
+    one-shot migration.
+  - **`v11_semantic_identity` migration:** drops the unique-on-live
+    `content_hash` index, recomputes every row's identity via
+    `ContentIdentity`, then collision-merges rows that now share a
+    v2 hash. Survivor = earliest `created_at` (tie-break smallest id);
+    salvages pin (OR-collapse), `created_at` (MAX, bump-recency),
+    `link_title`+`link_fetched_at` (latest-fetched donor),
+    `title`/`text_preview`/`ocr_text`/`image_tags` (any donor),
+    `analyzed_at`/`ocr_at`/`tags_at` (MAX), pinboard memberships,
+    previews, and the union of loser flavors (skipped when survivor
+    body_evicted). Losers tombstoned + reverted to their v1 hash so
+    each v2 hash is held by exactly one live row; unique index
+    rebuilt. Rows with unreadable flavor bytes (body-evicted or
+    missing blob_key file) keep v1 hash + `hash_version=1`. Mirrors
+    `Sources/CpdbShared/Store/IdentityCutover.swift` +
+    `EntryCoalesce.swift`, minus the CloudKit / pull-side machinery
+    cpdb-win doesn't need.
+  - **`v12_modified_at` migration:** adds `modified_at REAL NOT NULL
+    DEFAULT 0`, backfills from `created_at` so the column is
+    meaningful day-one. Wired into `EntryRepository.SetPinned` and
+    `TombstoneMany` so future user mutations bump it. Windows has no
+    sync today, so the column is for schema parity + future LWW; the
+    pull-side wins-comparison stays Mac-only per the handoff. Runs
+    *before* v11 in execution order (v11's collision-merge UPDATE
+    references `modified_at`); identifier-numeric order is just a
+    naming convention.
+  - **Capture wiring:** `ClipboardSnapshot.ContentIdentityV2()` returns
+    `(Tag, Hash)`; `Ingestor.InsertEntry` stamps `hash_version=2`,
+    `identity_tag`, and `modified_at = created_at` on every new row.
+    `ClipboardSnapshot.ContentHash()` (the v1 method) preserved for
+    any caller that needs the legacy form explicitly.
+  - **Migration-identifier collision avoided.** Mac has
+    `v10_semantic_identity` / `v11_modified_at`; Windows shipped
+    `v10_image_per_pass_timestamps` first. Windows adds the new work
+    under fresh identifiers (`v11_semantic_identity`, `v12_modified_at`)
+    — identifiers are local bookkeeping, the cross-platform contract
+    is column-set + algorithm.
+  - **Disjointness invariant test.** Every UTI
+    `UtiTranslator.EmittedUtis` can emit is asserted disjoint from
+    `ContentIdentity.VolatileExact` + `VolatilePrefixes`. Keeps the
+    v2 fallback rung dormant-by-construction as the translator grows.
+  - **Dry-run on a frozen copy of the live user DB:** 69 → 68 live
+    entries (one Chrome-sidecar collision-merge), 0 duplicate live
+    hashes post-migration, 0 tombstoned-still-at-v2, modified_at
+    backfilled on all 69 rows, second run is a 1-ms idempotent
+    no-op. Sign-off captured before cutting.
+
 - **Stale-autostart self-heal (v1.37.0).** Reported with a fresh
   Parallels boot: user signs in, sees v1.11 (May 18 dev build) running
   in the title bar instead of the installed v1.36. Dug deep with a

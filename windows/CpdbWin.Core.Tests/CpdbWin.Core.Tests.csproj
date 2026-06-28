@@ -11,4 +11,17 @@
   <ItemGroup>
     <ProjectReference Include="..\CpdbWin.Core\CpdbWin.Core.csproj" />
   </ItemGroup>
+  <!--
+    The canonical-hash v2 vector file lives at the repo root
+    (Tests/Fixtures/hash-vectors-v2.json). Both Swift (HashVectors.swift)
+    and Windows tests must reproduce every expect_hex from it; copy the
+    file into the test output so ContentIdentityVectorsTests can load it
+    via AppContext.BaseDirectory at runtime. PreserveNewest so a Mac-side
+    regen flows through on the next build.
+  -->
+  <ItemGroup>
+    <None Include="..\..\Tests\Fixtures\hash-vectors-v2.json"
+          Link="Fixtures\hash-vectors-v2.json"
+          CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>

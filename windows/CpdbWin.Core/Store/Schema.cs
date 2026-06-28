@@ -24,6 +24,16 @@ public static class Schema
         "v8_link_metadata",
         "v9_link_retry_backoff",
         "v10_image_per_pass_timestamps",
+        // Per docs/handoffs/windows-hash-v2.md: identifier collision with
+        // macOS at v10 (Mac has v10_semantic_identity / v11_modified_at;
+        // Windows had v10_image_per_pass_timestamps shipped first).
+        // Migration identifiers are local bookkeeping; the cross-platform
+        // contract is column-set + algorithm, not identifier-string
+        // equality. We add the v2 work under fresh identifiers from v11
+        // upward so each platform's grdb_migrations remains internally
+        // consistent. See docs/schema.md §Migration identifiers.
+        "v11_semantic_identity",
+        "v12_modified_at",
     };
 
     public const string UnionDdl = """
@@ -61,7 +71,25 @@ public static class Schema
             -- collide. analyzed_at stays as a Mac-parity "ever
             -- processed" sentinel; both passes stamp it on settle.
             ocr_at           REAL,
-            tags_at          REAL
+            tags_at          REAL,
+            -- v11 (semantic identity, mirrors macOS canonical-hash v2):
+            -- hash_version=1 is the legacy full-set hash; 2 is the rung-
+            -- chain identity that converges sidecar-varying duplicates.
+            -- prev_content_hash retains the v1 hash for forensics + a
+            -- dual-era dedup probe in importers. identity_tag is the
+            -- rung that produced a v2 hash (image/file/url/text/color/
+            -- fallback). Fresh installs land at v2 from the start.
+            hash_version       INTEGER NOT NULL DEFAULT 1,
+            prev_content_hash  BLOB,
+            identity_tag       TEXT,
+            -- v12 (modified_at, mirrors macOS 3.1.0): unix-seconds
+            -- timestamp of the last user mutation (pin / delete /
+            -- restore). On the Mac it drives last-writer-wins on sync
+            -- pull; Windows is standalone today so we just maintain
+            -- the column for schema parity + future sync. Defaults to
+            -- 0 so the migration backfill from created_at is a single
+            -- UPDATE rather than NOT-NULL-violating row-by-row.
+            modified_at        REAL NOT NULL DEFAULT 0
         );
         CREATE INDEX idx_entries_created_at ON entries(created_at DESC);
         CREATE INDEX idx_entries_kind ON entries(kind);
