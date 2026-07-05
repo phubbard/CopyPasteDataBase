@@ -21,6 +21,19 @@ and require corresponding client + server release.
 > scaffold remain the current shipped state and a code reference;
 > don't begin a client implementation against v1 without
 > re-confirming scope.
+>
+> **⚠️ Do NOT implement against this spec (2026-07-05).** A deep
+> design review found v1 unimplementable as written — the server
+> has no way to learn `auth_key` (§Authentication), the Diceware
+> pairing derivation is not reversible as described (§Pairing),
+> and `envelope_id` keyed by the public `workspace_id` lets the
+> relay confirm guessable content, among ~a dozen further
+> protocol/scaffold defects. The findings, verified cost model,
+> and the agreed v2 revision (meta/body envelope split, seq
+> change-log, versioned writes, retained tombstones, IETF
+> ChaCha20-Poly1305, reseed-as-migration) are in
+> [`relay-deep-analysis.md`](relay-deep-analysis.md). This doc
+> stays as the v1 reference until the v2 rewrite lands.
 
 ---
 
