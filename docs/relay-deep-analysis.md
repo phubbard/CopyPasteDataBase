@@ -82,6 +82,10 @@ sync topology exists.** envelope_id derives from content_hash; a
 v1-hash Windows creates parallel envelopes for identical content and
 nothing dedupes. Image + html-only identities stay platform-local by
 design — accept visibly doubled cross-platform images.
+**Update, same day: the gate closed** — Windows v1.38.0 landed the
+`ContentIdentity` port + `v11_semantic_identity` rehash +
+`v12_modified_at` per the handoff, so Windows client work is unblocked
+as soon as the v2 protocol revision + test vectors exist.
 
 ## 3. Cost: $0/mo is real, with three caveats
 
@@ -448,7 +452,7 @@ Numbered for ratification; recommendation first.
 |---|---|---|
 | D1 | Substrate | Cloudflare Workers + per-workspace SQLite-backed DO + R2. Free plan first; $5 Paid only if reseed-day 1027s ever bite. |
 | D2 | Topology | Hybrid: CloudKit for Apple, relay bridges Windows, all Macs dual-write. Revisit relay-for-all after a 3–6-month trial with concrete triggers. |
-| D3 | Sequencing gate | `windows-hash-v2` lands before any client sync work. |
+| D3 | Sequencing gate | `windows-hash-v2` lands before any client sync work. **Satisfied 2026-07-05** (Windows v1.38.0). |
 | D4 | AEAD | IETF ChaCha20-Poly1305, pending a 5-minute `IsSupported` check on the real Windows box; else AES-256-GCM. No XChaCha, no libsodium, no agility. |
 | D5 | Key schedule | Words-are-root pairing (C3 fix) + fourth `id_key` (C2 fix) + TOFU `auth_key` bootstrap (C1 fix) + provisioning secret at the Worker. |
 | D6 | Envelope model | Meta/body split; schema gains modified_at/uuid/hash_version/identity_tag/enrichment fields; compression+padding per §9. |
