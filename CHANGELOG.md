@@ -10,6 +10,8 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+## [3.2.1] – 2026-07-13
+
 - **Fix: image entries could get permanently stuck unanalyzed.** Vision
   OCR/tagging previously ran exactly once, at capture time, on the
   capturing device only — a pull-synced image never got analyzed
