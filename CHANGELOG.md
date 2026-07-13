@@ -10,6 +10,8 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+## [3.2.0] – 2026-07-12
+
 - **Fix: iOS sync silently dead since the v3 upgrade.** The v10 schema
   migration marks the hash-v2 identity cutover pending, but the cutover
   runner was only wired into the Mac app and CLI — the iOS app never ran
