@@ -10,6 +10,15 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+- **Add `cpdb sync gc-zone`.** Deletes the abandoned `cpdb-v2` CloudKit
+  zone now that every device (3 Macs + iPhone) is verified on `cpdb-v3`.
+  Whole-zone delete only — refuses the live zone, refuses any name other
+  than the known legacy zone, is a no-op if the zone's already gone, and
+  defaults to a dry run (`--force` to actually delete). Actually
+  executed via the entitled app process: `defaults write
+  net.phfactor.cpdb gcZoneRequest cpdb-v2 [+ gcZoneForce -bool true]`,
+  then relaunch — the CLI process cannot hold iCloud entitlements.
+
 ## [3.2.0] – 2026-07-12
 
 - **Fix: iOS sync silently dead since the v3 upgrade.** The v10 schema

@@ -122,6 +122,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let store = store, lifecycle.mode == .capturing {
             startCloudKitSync(store: store)
         }
+        // After sync init, so this can't race the identity-cutover
+        // sequence above.
+        runGcZoneRequestIfArmed()
 
         // "Sync Now" menu item → pull-then-push.
         NotificationCenter.default.addObserver(
@@ -205,6 +208,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             } catch {
                 Log.cli.error("identity cutover failed: \(String(describing: error), privacy: .public)")
             }
+        }
+    }
+
+    /// One-shot `gc-zone` execution hook. Exists because the CLI
+    /// process can't hold iCloud entitlements — `CKContainer` traps
+    /// there — so an operator arms this via `defaults write
+    /// net.phfactor.cpdb gcZoneRequest cpdb-v2 [-bool gcZoneForce
+    /// true]` and relaunches the (entitled) app to actually run it.
+    private func runGcZoneRequestIfArmed() {
+        let defaults = UserDefaults.standard
+        guard let zoneName = defaults.string(forKey: "gcZoneRequest") else { return }
+        let force = defaults.bool(forKey: "gcZoneForce")
+        let containerID = "iCloud.\(Paths.bundleId)"
+        let client = LiveCloudKitClient(containerIdentifier: containerID)
+        Task.detached(priority: .utility) {
+            do {
+                let outcome = try await GcZone.run(
+                    zoneName: zoneName, force: force, containerID: containerID, client: client
+                )
+                Log.cli.info("gc-zone: \(String(describing: outcome), privacy: .public)")
+            } catch {
+                Log.cli.error("gc-zone: failed: \(String(describing: error), privacy: .public)")
+            }
+            // One-shot: clear both keys regardless of outcome so a
+            // failed attempt doesn't silently re-run on every launch —
+            // the operator re-arms deliberately.
+            defaults.removeObject(forKey: "gcZoneRequest")
+            defaults.removeObject(forKey: "gcZoneForce")
         }
     }
 

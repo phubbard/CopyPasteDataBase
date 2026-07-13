@@ -142,6 +142,7 @@ maintenance surface without a separate download.
 | `cpdb import-urls FILE [--dry-run][--spread-seconds N]` | ✅ v2.9.0 | ✅ v1.10.0 | one URL per line, http(s)/file only, `#`-comments + blanks skipped; ingest as synthetic clipboard captures attributed to a "cpdb import" source app so links enrich via the normal backfill. Logic in `UrlImporter` (shared by CLI + GUI). Windows: `cpdb-win import-urls FILE [--dry-run] [--spread-seconds N]` |
 | `cpdb export --format md\|csv\|html [--output][--limit][--include-evicted]` | ✅ v2.9.0 | ✅ v1.10.0 | metadata + text only (no flavor bytes); newest-first. Logic in `HistoryExporter` (shared by CLI + GUI). CSV is RFC-4180 12-col; HTML self-contained w/ dark mode; MD = paragraph-per-entry. Windows: `cpdb-win export --format md\|csv\|html [--output FILE] [--limit N] [--include-evicted]` (no `--output` → stdout) |
 | `cpdb sync {push-once, pull-once}` | ✅ v2.0 | — | CloudKit, Apple-only |
+| `cpdb sync gc-zone ZONE [--force]` | ✅ unreleased | — | CloudKit, Apple-only. Deletes the abandoned `cpdb-v2` legacy zone (whole-zone only); refuses the live zone and any other name; dry run by default |
 
 ## Build / packaging
 

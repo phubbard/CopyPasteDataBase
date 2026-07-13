@@ -47,6 +47,17 @@ public protocol CloudKitClient: Sendable {
     /// calling again with the same subscription ID replaces the prior
     /// one rather than duplicating. Called once per launch.
     func ensureZoneSubscription(zoneID: CKRecordZone.ID, subscriptionID: String) async throws
+
+    /// List every zone in the Private Database. Used by `gc-zone` to
+    /// check whether the legacy zone still exists before (and after)
+    /// deleting it.
+    func fetchAllZones() async throws -> [CKRecordZone.ID]
+
+    /// Delete a zone and everything in it, server-side, in one shot.
+    /// This is the only sanctioned way to remove the legacy zone: a
+    /// whole-zone delete can't leave a laggard reader mid-way through a
+    /// partially-deleted zone the way targeted per-record deletes could.
+    func deleteZone(_ zoneID: CKRecordZone.ID) async throws
 }
 
 /// Result of one `fetchRecordZoneChanges` call.
@@ -192,5 +203,21 @@ public struct LiveCloudKitClient: CloudKitClient {
             // Already exists — fine.
             return
         }
+    }
+
+    public func fetchAllZones() async throws -> [CKRecordZone.ID] {
+        let zones = try await database.allRecordZones()
+        return zones.map { $0.zoneID }
+    }
+
+    public func deleteZone(_ zoneID: CKRecordZone.ID) async throws {
+        // Mirrors `modifyRecords` above: the async convenience API only
+        // throws for whole-operation failures, so a per-item rejection
+        // (.zoneBusy tearing down a large zone, a permission failure)
+        // would otherwise be silently swallowed — and the caller's later
+        // re-verify would then report the misleading "deleted but still
+        // in the zone list" instead of the real CKError.
+        let (_, deleteResults) = try await database.modifyRecordZones(saving: [], deleting: [zoneID])
+        try deleteResults[zoneID]?.get()
     }
 }

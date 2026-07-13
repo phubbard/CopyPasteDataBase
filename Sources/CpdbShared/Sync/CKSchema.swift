@@ -31,8 +31,11 @@ public enum CKSchema {
     public static let zoneName = "cpdb-v3"
 
     /// The pre-cutover zone (cpdb ≤ 2.10.x). Retained ONLY for the
-    /// cutover's step-0 drain of pending old-zone pushes and the gated
-    /// `gc-zone` command. Never written to as part of normal v3 sync.
+    /// cutover's step-0 drain of pending old-zone pushes and as the one
+    /// legal target of `cpdb sync gc-zone` (Sources/CpdbShared/Sync/GcZone.swift,
+    /// wired up in Sources/cpdb/Commands/Sync.swift) — that command
+    /// refuses any zone name other than this one. Never written to as
+    /// part of normal v3 sync.
     public static let legacyZoneName = "cpdb-v2"
 
     public enum RecordType {

@@ -16,6 +16,9 @@ actor FakeCloudKitClient: CloudKitClient {
         var modifyFailure: (any Error)? = nil
         /// Record IDs to fail individually (all others succeed).
         var failingRecordIDs: Set<CKRecord.ID> = []
+        /// Simulates a `deleteZone` call that reports success but doesn't
+        /// actually remove the zone — for the gc-zone re-verify test.
+        var zoneDeleteIsNoOp: Bool = false
     }
 
     private(set) var savedRecords: [CKRecord.ID: CKRecord] = [:]
@@ -24,6 +27,18 @@ actor FakeCloudKitClient: CloudKitClient {
     var injected: Injected = .init()
     private(set) var modifyCallCount = 0
     private(set) var fetchCallCount = 0
+
+    /// Zones the fake reports as existing server-side. Tests seed this
+    /// directly (rather than via `ensureZone`, which the gc-zone path
+    /// never calls) so `fetchAllZones`/`deleteZone` can be exercised
+    /// independent of the push/pull paths above.
+    private(set) var existingZones: Set<CKRecordZone.ID> = []
+    private(set) var deletedZones: [CKRecordZone.ID] = []
+    private(set) var fetchAllZonesCallCount = 0
+
+    func setExistingZones(_ zones: Set<CKRecordZone.ID>) {
+        existingZones = zones
+    }
 
     /// Records a test wants pull to "see" on the next fetch. The fake
     /// hands them back as changedRecords and clears the buffer.
@@ -87,6 +102,18 @@ actor FakeCloudKitClient: CloudKitClient {
 
     func ensureZoneSubscription(zoneID: CKRecordZone.ID, subscriptionID: String) async throws {
         subscriptions.insert(subscriptionID)
+    }
+
+    func fetchAllZones() async throws -> [CKRecordZone.ID] {
+        fetchAllZonesCallCount += 1
+        return Array(existingZones)
+    }
+
+    func deleteZone(_ zoneID: CKRecordZone.ID) async throws {
+        deletedZones.append(zoneID)
+        if !injected.zoneDeleteIsNoOp {
+            existingZones.remove(zoneID)
+        }
     }
 
     enum TestError: Error { case injected }

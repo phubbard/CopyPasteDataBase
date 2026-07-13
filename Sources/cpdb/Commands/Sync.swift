@@ -21,6 +21,7 @@ struct Sync: ParsableCommand {
             SyncStatus.self,
             SyncPushOnce.self,
             SyncPullOnce.self,
+            SyncGcZone.self,
         ]
     )
 }
@@ -106,6 +107,74 @@ struct SyncPullOnce: ParsableCommand {
     }
 }
 
+// MARK: - gc-zone
+
+struct SyncGcZone: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "gc-zone",
+        abstract: "Delete the abandoned legacy CloudKit zone (whole-zone only).",
+        discussion: """
+            Refuses anything except the one known legacy zone (\(CKSchema.legacyZoneName)) — \
+            never the live zone, never an arbitrary name. Without --force this is a dry \
+            run: it reports whether the zone exists and does not delete it.
+            """
+    )
+
+    @Argument(help: "Zone name to delete — must be the legacy zone.")
+    var zoneName: String
+
+    @Flag(name: .long, help: "Actually delete the zone (default is a dry run).")
+    var force: Bool = false
+
+    func run() throws {
+        // Deliberately does not open the local store: gc-zone only
+        // touches the CloudKit zone list, never local data.
+        //
+        // Rails (a)/(b) MUST run before `LiveCloudKitClient` is
+        // constructed: that init calls `CKContainer(identifier:)`,
+        // which traps (SIGTRAP, no output) on a binary without iCloud
+        // entitlements — which includes this shipped CLI. Without this,
+        // even `gc-zone cpdb-v3` (which must cleanly refuse with exit
+        // 2) would crash instead.
+        do {
+            try GcZone.precheck(zoneName: zoneName)
+        } catch let error as GcZone.GcZoneError {
+            FileHandle.standardError.write("error: \(error)\n".data(using: .utf8)!)
+            throw ExitCode(2)
+        }
+
+        let containerID = "iCloud.\(Paths.bundleId)"
+        let client = LiveCloudKitClient(containerIdentifier: containerID)
+        do {
+            let outcome = try runBlockingThrowing {
+                try await GcZone.run(zoneName: zoneName, force: force, containerID: containerID, client: client)
+            }
+            switch outcome {
+            case .alreadyGone:
+                print("already gone")
+            case .dryRun(let containerID):
+                print("""
+                    DRY RUN — zone \"\(zoneName)\" exists in container \(containerID).
+                    Deleting it removes every record inside permanently and cannot be undone.
+                    Re-run with --force to delete it.
+                    """)
+            case .deleted:
+                print("deleted \"\(zoneName)\" — confirmed gone from the zone list")
+            }
+        } catch let error as GcZone.GcZoneError {
+            // Refusals (a)/(b) are usage errors — exit 2, distinct from
+            // the generic failure exit `runBlocking` uses elsewhere.
+            FileHandle.standardError.write("error: \(error)\n".data(using: .utf8)!)
+            switch error {
+            case .refusedActiveZone, .refusedUnknownZone:
+                throw ExitCode(2)
+            case .verificationFailed:
+                throw ExitCode(1)
+            }
+        }
+    }
+}
+
 // MARK: - helpers
 
 private func makeSyncer(store: Store, batchSize: Int = 200) throws -> CloudKitSyncer {
@@ -126,23 +195,29 @@ private func makeSyncer(store: Store, batchSize: Int = 200) throws -> CloudKitSy
 /// our syncer is an actor. A semaphore is the simplest safe bridge for
 /// CLI startup code.
 private func runBlocking<T: Sendable>(_ block: @Sendable @escaping () async throws -> T) -> T {
+    do {
+        return try runBlockingThrowing(block)
+    } catch {
+        FileHandle.standardError.write("error: \(error)\n".data(using: .utf8)!)
+        exit(1)
+    }
+}
+
+/// Same bridge as `runBlocking`, but rethrows instead of exiting directly
+/// — gc-zone needs to inspect the error to pick an exit code (2 for a
+/// safety-rail refusal vs. 1 for anything else).
+private func runBlockingThrowing<T: Sendable>(_ block: @Sendable @escaping () async throws -> T) throws -> T {
     let sem = DispatchSemaphore(value: 0)
     nonisolated(unsafe) var result: Result<T, Error>!
     Task {
         do {
-            let v = try await block()
-            result = .success(v)
+            result = .success(try await block())
         } catch {
             result = .failure(error)
         }
         sem.signal()
     }
     sem.wait()
-    switch result! {
-    case .success(let v): return v
-    case .failure(let e):
-        FileHandle.standardError.write("error: \(e)\n".data(using: .utf8)!)
-        exit(1)
-    }
+    return try result.get()
 }
 #endif
