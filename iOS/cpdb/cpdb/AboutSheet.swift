@@ -19,6 +19,11 @@ struct AboutSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var totalEntries: Int = 0
     @State private var kindCounts: [String: Int] = [:]
+    /// Cached formatted relative-time string ("3 hours ago" / "Never"),
+    /// loaded once on appearance — UserDefaults isn't Observable so this
+    /// doesn't need to be live. The GATED/migrating override below IS
+    /// live (reads `container` directly) since that state can change
+    /// while the sheet is open (a cutover finishing, a pull landing).
     @State private var lastSyncText: String = "—"
 
     private static let repoURL = URL(string: "https://github.com/phubbard/CopyPasteDataBase")!
@@ -74,12 +79,26 @@ struct AboutSheet: View {
         .task {
             await loadStats()
         }
+        // The GATED/migrating override in `currentLastSyncText` is live,
+        // but the fallback it reveals when the override lifts —
+        // `lastSyncText` — was cached once at appearance. Without this,
+        // a cutover/pull finishing while the sheet is open flips straight
+        // from "paused — library upgrade in progress" to a stale
+        // "Never"/weeks-old timestamp from before any sync had succeeded,
+        // instead of the timestamp of the sync that JUST landed. Refresh
+        // it whenever the gate state changes.
+        .onChange(of: container.syncGated) { _, _ in
+            lastSyncText = Self.formattedLastSync()
+        }
+        .onChange(of: container.migrationState) { _, _ in
+            lastSyncText = Self.formattedLastSync()
+        }
     }
 
     @ViewBuilder
     private var statsBlock: some View {
         VStack(spacing: 6) {
-            aboutRow("Last sync", value: lastSyncText)
+            aboutRow("Last sync", value: currentLastSyncText)
             aboutRow("Library", value: "\(totalEntries) entries")
 
             // Per-kind breakdown. Hidden when zero for that kind.
@@ -106,6 +125,22 @@ struct AboutSheet: View {
                 }
             }
         }
+    }
+
+    /// "Last sync" row text. While a cutover is running or sync is
+    /// otherwise gated, the raw relative-time stamp is a lie — nothing
+    /// pushed or pulled while gated, so it can sit unchanged for weeks
+    /// while looking like a healthy recent sync (this was the original
+    /// bug: a silent gate with no user-visible signal). Surface the
+    /// truth instead; fall back to the formatted timestamp once healthy.
+    private var currentLastSyncText: String {
+        if case .running = container.migrationState {
+            return "paused — library upgrade in progress"
+        }
+        if container.syncGated {
+            return "paused — library upgrade pending"
+        }
+        return lastSyncText
     }
 
     private func aboutRow(_ label: String, value: String) -> some View {

@@ -73,6 +73,22 @@ public enum IdentityCutover {
         public init() {}
     }
 
+    /// How strictly `run` treats a failure to write the pre-migration
+    /// `VACUUM INTO` snapshot (step 1).
+    public enum SnapshotPolicy: Sendable, Equatable {
+        /// Current Mac/CLI behavior: a snapshot failure throws and the
+        /// cutover does not proceed. Correct where the snapshot is the
+        /// only backup of otherwise-irreplaceable local history.
+        case required
+        /// Attempt the snapshot; on failure, log and continue the
+        /// cutover without one. Meant for iOS: an iPhone is a CloudKit
+        /// replica, not a source of truth — the cloud is its recovery
+        /// path — so a low-storage device must not be bricked (stuck
+        /// `cutover_pending` forever) by a `VACUUM INTO` that can't find
+        /// room to write a second copy of the database.
+        case bestEffort
+    }
+
     public enum Outcome: Sendable, Equatable {
         /// No cutover_pending marker — fresh install or already done.
         case notNeeded
@@ -111,6 +127,7 @@ public enum IdentityCutover {
         store: Store,
         blobs: BlobStore = BlobStore(),
         snapshotURL: URL? = nil,
+        snapshotPolicy: SnapshotPolicy = .required,
         drainPushQueue: (() async throws -> Void)? = nil,
         progress: (@Sendable (String) -> Void)? = nil
     ) async throws -> Outcome {
@@ -171,9 +188,27 @@ public enum IdentityCutover {
         // rehash hasn't started, so the source DB is byte-unchanged.
         if let snapshotURL, try await store.dbQueue.read({ try state($0, snapshotDoneKey) == nil }) {
             progress?("writing pre-migration snapshot")
-            try? FileManager.default.removeItem(at: snapshotURL)
-            try await store.dbQueue.writeWithoutTransaction { db in
-                try db.execute(sql: "VACUUM INTO ?", arguments: [snapshotURL.path])
+            cleanupPartialSnapshot(at: snapshotURL)
+            do {
+                try await store.dbQueue.writeWithoutTransaction { db in
+                    try db.execute(sql: "VACUUM INTO ?", arguments: [snapshotURL.path])
+                }
+            } catch {
+                guard snapshotPolicy == .bestEffort else { throw error }
+                // iOS: no snapshot, no problem — CloudKit is the backup.
+                // Log and fall through to mark the step done so we don't
+                // retry (and re-fail) the VACUUM INTO on every launch.
+                //
+                // SQLite documents that a failed VACUUM INTO can leave a
+                // partial, corrupt output file behind — exactly the
+                // low-storage/ENOSPC case this policy exists for. Since
+                // marking the step done means the pre-vacuum removeItem
+                // above never runs again on this device, clean up the
+                // partial file here or it strands disk space permanently
+                // on the device that can least afford it.
+                cleanupPartialSnapshot(at: snapshotURL)
+                Log.store.error("cutover: snapshot failed, continuing best-effort: \(String(describing: error), privacy: .public)")
+                progress?("snapshot failed — continuing without one (best effort)")
             }
             try await store.dbQueue.write { db in
                 try setState(db, snapshotDoneKey, "1")
@@ -259,6 +294,17 @@ public enum IdentityCutover {
     /// Default snapshot location for a file-backed store.
     public static func defaultSnapshotURL(forDatabaseAt path: String) -> URL {
         URL(fileURLWithPath: path + ".pre-v10")
+    }
+
+    /// Best-effort delete of whatever sits at a snapshot path. Used both
+    /// before a (re-)attempted `VACUUM INTO` and, for `.bestEffort`
+    /// policy, after a failed one. SQLite documents that an interrupted
+    /// `VACUUM INTO` can leave a partial, corrupt output file behind —
+    /// on the low-storage device `.bestEffort` targets, that's exactly
+    /// the storage the failure was caused by, so it must not be
+    /// stranded. No-op (never throws) if nothing exists at `url`.
+    static func cleanupPartialSnapshot(at url: URL) {
+        try? FileManager.default.removeItem(at: url)
     }
 
     // MARK: - Step 2 internals

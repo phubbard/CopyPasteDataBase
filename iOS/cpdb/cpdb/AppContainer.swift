@@ -91,6 +91,31 @@ final class AppContainer {
     private(set) var lastPull: CloudKitSyncer.PullReport?
     private(set) var isSyncing: Bool = false
     private(set) var lastError: String?
+    /// True when the last pull/push came back `gated` (an identity
+    /// cutover is pending or mid-run) rather than genuinely idle. The
+    /// UI must not read this as "up to date" — see `pullNow`.
+    private(set) var syncGated: Bool = false
+
+    /// canonical-hash v2 identity cutover state, published so SearchView
+    /// / AboutSheet can show progress instead of pretending sync is
+    /// healthy while it's silently gated. iOS never ran the cutover
+    /// before this fix (only Mac AppDelegate / the CLI did), so a phone
+    /// with `cutover_pending` set by the schema migration would spin
+    /// forever with sync gated and no explanation — see `runIdentityCutoverIfNeeded`.
+    enum MigrationState: Equatable {
+        case idle
+        case running(String)
+        case failed(String)
+    }
+    private(set) var migrationState: MigrationState = .idle
+    /// Guards against stacking multiple cutover attempts if scenePhase
+    /// flips .active several times in a row (e.g. backgrounded mid-run,
+    /// foregrounded again quickly). Cleared when the in-flight attempt
+    /// finishes, so the NEXT foreground can retry if it failed or was
+    /// interrupted — the cutover is resumable (chunked rehash cursor
+    /// persists), so re-attempting is safe and bounded by "one attempt
+    /// per foreground transition", not a hot loop.
+    private var cutoverTask: Task<Void, Never>?
 
     /// Running cumulative totals during an in-flight pull — published
     /// per page via the syncer's progress callback so SearchView can
@@ -154,6 +179,11 @@ final class AppContainer {
             // Re-schedule BGAppRefreshTask every launch — iOS forgets
             // on reboot and after failed runs.
             scheduleBackgroundRefresh()
+            // Fire-and-forget: if this DB still needs the canonical-hash
+            // v2 cutover, run it now. Non-blocking — the pull below will
+            // simply come back `gated` until it finishes, and SearchView
+            // shows `migrationState` in the meantime.
+            runIdentityCutoverIfNeeded()
             print("[cpdb] bootstrap: subscription OK, pulling…")
             await pullNow()
             print("[cpdb] bootstrap: complete")
@@ -319,6 +349,99 @@ final class AppContainer {
         task.setTaskCompleted(success: true)
     }
 
+    // MARK: - Identity cutover (canonical-hash v2)
+
+    /// Run the canonical-hash v2 identity cutover if this database still
+    /// needs it. Bug context: the schema migration seeds
+    /// `cutover_pending` on any DB with existing rows, but historically
+    /// only `AppDelegate` (Mac) and the `cpdb migrate-identity` CLI ever
+    /// called `IdentityCutover.run` — the iOS app never did, so
+    /// `CloudKitSyncer` silently gated push/pull forever on the phone
+    /// with no error and no UI signal.
+    ///
+    /// No-ops if a run is already in flight (`cutoverTask != nil`) or the
+    /// store/syncer aren't ready yet. Safe to call repeatedly — cheap
+    /// once the cutover is done (`isPending` short-circuits to `false`).
+    func runIdentityCutoverIfNeeded() {
+        guard let store = store else { return }
+        guard cutoverTask == nil else { return }
+        cutoverTask = Task { [weak self] in
+            defer { self?.cutoverTask = nil }
+            guard let self else { return }
+            // `AppContainer` is @MainActor, so this `Task` inherits that
+            // isolation — `IdentityCutover.isPending(store)` performs a
+            // synchronous `dbQueue.read`, which would otherwise block the
+            // main thread behind any in-flight write transaction (e.g. a
+            // pull applying a page of CKAsset flavor bytes) on every
+            // foreground activation, forever, even long after the cutover
+            // is done. Hop off the main actor for the read itself.
+            let pending: Bool
+            do {
+                pending = try await store.dbQueue.read { try IdentityCutover.isPending($0) }
+            } catch {
+                pending = false
+            }
+            guard pending else { return }
+
+            // Wrap the run in a background task so getting backgrounded
+            // mid-cutover buys extra time instead of getting frozen
+            // immediately. The cutover persists its rehash cursor after
+            // every ~200-row chunk, so if iOS still kills us before we
+            // finish, resuming on the next foreground is safe — we just
+            // lose the extra time, not correctness.
+            #if canImport(UIKit)
+            var bgTaskId: UIBackgroundTaskIdentifier = .invalid
+            bgTaskId = UIApplication.shared.beginBackgroundTask(withName: "cpdb-identity-cutover") {
+                UIApplication.shared.endBackgroundTask(bgTaskId)
+                bgTaskId = .invalid
+            }
+            defer {
+                if bgTaskId != .invalid {
+                    UIApplication.shared.endBackgroundTask(bgTaskId)
+                }
+            }
+            #endif
+
+            self.migrationState = .running("starting")
+            let snapshotURL = IdentityCutover.defaultSnapshotURL(forDatabaseAt: Paths.databaseURL.path)
+            do {
+                let outcome = try await IdentityCutover.run(
+                    store: store,
+                    // iOS is a pure CloudKit replica — the cloud is its
+                    // recovery path, so a low-storage phone must not be
+                    // bricked (stuck cutover_pending forever) by a
+                    // VACUUM INTO that can't find room for a second copy
+                    // of the database.
+                    snapshotURL: snapshotURL,
+                    snapshotPolicy: .bestEffort,
+                    // Nothing to drain: iOS never pushes to the old
+                    // cpdb-v2 zone (there's no legacy push path here),
+                    // and the reseed in step 5 subsumes any local edits
+                    // anyway. Mirrors the Mac's `drainPushQueue: nil`.
+                    drainPushQueue: nil,
+                    progress: { text in
+                        Task { @MainActor [weak self] in self?.migrationState = .running(text) }
+                    }
+                )
+                print("[cpdb] identity cutover outcome: \(outcome)")
+                switch outcome {
+                case .completed:
+                    self.migrationState = .idle
+                    // A full pull clears the pull-before-push latch the
+                    // cutover set and stamps lastSuccessAt — do it now
+                    // rather than waiting for the next poll tick.
+                    await self.pullNow()
+                case .notNeeded, .blockedOnPushQueue, .alreadyRunning:
+                    self.migrationState = .idle
+                }
+            } catch {
+                Self.logError("identity cutover", error)
+                self.migrationState = .failed("\(error)")
+                self.lastError = "Library upgrade failed — will retry"
+            }
+        }
+    }
+
     // MARK: - Sync
 
     /// Drain any outbound work (tombstones created by the user's
@@ -332,6 +455,13 @@ final class AppContainer {
         do {
             while true {
                 let push = try await syncer.pushPendingChanges()
+                if push.gated {
+                    // Don't clear syncGated here — a paired pullNow()
+                    // call (the common case; pushNow is usually invoked
+                    // FROM pullNow) will set the user-visible state.
+                    syncGated = true
+                    break
+                }
                 if push.attempted > 0 {
                     print("[cpdb] push: attempted=\(push.attempted) saved=\(push.saved) failed=\(push.failed) remaining=\(push.remaining)")
                 }
@@ -369,17 +499,27 @@ final class AppContainer {
             pullStartedAt = nil
         }
         do {
-            let report = try await syncer.pullRemoteChanges { [weak self] page in
+            let report = try await syncer.pullRemoteChanges { page in
                 // Called after every page of the pull. Hop back to the
                 // main actor to update @Observable state — the progress
                 // callback closure runs on the syncer's actor context.
-                Task { @MainActor in
+                Task { @MainActor [weak self] in
                     self?.pullProgress = page
                 }
             }
             lastPull = report
-            lastError = nil
-            print("[cpdb] pull: inserted=\(report.inserted) updated=\(report.updated) tombstoned=\(report.tombstoned) skipped=\(report.skipped)")
+            if report.gated {
+                // A gated report means sync did NOTHING — an identity
+                // cutover is pending or mid-run. Must not be read as "up
+                // to date": surface it distinctly so the UI tells the
+                // truth instead of showing a stale "Last sync" as fresh.
+                syncGated = true
+                lastError = "Library upgrade pending — sync paused"
+            } else {
+                syncGated = false
+                lastError = nil
+            }
+            print("[cpdb] pull: inserted=\(report.inserted) updated=\(report.updated) tombstoned=\(report.tombstoned) skipped=\(report.skipped) gated=\(report.gated)")
         } catch {
             lastError = "\(error)"
             Self.logError("pull", error)

@@ -75,7 +75,8 @@ struct SyncPushOnce: ParsableCommand {
         let store = try Store.open()
         let syncer = try makeSyncer(store: store, batchSize: batch)
         let report = runBlocking { try await syncer.pushPendingChanges() }
-        print("push: attempted=\(report.attempted) saved=\(report.saved) failed=\(report.failed) remaining=\(report.remaining)")
+        let gatedSuffix = report.gated ? " [GATED — sync paused for identity cutover, not idle]" : ""
+        print("push: attempted=\(report.attempted) saved=\(report.saved) failed=\(report.failed) remaining=\(report.remaining)\(gatedSuffix)")
     }
 }
 
@@ -100,7 +101,8 @@ struct SyncPullOnce: ParsableCommand {
         }
         let syncer = try makeSyncer(store: store)
         let report = runBlocking { try await syncer.pullRemoteChanges() }
-        print("pull: inserted=\(report.inserted) updated=\(report.updated) tombstoned=\(report.tombstoned) skipped=\(report.skipped)")
+        let gatedSuffix = report.gated ? " [GATED — sync paused for identity cutover, not idle]" : ""
+        print("pull: inserted=\(report.inserted) updated=\(report.updated) tombstoned=\(report.tombstoned) skipped=\(report.skipped)\(gatedSuffix)")
     }
 }
 

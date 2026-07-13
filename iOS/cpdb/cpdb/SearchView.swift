@@ -83,6 +83,16 @@ struct SearchView: View {
                         .listRowInsets(.init(top: 14, leading: 16, bottom: 14, trailing: 16))
                         .listRowSeparator(.hidden)
 
+                    // Thin status row for the canonical-hash v2 identity
+                    // cutover and gated-sync states. Deliberately NOT the
+                    // old push-every-row-down banner (see comment above)
+                    // — a single caption line under the brand header, so
+                    // layout stays stable whether it's showing or not.
+                    // Pull-to-refresh doesn't get special-cased: `pullNow`
+                    // still runs and returns quickly with `gated == true`
+                    // while this row keeps telling the truth throughout.
+                    migrationStatusRow
+
                     ForEach(results) { row in
                         NavigationLink(value: row.entry.id) {
                             EntryRow(
@@ -267,6 +277,45 @@ struct SearchView: View {
             Image(systemName: filter.isDefault ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill")
         }
         .accessibilityLabel("Filter and search scope")
+    }
+
+    /// Status row shown while the canonical-hash v2 identity cutover is
+    /// running / has failed, or (more generally) while sync is gated
+    /// for any reason. Priority: an in-progress or failed cutover is
+    /// the most specific, actionable message; a bare `syncGated` (e.g.
+    /// caught between cutover completing and its follow-up pull) falls
+    /// back to a generic "paused" line. Empty view when everything's
+    /// healthy so the list layout doesn't shift.
+    @ViewBuilder
+    private var migrationStatusRow: some View {
+        switch container.migrationState {
+        case .running(let text):
+            migrationBanner(icon: "arrow.triangle.2.circlepath", text: "Upgrading library… \(text)")
+        case .failed:
+            migrationBanner(icon: "exclamationmark.triangle", text: "Library upgrade paused — will retry", tint: .orange)
+        case .idle:
+            if container.syncGated {
+                migrationBanner(icon: "icloud.slash", text: "Sync paused — library upgrade pending")
+            }
+        }
+    }
+
+    private func migrationBanner(icon: String, text: String, tint: Color = .secondary) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: icon)
+                .font(.system(size: 12, weight: .semibold))
+            Text(text)
+                .font(.caption)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Spacer(minLength: 0)
+        }
+        .foregroundStyle(tint)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 4)
+        .listRowBackground(Color.clear)
+        .listRowInsets(.init(top: 0, leading: 0, bottom: 6, trailing: 0))
+        .listRowSeparator(.hidden)
     }
 
     @ViewBuilder

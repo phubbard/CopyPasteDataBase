@@ -94,6 +94,22 @@ public enum PushQueue {
         )
     }
 
+    /// The `enqueued_at` of the current queue row for `entryId`, or nil
+    /// if the entry has no pending push. Used by the pull-side reseed
+    /// prune (`CloudKitSyncer.shouldPrunePushQueueRow`) to tell "this
+    /// row is still exactly the post-cutover reseed insert" apart from
+    /// "this row was re-enqueued since by a genuine local write" — the
+    /// two are indistinguishable by `modified_at` alone because several
+    /// writers (link metadata/thumbnails, union-bump, body eviction)
+    /// enqueue without bumping it.
+    public static func enqueuedAt(entryId: Int64, in db: Database) throws -> Double? {
+        try Double.fetchOne(
+            db,
+            sql: "SELECT enqueued_at FROM cloudkit_push_queue WHERE entry_id = ?",
+            arguments: [entryId]
+        )
+    }
+
     /// Record a failed attempt. Keeps the row so the next drain retries
     /// it; the syncer is responsible for backoff (don't immediately re-
     /// drain a row that just failed).

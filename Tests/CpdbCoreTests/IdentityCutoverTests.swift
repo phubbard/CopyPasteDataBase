@@ -564,6 +564,86 @@ struct IdentityCutoverTests {
         #expect(count == 1)
     }
 
+    // MARK: - snapshotPolicy (iOS best-effort snapshot)
+
+    @Test("snapshotPolicy .bestEffort continues past an unwritable snapshot path")
+    func bestEffortSnapshotContinues() async throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cpdb-snap-bestEffort-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let dbPath = dir.appendingPathComponent("cpdb-v3.db").path
+        let store = try Store(path: dbPath)
+        let entryId = try insertV1(store, flavors: [("public.utf8-plain-text", Data("iphone entry".utf8))],
+                         capturedAt: 100, uuidByte: 1)
+        try markPending(store)
+
+        // Unwritable snapshot destination — parent directory doesn't
+        // exist, so `VACUUM INTO` fails. Simulates a low-storage
+        // iPhone where the second copy of the database can't be
+        // written; iOS is a pure CloudKit replica so this must not
+        // block the cutover.
+        let badSnapshotURL = dir.appendingPathComponent("does-not-exist-\(UUID().uuidString)/snap.db")
+
+        let outcome = try await IdentityCutover.run(
+            store: store, snapshotURL: badSnapshotURL, snapshotPolicy: .bestEffort
+        )
+        guard case .completed = outcome else {
+            Issue.record("expected completion despite snapshot failure, got \(outcome)"); return
+        }
+        // No stuck pending marker, and the entry actually got rehashed —
+        // i.e. the cutover ran to completion, not a silent no-op.
+        #expect(!(try IdentityCutover.isPending(store)))
+        #expect(try entryRow(store, entryId)?["hash_version"] as Int? == 2)
+        #expect(!FileManager.default.fileExists(atPath: badSnapshotURL.path))
+    }
+
+    @Test("cleanupPartialSnapshot removes a stray/partial file and is a safe no-op otherwise")
+    func cleanupPartialSnapshotRemovesStrayFile() throws {
+        // Regression test for the bestEffort catch path: SQLite
+        // documents that an interrupted VACUUM INTO can leave a
+        // partial, corrupt output file behind. Reproducing that exact
+        // mid-write failure (real ENOSPC) isn't practical in a unit
+        // test, so this exercises the cleanup helper directly — the
+        // same one the bestEffort catch block calls before marking the
+        // snapshot step done (after which nothing else ever revisits
+        // this path).
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cpdb-snap-cleanup-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let strayURL = dir.appendingPathComponent("cpdb-v3.db.pre-v10")
+        try Data("partial garbage left by an interrupted VACUUM INTO".utf8).write(to: strayURL)
+        #expect(FileManager.default.fileExists(atPath: strayURL.path))
+
+        IdentityCutover.cleanupPartialSnapshot(at: strayURL)
+        #expect(!FileManager.default.fileExists(atPath: strayURL.path))
+
+        // Safe to call again (or on a path that never existed) — must
+        // not throw or crash.
+        IdentityCutover.cleanupPartialSnapshot(at: strayURL)
+    }
+
+    @Test("snapshotPolicy .required (default) throws and leaves the cutover pending on an unwritable snapshot path")
+    func requiredSnapshotThrows() async throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cpdb-snap-required-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let dbPath = dir.appendingPathComponent("cpdb-v3.db").path
+        let store = try Store(path: dbPath)
+        _ = try insertV1(store, flavors: [("public.utf8-plain-text", Data("mac entry".utf8))],
+                         capturedAt: 100, uuidByte: 1)
+        try markPending(store)
+        let badSnapshotURL = dir.appendingPathComponent("does-not-exist-\(UUID().uuidString)/snap.db")
+
+        await #expect(throws: (any Error).self) {
+            _ = try await IdentityCutover.run(store: store, snapshotURL: badSnapshotURL)
+        }
+        // Still pending — the default policy must not silently proceed.
+        #expect(try IdentityCutover.isPending(store))
+    }
+
     // MARK: - Tombstone reseed taxonomy (§4.3 step 5 / §10 decision 3)
 
     @Test("Recent tombstone rehashes to v2 and is reseeded; >90-day tombstone is not")

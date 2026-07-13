@@ -137,11 +137,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 do {
                     let pull = try await syncer.pullRemoteChanges()
                     Log.cli.info(
-                        "sync now pull: inserted=\(pull.inserted) updated=\(pull.updated) tombstoned=\(pull.tombstoned) skipped=\(pull.skipped)"
+                        "sync now pull: inserted=\(pull.inserted) updated=\(pull.updated) tombstoned=\(pull.tombstoned) skipped=\(pull.skipped) gated=\(pull.gated, privacy: .public)"
                     )
                     let push = try await syncer.pushPendingChanges()
                     Log.cli.info(
-                        "sync now push: attempted=\(push.attempted) saved=\(push.saved) failed=\(push.failed) remaining=\(push.remaining)"
+                        "sync now push: attempted=\(push.attempted) saved=\(push.saved) failed=\(push.failed) remaining=\(push.remaining) gated=\(push.gated, privacy: .public)"
                     )
                 } catch {
                     Log.cli.error("sync now failed: \(String(describing: error), privacy: .public)")
@@ -160,7 +160,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 do {
                     let pull = try await syncer.pullRemoteChanges()
                     Log.cli.info(
-                        "pull now: inserted=\(pull.inserted) updated=\(pull.updated) tombstoned=\(pull.tombstoned) skipped=\(pull.skipped)"
+                        "pull now: inserted=\(pull.inserted) updated=\(pull.updated) tombstoned=\(pull.tombstoned) skipped=\(pull.skipped) gated=\(pull.gated, privacy: .public)"
                     )
                 } catch {
                     Log.cli.error("pull now failed: \(String(describing: error), privacy: .public)")

@@ -8,6 +8,33 @@ moves it into a new dated `[X.Y.Z]` heading at tag time and resets the
 working area to empty. Edit it freely if a commit message wasn't quite
 human-readable — what's in `[Unreleased]` is what ships.
 
+## [Unreleased]
+
+- **Fix: iOS sync silently dead since the v3 upgrade.** The v10 schema
+  migration marks the hash-v2 identity cutover pending, but the cutover
+  runner was only wired into the Mac app and CLI — the iOS app never ran
+  it, and while pending, both pull and push silently no-op. Result on
+  the phone: "Last sync" frozen at the v3-install date, refresh spins
+  and reports a clean zero-record sync, newer entries never arrive, and
+  no restart helps. The iOS app now runs the (resumable) cutover at
+  launch and on foreground with a progress banner, a best-effort
+  pre-migration snapshot (a low-storage phone proceeds without the
+  backup instead of stalling), and kicks a full pull on completion.
+- **Sync gating is now visible.** `PullReport`/`PushReport` gain a
+  `gated` flag; the iOS UI, Mac log lines, and `cpdb sync
+  push-once`/`pull-once` now say "sync paused for identity cutover"
+  instead of rendering a gated run as a successful empty sync. A gated
+  push report also reports the real queue depth instead of 0.
+- **Pull now prunes redundant reseed pushes.** After the cutover, the
+  reseed enqueues every live row for push — correct for the first
+  device seeding the new zone, but a pure replica (the iPhone) would
+  re-upload ~2 GB of flavor assets it just pulled. The pull path now
+  removes a queue row when the incoming remote record shows there is no
+  un-pushed local delta — strictly limited to untouched reseed rows
+  (`enqueued_at ≤` the cutover's completion stamp), so enrichment
+  writers that don't bump `modified_at` (link titles, thumbnails,
+  flavor union-bumps, body eviction) always keep their push.
+
 ## [3.1.1] — paste fix for URL-only entries
 
 - **Fix: URL-only entries now paste into text fields.** A link captured

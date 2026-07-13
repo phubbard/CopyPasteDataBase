@@ -37,6 +37,12 @@ public actor CloudKitSyncer {
         public var saved: Int
         public var failed: Int
         public var remaining: Int
+        /// True when this call did no work because sync is gated by an
+        /// in-progress (or pending pull-before-push-latched) identity
+        /// cutover — see `pushPendingChanges`'s `blockedByCutover` check.
+        /// Additive field, defaults false, so existing call sites and
+        /// literal constructions keep compiling.
+        public var gated: Bool = false
     }
 
     /// Outcome of a single `pullRemoteChanges()` call.
@@ -46,19 +52,26 @@ public actor CloudKitSyncer {
         public var tombstoned: Int
         public var skipped: Int
         public var moreComing: Bool
+        /// True when this call did no work because sync is paused/gated
+        /// (identity cutover pending) rather than because there was
+        /// genuinely nothing to pull. Callers (the iOS UI in particular)
+        /// must not treat a gated report as a successful empty pull.
+        public var gated: Bool = false
 
         public init(
             inserted: Int,
             updated: Int,
             tombstoned: Int,
             skipped: Int,
-            moreComing: Bool
+            moreComing: Bool,
+            gated: Bool = false
         ) {
             self.inserted = inserted
             self.updated = updated
             self.tombstoned = tombstoned
             self.skipped = skipped
             self.moreComing = moreComing
+            self.gated = gated
         }
     }
 
@@ -217,7 +230,13 @@ public actor CloudKitSyncer {
                 || IdentityCutover.state(db, IdentityCutover.pullBeforePushLatchKey) != nil
         }
         if blockedByCutover {
-            return PushReport(attempted: 0, saved: 0, failed: 0, remaining: 0)
+            // Symmetric with pullRemoteChanges' gated report: a UI
+            // watching sync health must be able to tell "gated by a
+            // pending cutover" apart from "genuinely nothing to push".
+            // `remaining` reflects the real queue depth (potentially the
+            // full post-cutover reseed, thousands of rows) rather than a
+            // hardcoded 0 — a gated report must not read as "queue empty".
+            return PushReport(attempted: 0, saved: 0, failed: 0, remaining: try await remainingCount(), gated: true)
         }
         if pushing {
             return PushReport(attempted: 0, saved: 0, failed: 0, remaining: try await remainingCount())
@@ -816,9 +835,11 @@ public actor CloudKitSyncer {
         }
         // Identity cutover in progress — see pushPendingChanges. Pulls
         // are equally unsafe: the pull upsert keys by content_hash, which
-        // the migration is mid-way through rewriting.
+        // the migration is mid-way through rewriting. Report this as
+        // gated (not a clean empty pull) so a UI watching lastSuccessAt
+        // doesn't read silence as "up to date" — see docs on `gated`.
         if try await store.dbQueue.read({ try IdentityCutover.isPending($0) }) {
-            return PullReport(inserted: 0, updated: 0, tombstoned: 0, skipped: 0, moreComing: false)
+            return PullReport(inserted: 0, updated: 0, tombstoned: 0, skipped: 0, moreComing: false, gated: true)
         }
         try await ensureZoneIfNeeded()
 
@@ -1216,6 +1237,11 @@ public actor CloudKitSyncer {
             // live here / deleted there). Now: a delete and a later undo
             // each bump modified_at, and the more recent action wins on
             // every device. Ties (>=) go to the remote, deterministically.
+            //
+            // Capture the PRE-mutation modified_at for the push-queue
+            // prune decision below — `existing.modifiedAt` is overwritten
+            // a few lines down when the remote wins.
+            let localModifiedAtBeforePull = existing.modifiedAt
             let remoteMutationWins = d.modifiedAt >= existing.modifiedAt
             if remoteMutationWins {
                 existing.deletedAt  = d.deletedAt
@@ -1274,6 +1300,28 @@ public actor CloudKitSyncer {
             }
             try applyThumbnails(d, entryId: existing.id!, in: db)
             try drainOrphanFlavors(forHash: d.contentHash, entryId: existing.id!, blobs: blobs, in: db)
+            // Prune a redundant push-queue row (see shouldPrunePushQueueRow
+            // doc). Runs inside this same write transaction, so there's no
+            // window for a concurrent re-enqueue to race the delete — the
+            // GRDB write queue serialises all writers.
+            //
+            // Only eligible when the entry's *current* queue row is still
+            // exactly the row IdentityCutover's step 5 reseed inserted —
+            // `enqueued_at <= cutover completedAt`. modified_at alone is
+            // NOT a safe proxy: setLinkMetadata, setLinkPreviewThumbnails,
+            // the Ingestor union-bump and EntryEvictor all re-enqueue
+            // without bumping modified_at, so a genuine post-cutover local
+            // edit can tie on modified_at while still needing its push.
+            if let reseedCutoffAt = try IdentityCutover.state(db, IdentityCutover.completedAtKey).flatMap(Double.init),
+               let queueRowEnqueuedAt = try PushQueue.enqueuedAt(entryId: existing.id!, in: db),
+               queueRowEnqueuedAt <= reseedCutoffAt,
+               Self.shouldPrunePushQueueRow(
+                   localModifiedAtBeforePull: localModifiedAtBeforePull,
+                   remoteModifiedAt: d.modifiedAt
+               )
+            {
+                try PushQueue.remove(entryId: existing.id!, in: db)
+            }
             return .updated
         } else if let localByUuid = try Entry.filter(Column("uuid") == d.uuid).fetchOne(db) {
             // content_hash miss + uuid match = the SAME logical entry
@@ -1506,6 +1554,46 @@ public actor CloudKitSyncer {
         try PushQueue.enqueue(entryId: local.id!, in: db, now: now)
         Self.recordForkResolved()
         return .updated
+    }
+
+    /// Pure decision: after a pull applies an inbound remote record onto
+    /// an already-existing local row (the `existing` branch of `upsert`),
+    /// should we discard any pending `cloudkit_push_queue` row for that
+    /// entry?
+    ///
+    /// Why this matters: `IdentityCutover` (canonical-hash v2) blindly
+    /// re-enqueues every live entry so a device that originates content
+    /// re-uploads it under the new zone/identity scheme. On a device
+    /// that's a pure CloudKit replica (e.g. an iPhone that never
+    /// originated most of its entries), that reseed is redundant — the
+    /// content is already on the server. Without this prune, the first
+    /// post-cutover pull would re-fetch records that are already
+    /// current and then the push queue would re-upload them anyway,
+    /// burning gigabytes of CKAsset flavor bytes for no effect.
+    ///
+    /// SAFETY: this is only ONE of two conditions the call site checks —
+    /// see the caller in `upsert`. It is necessary but NOT sufficient on
+    /// its own: several writers (setLinkMetadata, setLinkPreviewThumbnails,
+    /// the Ingestor union-bump, EntryEvictor) enqueue a push WITHOUT
+    /// bumping `modified_at`, so a genuine, never-pushed local edit can
+    /// tie (or "lose") on `modified_at` while still needing to reach the
+    /// server. The caller additionally requires the queue row's
+    /// `enqueued_at` to predate the cutover's reseed timestamp, which
+    /// restricts pruning to rows that are still exactly the reseed insert
+    /// — i.e. genuinely never touched since. Do not call this function's
+    /// result alone as license to prune; only the caller's combined
+    /// check is safe.
+    ///
+    /// Given that: only prune when the incoming remote record is not
+    /// OLDER than the local row's PRE-pull `modified_at` — the same
+    /// condition `upsert` uses to decide the remote's mutation fields
+    /// win. Equal timestamps count as "not older" (ties already go to
+    /// the remote in `upsert`).
+    static func shouldPrunePushQueueRow(
+        localModifiedAtBeforePull: Double,
+        remoteModifiedAt: Double
+    ) -> Bool {
+        remoteModifiedAt >= localModifiedAtBeforePull
     }
 
     /// Rung index for an `identityTag` string. Unknown / nil (a v1 record,

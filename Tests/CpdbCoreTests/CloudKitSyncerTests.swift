@@ -601,6 +601,180 @@ struct CloudKitSyncerTests {
 
     // MARK: - Existing push-path tests continue below
 
+    // MARK: - Gated sync (cutover pending)
+
+    @Test("pullRemoteChanges reports gated=true (not a clean empty pull) while a cutover is pending")
+    func pullReportsGatedDuringCutover() async throws {
+        let (store, _) = try seed(entryCount: 0)
+        try await store.dbQueue.write { db in
+            try IdentityCutover.setState(db, IdentityCutover.pendingKey, "1")
+        }
+        let client = FakeCloudKitClient()
+        // Seed a change the pull would otherwise apply — proves the
+        // gate really did skip work, not just report a flag.
+        let hash = Data(repeating: 0xAB, count: 32)
+        await client.seedPull(changed: [makeRecord(contentHash: hash)])
+
+        let syncer = makeSyncer(store: store, client: client)
+        let report = try await syncer.pullRemoteChanges()
+        #expect(report.gated == true)
+        #expect(report.inserted == 0)
+        #expect(report.updated == 0)
+
+        let entryCount = try await store.dbQueue.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM entries") ?? -1
+        }
+        #expect(entryCount == 0, "gated pull must not touch the DB")
+    }
+
+    @Test("pushPendingChanges reports gated=true while blocked by the cutover's pull-before-push latch")
+    func pushReportsGatedDuringLatch() async throws {
+        let (store, _) = try seed(entryCount: 1)
+        try await store.dbQueue.write { db in
+            try IdentityCutover.setState(db, IdentityCutover.pullBeforePushLatchKey, "1")
+        }
+        let client = FakeCloudKitClient()
+        let syncer = makeSyncer(store: store, client: client)
+        let report = try await syncer.pushPendingChanges()
+        #expect(report.gated == true)
+        #expect(report.attempted == 0)
+        let saved = await client.savedRecords
+        #expect(saved.isEmpty, "gated push must not upload anything")
+    }
+
+    @Test("un-gated pulls/pushes default gated=false")
+    func ungatedReportsDefaultFalse() async throws {
+        let (store, _) = try seed(entryCount: 1)
+        let client = FakeCloudKitClient()
+        let syncer = makeSyncer(store: store, client: client)
+        let pushReport = try await syncer.pushPendingChanges()
+        #expect(pushReport.gated == false)
+        let pullReport = try await syncer.pullRemoteChanges()
+        #expect(pullReport.gated == false)
+    }
+
+    // MARK: - Push-queue pruning on pull (reseed drain)
+
+    @Test("shouldPrunePushQueueRow: remote not older than local → prune")
+    func prunePureFunctionAllowsWhenRemoteNotOlder() {
+        #expect(CloudKitSyncer.shouldPrunePushQueueRow(
+            localModifiedAtBeforePull: 100, remoteModifiedAt: 100))
+        #expect(CloudKitSyncer.shouldPrunePushQueueRow(
+            localModifiedAtBeforePull: 100, remoteModifiedAt: 150))
+    }
+
+    @Test("shouldPrunePushQueueRow: remote older than local → do not prune")
+    func prunePureFunctionRefusesWhenRemoteOlder() {
+        #expect(!CloudKitSyncer.shouldPrunePushQueueRow(
+            localModifiedAtBeforePull: 100, remoteModifiedAt: 99))
+    }
+
+    @Test("pull drains a reseeded push-queue row when the incoming record matches current local state")
+    func pullPrunesRedundantReseedQueueRow() async throws {
+        // Simulate the post-cutover reseed: an entry that's already
+        // fully in sync with the server still has a push-queue row
+        // (IdentityCutover blindly re-enqueues every live entry). The
+        // very next pull re-fetches that same record — this must drain
+        // the queue row instead of leaving it to re-upload for nothing.
+        let (store, ids) = try seed(entryCount: 1)
+        let hash = try await store.dbQueue.read { db in
+            try Entry.fetchOne(db, key: ids[0])!.contentHash
+        }
+        // Queue already has a row from `seed`; simulate the reseed by
+        // re-enqueuing at "now" AND recording that IdentityCutover's
+        // step 5 completed at that same instant — the prune is only
+        // eligible for queue rows that are still exactly the reseed
+        // insert (enqueued_at <= cutover completedAt), which real reseed
+        // rows always satisfy because both timestamps come from the
+        // same `now` in step 5.
+        let reseedAt = 1_750_000_000.0
+        try await store.dbQueue.write { db in
+            try PushQueue.enqueue(entryId: ids[0], in: db, now: reseedAt)
+            try IdentityCutover.setState(db, IdentityCutover.completedAtKey, String(reseedAt))
+        }
+        let client = FakeCloudKitClient()
+        // The incoming record is at least as new as the local row (no
+        // deletedAt/pinned field set on either side → ties go remote).
+        await client.seedPull(changed: [makeRecord(contentHash: hash, title: "same as local")])
+
+        let syncer = makeSyncer(store: store, client: client)
+        _ = try await syncer.pullRemoteChanges()
+
+        let queueCount = try await store.dbQueue.read { db in try PushQueue.count(in: db) }
+        #expect(queueCount == 0, "redundant reseed row should have been pruned")
+    }
+
+    @Test("pull does NOT prune the push-queue row when the local row has a newer un-pushed mutation")
+    func pullKeepsQueueRowWhenLocalIsNewer() async throws {
+        let (store, ids) = try seed(entryCount: 1)
+        let hash = try await store.dbQueue.read { db in
+            try Entry.fetchOne(db, key: ids[0])!.contentHash
+        }
+        // Local mutation happens AFTER the incoming remote record's
+        // modified_at — e.g. the user pinned it locally after the
+        // reseed but before this pull landed.
+        let localModifiedAt = 1_900_000_000.0
+        try await store.dbQueue.write { db in
+            try db.execute(
+                sql: "UPDATE entries SET modified_at = ?, pinned = 1 WHERE id = ?",
+                arguments: [localModifiedAt, ids[0]]
+            )
+            try PushQueue.enqueue(entryId: ids[0], in: db, now: localModifiedAt)
+        }
+        let client = FakeCloudKitClient()
+        // Remote record has no modifiedAt field set → decodes to an
+        // OLDER default than our local mutation.
+        await client.seedPull(changed: [makeRecord(contentHash: hash, title: "stale remote")])
+
+        let syncer = makeSyncer(store: store, client: client)
+        _ = try await syncer.pullRemoteChanges()
+
+        let queueCount = try await store.dbQueue.read { db in try PushQueue.count(in: db) }
+        #expect(queueCount == 1, "queue row protecting an un-pushed local edit must survive")
+        // And the local mutation (pinned) must not have been clobbered.
+        let stillPinned = try await store.dbQueue.read { db in
+            try Bool.fetchOne(db, sql: "SELECT pinned FROM entries WHERE id = ?", arguments: [ids[0]]) ?? false
+        }
+        #expect(stillPinned == true)
+    }
+
+    @Test("pull does NOT prune a queue row enqueued AFTER the cutover, even on a modified_at tie")
+    func pullKeepsQueueRowEnqueuedAfterCutoverDespiteModifiedAtTie() async throws {
+        // Regression test: several writers (setLinkMetadata,
+        // setLinkPreviewThumbnails, the Ingestor union-bump,
+        // EntryEvictor) enqueue a push WITHOUT bumping modified_at. If
+        // the prune only checked "remote modifiedAt >= local
+        // modifiedAt", a genuine un-pushed edit enqueued long after the
+        // cutover reseed would tie on modified_at and get silently
+        // pruned — dropping the edit with no retry. The prune must also
+        // require the queue row to still be the ORIGINAL reseed insert
+        // (enqueued_at <= cutover completedAt); a row re-enqueued later
+        // must never be pruned regardless of modified_at.
+        let (store, ids) = try seed(entryCount: 1)
+        let hash = try await store.dbQueue.read { db in
+            try Entry.fetchOne(db, key: ids[0])!.contentHash
+        }
+        let cutoverCompletedAt = 1_750_000_000.0
+        let laterLinkFetchAt = cutoverCompletedAt + 3600 // an hour after cutover
+        try await store.dbQueue.write { db in
+            try IdentityCutover.setState(db, IdentityCutover.completedAtKey, String(cutoverCompletedAt))
+            // Simulate a post-cutover setLinkMetadata-style write: it
+            // re-enqueues the push but does NOT touch modified_at.
+            try PushQueue.enqueue(entryId: ids[0], in: db, now: laterLinkFetchAt)
+        }
+        let client = FakeCloudKitClient()
+        // Remote record ties on modified_at with the local row (neither
+        // side changed it) — this is the case the old modified_at-only
+        // check would have mispruned.
+        await client.seedPull(changed: [makeRecord(contentHash: hash, title: "remote, ties on modified_at")])
+
+        let syncer = makeSyncer(store: store, client: client)
+        _ = try await syncer.pullRemoteChanges()
+
+        let queueCount = try await store.dbQueue.read { db in try PushQueue.count(in: db) }
+        #expect(queueCount == 1, "a queue row enqueued after the cutover must survive a modified_at tie")
+    }
+
     @Test("re-enqueuing the same entry coalesces — one push per drain")
     func reenqueueCoalesces() async throws {
         let (store, ids) = try seed(entryCount: 1)

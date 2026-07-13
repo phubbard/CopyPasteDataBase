@@ -223,7 +223,7 @@ swift build -c release --arch arm64 --arch x86_64 --product cpdb-cli
 `make release` always builds universally — the published `.app.zip` and
 CLI binary on every GitHub release tag work on both architectures.
 
-### iOS companion (2.5.x)
+### iOS companion (3.x — read/write)
 
 A SwiftUI iPhone app (project at `iOS/cpdb/cpdb.xcodeproj`,
 sources at `iOS/cpdb/cpdb/`) that connects to the same CloudKit

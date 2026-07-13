@@ -63,6 +63,11 @@ struct CpdbiOSApp: App {
             // resolving when scenePhase first flips to .active.
             guard phase == .active, container.store != nil else { return }
             container.startForegroundPolling()
+            // Retry the identity cutover if a previous attempt failed or
+            // got interrupted (backgrounded mid-run). No-op once it's
+            // done, and no-op if one is already in flight — see
+            // `AppContainer.runIdentityCutoverIfNeeded`.
+            container.runIdentityCutoverIfNeeded()
             Task { await container.pullNow() }
             // Optional capture-on-foreground. No-ops unless the user
             // enabled the toggle; even then it's gated by detectPatterns
