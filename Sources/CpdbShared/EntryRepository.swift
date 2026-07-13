@@ -552,4 +552,94 @@ public struct EntryRepository {
             ) ?? 0
         }
     }
+
+    // MARK: - Image analysis sweep
+
+    /// Live, still-embodied image entries that have never been through
+    /// `ImageIndexer.analyzeAndStore`, newest first. Used by
+    /// `ImageAnalysisSweeper` (the Mac daemon's periodic + capture-wake
+    /// self-heal) to find work: pull-synced images (analysis only ever
+    /// runs on the *capturing* device — see `ImageIndexer`'s doc
+    /// comment) and any local capture whose capture-time analysis Task
+    /// never finished (app quit mid-Vision-call, etc).
+    ///
+    /// `body_evicted_at IS NULL` excludes entries whose flavor bytes
+    /// were already discarded by an eviction policy — there's nothing
+    /// left to analyze, and they'd otherwise wedge the front of every
+    /// future candidate batch forever.
+    public func imagesNeedingAnalysis(limit: Int) throws -> [Int64] {
+        try store.dbQueue.read { db in
+            try Int64.fetchAll(
+                db,
+                sql: """
+                    SELECT id FROM entries
+                    WHERE kind = 'image' AND deleted_at IS NULL
+                      AND body_evicted_at IS NULL AND analyzed_at IS NULL
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                """,
+                arguments: [limit]
+            )
+        }
+    }
+
+    /// True iff a live entry still has `analyzed_at IS NULL`. The
+    /// sweeper re-checks this immediately before doing the (expensive)
+    /// Vision work for each candidate, since the candidate list was
+    /// built moments earlier and a sibling Mac's result — or this
+    /// Mac's own capture-time analysis — may have arrived via CloudKit
+    /// pull in the meantime. Returns false for a missing/tombstoned
+    /// entry so the sweeper skips it rather than analyzing a row
+    /// that's gone.
+    public func isImageUnanalyzed(entryId: Int64) throws -> Bool {
+        try store.dbQueue.read { db in
+            guard let row = try Row.fetchOne(
+                db,
+                sql: "SELECT analyzed_at FROM entries WHERE id = ? AND deleted_at IS NULL",
+                arguments: [entryId]
+            ) else {
+                return false
+            }
+            let analyzedAt: Double? = row["analyzed_at"]
+            return analyzedAt == nil
+        }
+    }
+
+    /// Load the bytes of an entry's best image flavor (inline or
+    /// spilled to the blob store), or nil if it has none. Priority
+    /// order mirrors `PasteboardSnapshot.imageFlavorData` so the
+    /// sweeper analyzes the same bytes capture-time analysis would
+    /// have used.
+    ///
+    /// The SQLite read only fetches the (small) inline bytes or blob
+    /// key; the potentially-multi-megabyte blob-store file read happens
+    /// AFTER the `dbQueue.read` closure returns. `Store` uses a single
+    /// serialized `DatabaseQueue` (see `Database.swift`), so holding
+    /// that closure open across a slow disk read would block every
+    /// other read/write on the process — including capture and paste —
+    /// for the duration of the read.
+    public func loadImageFlavorData(entryId: Int64, blobs: BlobStore) throws -> Data? {
+        let flavorRow: (data: Data?, blobKey: String?)? = try store.dbQueue.read { db in
+            for uti in Self.imageUtiPriority {
+                if let row = try Row.fetchOne(
+                    db,
+                    sql: "SELECT data, blob_key FROM entry_flavors WHERE entry_id = ? AND uti = ?",
+                    arguments: [entryId, uti]
+                ) {
+                    return (row["data"] as Data?, row["blob_key"] as String?)
+                }
+            }
+            return nil
+        }
+        guard let flavorRow else { return nil }
+        return try blobs.load(inline: flavorRow.data, blobKey: flavorRow.blobKey)
+    }
+
+    private static let imageUtiPriority = [
+        "public.png",
+        "public.jpeg",
+        "public.tiff",
+        "public.heic",
+        "public.image",
+    ]
 }

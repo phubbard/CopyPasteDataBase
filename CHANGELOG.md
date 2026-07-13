@@ -10,6 +10,35 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+- **Fix: image entries could get permanently stuck unanalyzed.** Vision
+  OCR/tagging previously ran exactly once, at capture time, on the
+  capturing device only — a pull-synced image never got analyzed
+  locally, and a killed capture-time Task got no retry. The Mac app now
+  runs a periodic + capture-wake sweep (`ImageAnalysisSweeper`) over
+  `analyzed_at IS NULL` image entries, jittered so multiple Macs on the
+  same account don't wake in lockstep. iOS is unaffected by design — it
+  reads OCR via sync and never runs Vision locally.
+- **Fix: giant images could wedge analysis instead of failing cleanly.**
+  A 48 MB TIFF (entry 10286) made Vision's `.accurate` OCR pass slow/
+  heavy enough to look permanently stuck. `ImageIndexer` now downscales
+  anything over 24 MB compressed OR over 4096px on either axis
+  (`CGImageSourceCreateThumbnailFromImageAlways`, capped at 4096px) —
+  catching highly-compressed huge-dimension images, not just large
+  files — before handing it to Vision, and marks analyzed-with-empty-
+  results if even that fails — never leaves the entry pending forever.
+  `cpdb analyze-images` applies the same guard.
+- **Fix: analysis results didn't always sync.** `ImageIndexer.markAnalyzed`
+  and the `cpdb analyze-images` CLI now enqueue the entry for CloudKit
+  push in the same write transaction as the OCR/tags write, so sweep
+  results and CLI backfills reliably reach other devices instead of
+  relying on winning a race with the capture-time push.
+- **`cpdb sync push-once`/`pull-once`/`gc-zone` no longer crash on the
+  bare CLI.** These commands call into CloudKit, which requires the
+  iCloud entitlement — something a plain command-line binary can never
+  hold, so `CKContainer`'s init used to raise an uncatchable exception
+  (SIGTRAP, exit 133, no output). A `CloudKitEntitlementPreflight` check
+  now catches this up front and exits 2 with a clear message pointing at
+  the app's "Sync Now" instead.
 - **Add `cpdb sync gc-zone`.** Deletes the abandoned `cpdb-v2` CloudKit
   zone now that every device (3 Macs + iPhone) is verified on `cpdb-v3`.
   Whole-zone delete only — refuses the live zone, refuses any name other

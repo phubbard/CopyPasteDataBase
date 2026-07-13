@@ -487,9 +487,31 @@ struct AnalyzeImages: ParsableCommand {
                 continue
             }
 
+            // Same giant-image guard as `ImageIndexer.analyzeAndStore`
+            // (Mac app capture-time/sweep path) — this command is the
+            // documented recovery path for entries the sweep marked
+            // pending, so it must not itself reproduce the full-
+            // resolution-Vision-looks-hung incident that guard exists
+            // to prevent.
+            var dataForAnalysis = imageData
+            if imageData.count > ImageIndexer.giantImageThresholdBytes
+                || ImageIndexer.exceedsPixelDimension(imageData, maxPixelDimension: ImageIndexer.downscaleMaxPixelDimension)
+            {
+                if let downscaled = ImageIndexer.downscaledOrNil(
+                    imageData, maxPixelDimension: ImageIndexer.downscaleMaxPixelDimension
+                ) {
+                    dataForAnalysis = downscaled
+                }
+                // If downscaling fails too (corrupt/undecodable data),
+                // fall through with the original bytes — ImageAnalyzer
+                // below will throw and this entry lands in the existing
+                // `analyzerErrors` bucket, same as any other decode
+                // failure.
+            }
+
             do {
                 let analysis = try ImageAnalyzer.analyze(
-                    imageData: imageData,
+                    imageData: dataForAnalysis,
                     recognitionLanguages: prefs.recognitionLanguages,
                     tagConfidenceThreshold: prefs.tagConfidenceThreshold
                 )
@@ -558,6 +580,11 @@ struct AnalyzeImages: ParsableCommand {
                     imageTags: imageTags
                 )
             }
+            // Enqueue for CloudKit push in the same transaction as the
+            // analysis write — otherwise a CLI backfill's OCR/tags never
+            // leave this machine (the entry's own insert push, if any,
+            // already happened long before this command ran).
+            try PushQueue.enqueue(entryId: entryId, in: db, now: now)
         }
     }
 }

@@ -52,7 +52,7 @@ been ported to iOS and Windows.
 | **Undo (delete + pin)** | Reversible delete + pin on Mac (⌘Z/⌘⇧Z, with a transient hint) and iOS (undo snackbar + shake-to-undo). Multi-level [`UndoCoordinator`](Sources/CpdbShared/UndoCoordinator.swift) stack. Cross-device-correct via a `modified_at` last-writer-wins column (v11) — an undone delete propagates instead of staying deleted on a sibling | ✅ |
 | **3.2.0 — iOS sync fix** | The iOS app never ran the hash-v2 identity cutover, leaving sync silently gated since the v3 install (frozen "Last sync", refresh no-ops). iOS now runs the resumable cutover at launch/foreground with a progress banner; gated sync is surfaced everywhere instead of masquerading as a clean empty sync; pull prunes redundant post-cutover reseed pushes (saves a ~2 GB asset re-upload from a replica device) | ✅ |
 | **Relay sync substrate** | Cross-platform replacement for CloudKit. Phase A done: blind-PSK protocol spec ([`docs/relay-protocol.md`](docs/relay-protocol.md)) + Worker scaffold ([`cpdb-relay/`](cpdb-relay/)). Deep design review complete ([`docs/relay-deep-analysis.md`](docs/relay-deep-analysis.md)): Cloudflare confirmed at $0/mo, hybrid topology (CloudKit stays for Apple, relay bridges Windows), but v1 spec found unimplementable as written — a v2 protocol revision (meta/body split, seq change-log, IETF ChaCha20-Poly1305, reseed-as-migration) is the next step; the Windows hash-v2 gate is satisfied as of v1.38.0. Accounts/tiers/OAuth design parked in [`docs/relay-v2-accounts-roadmap.md`](docs/relay-v2-accounts-roadmap.md) — deferred, clients not started | ⏳ |
-| **cpdb-win 1.x** | Standalone Windows port — C# / .NET 8 / WinUI 3, same SQLite + FTS5 schema (v1–v9 migrator), link-metadata enrichment, import/export, global hotkey + paste-back, Velopack `Setup.exe` + client-side delta auto-update (x64 + arm64). No cross-device sync in v1; on-device OCR/image-tags still pending (`Windows.Media.Ocr`). Schema kept bit-compatible (see [`docs/schema.md`](docs/schema.md)) so future sync paths stay open — note canonical-hash v2 is a pending Windows catch-up ([`docs/handoffs/windows-hash-v2.md`](docs/handoffs/windows-hash-v2.md)): Windows still computes the v1 full-flavor hash and the migrators have diverged at v10. See the [Windows section](#windows-cpdb-win) | ✅ shipping / OCR + hash-v2 ⏳ |
+| **cpdb-win 1.x** | Standalone Windows port — C# / .NET 8 / WinUI 3, same SQLite + FTS5 schema (v1–v9 migrator), link-metadata enrichment, import/export, global hotkey + paste-back, Velopack `Setup.exe` + client-side delta auto-update (x64 + arm64). No cross-device sync in v1; on-device OCR/image-tags still pending (`Windows.Media.Ocr`). Schema kept bit-compatible (see [`docs/schema.md`](docs/schema.md)) so future sync paths stay open — canonical-hash v2 landed in v1.38.0 (`ContentIdentity` port + `v11_semantic_identity` rehash per [`docs/handoffs/windows-hash-v2.md`](docs/handoffs/windows-hash-v2.md)), so text/url/file identities now converge with the Macs. See the [Windows section](#windows-cpdb-win) | ✅ shipping / OCR ⏳ |
 
 ## Features
 
@@ -63,7 +63,10 @@ been ported to iOS and Windows.
   `Windows.Media.Ocr` on Windows. Extracted text is folded into the
   same FTS5 index as plain text, so a search for `"flight 1138"` finds
   the boarding-pass screenshot from six months ago. No network, no
-  cloud upload, no model bundling on Apple platforms.
+  cloud upload, no model bundling on Apple platforms. A periodic
+  self-healing sweep re-analyzes anything a capture-time pass missed
+  (giant images are downscaled first), and analysis results sync to
+  every device rather than staying where they were computed.
 - **Image classification tags.** Vision's `VNClassifyImageRequest` on
   Mac/iOS / a bundled **MobileNetV2** ImageNet-1k ONNX (~13 MB) on
   Windows. Top tags land in the `image_tags` column so a search for

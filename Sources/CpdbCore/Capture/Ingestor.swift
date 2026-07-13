@@ -96,10 +96,22 @@ public struct Ingestor {
             // uses it to skip non-link captures (otherwise every
             // text/file/image capture re-runs the same stuck-at-the-
             // top-of-queue link batch and wastes network).
+            //
+            // Also pass whether this was an `.inserted` or `.bumped`
+            // outcome: the image-analysis capture-wake observer needs
+            // this to avoid racing the capture-time analysis Task
+            // spawned below for `.inserted` images — see that Task's
+            // comment.
+            let outcomeRaw: String
+            switch outcome {
+            case .inserted: outcomeRaw = "inserted"
+            case .bumped: outcomeRaw = "bumped"
+            case .skipped: outcomeRaw = "skipped"  // unreachable in this branch
+            }
             NotificationCenter.default.post(
                 name: .cpdbLocalEntryIngested,
                 object: nil,
-                userInfo: ["kind": snapshot.kind.rawValue]
+                userInfo: ["kind": snapshot.kind.rawValue, "outcome": outcomeRaw]
             )
         case .skipped:
             break

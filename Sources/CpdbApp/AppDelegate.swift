@@ -21,6 +21,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// immediate push so a new capture lands in CloudKit within
     /// seconds instead of waiting for the 5-minute timer.
     private var ingestedObserver: NSObjectProtocol?
+    /// NotificationCenter token for the image-analysis sweep's capture-
+    /// wake observer (also `.cpdbLocalEntryIngested`, filtered to image
+    /// kinds). See `ingestedObserver`'s registration site for why this
+    /// is a separate observer rather than folded into that one.
+    private var imageSweepIngestedObserver: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         Log.cli.info("cpdb.app starting (pid \(ProcessInfo.processInfo.processIdentifier, privacy: .public))")
@@ -311,6 +316,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Task.detached { await Self.runLinkTitleBackfillImmediate(store: store) }
         }
 
+        // Immediate small-batch image-analysis sweep — only when the
+        // ingested entry was an image landing via `.bumped` (a repeat
+        // capture of existing content, re-touched to the top of the
+        // list). `.inserted` images are deliberately excluded here:
+        // `Ingestor` already fires its own capture-time analysis Task
+        // for every `.inserted` image, at essentially the same instant
+        // this observer would fire, so sweeping on `.inserted` too just
+        // races that Task and runs Vision twice on the same bytes. A
+        // `.bumped` entry gets no such Task, so this is the only
+        // same-Mac path that recovers it if its original capture's
+        // analysis never finished (app quit mid-Vision-call, etc). The
+        // other gap this sweep exists for — the app quitting mid-Vision
+        // — can't be caught by THIS observer either way (the process
+        // that would receive the notification is the one dying); the
+        // periodic sweep's `nextDueAt = .distantPast` catches it at
+        // next launch instead. A separate observer rather than folding
+        // into the one above, since that one early-returns for non-link
+        // kinds.
+        imageSweepIngestedObserver = NotificationCenter.default.addObserver(
+            forName: .cpdbLocalEntryIngested,
+            object: nil,
+            queue: .main
+        ) { [weak self] note in
+            guard let self, let store = self.store else { return }
+            let kindRaw = note.userInfo?["kind"] as? String
+            guard kindRaw == EntryKind.image.rawValue else { return }
+            let outcomeRaw = note.userInfo?["outcome"] as? String
+            guard outcomeRaw == "bumped" else { return }
+            Task.detached(priority: .utility) { await Self.runImageAnalysisSweepImmediate(store: store) }
+        }
+
         // Touch the Reachability singleton so NWPathMonitor starts
         // monitoring before the first periodic cycle fires.
         _ = Reachability.shared
@@ -423,6 +459,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // detached batches from piling up.
                 Log.cli.info("periodic tick \(tick, privacy: .public): spawning detached backfill")
                 Task.detached { await Self.runLinkTitleBackfillIfDue(store: store) }
+                // Image-analysis sweep tick. Unlike the link backfill
+                // above, this isn't gated on every single tick — Vision
+                // has no network cost to amortize, but this account can
+                // have up to three Macs all running this same periodic
+                // loop, and without spacing they'd all wake on the
+                // exact same cadence and duplicate Vision work on the
+                // same freshly-pull-synced rows. `imageSweepScheduler`
+                // enforces its own (jittered) interval independent of
+                // the CloudKit safety-net cadence above.
+                if await Self.imageSweepScheduler.dueNow(
+                    base: Self.imageSweepBaseIntervalSeconds,
+                    jitter: Self.imageSweepJitterSeconds
+                ) {
+                    Log.cli.info("periodic tick \(tick, privacy: .public): spawning detached image-analysis sweep")
+                    Task.detached(priority: .utility) { await Self.runImageAnalysisSweepIfDue(store: store) }
+                }
                 Log.cli.info("periodic tick \(tick, privacy: .public): tick complete (backoff=\(backoffSeconds, privacy: .public)s)")
                 if backoffSeconds > 0 {
                     try? await Task.sleep(nanoseconds: UInt64(backoffSeconds * 1_000_000_000))
@@ -524,6 +576,100 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } catch {
             Log.cli.error(
                 "link-title backfill (capture-wake) failed: \(String(describing: error), privacy: .public)"
+            )
+        }
+    }
+
+    // MARK: - Image-analysis sweep
+
+    /// Reentry guard for the detached image-analysis sweep, same shape
+    /// as `BackfillGate`. Vision work is CPU-bound rather than
+    /// network-bound, so it's less likely to wedge than a hung
+    /// URLSession call, but a slow batch on a big backlog (fresh
+    /// install, first pull after being offline for a week) could still
+    /// overlap the next scheduled sweep without this.
+    private actor ImageSweepGate {
+        private var running = false
+        func tryAcquire() -> Bool {
+            if running { return false }
+            running = true
+            return true
+        }
+        func release() { running = false }
+    }
+    private static let imageSweepGate = ImageSweepGate()
+
+    /// Base interval between periodic image-analysis sweep passes.
+    private static let imageSweepBaseIntervalSeconds: TimeInterval = 10 * 60
+    /// Random extra delay (0...jitter) layered on top of the base
+    /// interval, re-rolled every pass. Exists so three Macs signed into
+    /// the same iCloud account — which all run this identical periodic
+    /// loop — don't wake for a sweep in lockstep and duplicate Vision
+    /// work on the same freshly-pull-synced rows every time. Duplicate
+    /// analysis between Macs is harmless (whichever writes ITS RESULT
+    /// first wins — `ImageIndexer.markAnalyzed`'s `UPDATE` is guarded
+    /// with `analyzed_at IS NULL`, so a later write to an
+    /// already-analyzed row is a no-op instead of clobbering it; see
+    /// `EntryRepository.isImageUnanalyzed`'s doc comment for the
+    /// check-then-write race this closes); the jitter is purely to make
+    /// duplicate work the exception rather than the rule.
+    private static let imageSweepJitterSeconds: TimeInterval = 5 * 60
+
+    /// Tracks when the next periodic sweep pass is due. An actor
+    /// because it's mutated from the periodic-sync detached Task, which
+    /// isn't on MainActor.
+    private actor ImageSweepScheduler {
+        private var nextDueAt = Date.distantPast   // sweep soon after launch
+        func dueNow(base: TimeInterval, jitter: TimeInterval) -> Bool {
+            let now = Date()
+            guard now >= nextDueAt else { return false }
+            nextDueAt = now.addingTimeInterval(base + Double.random(in: 0...max(jitter, 0.001)))
+            return true
+        }
+    }
+    private static let imageSweepScheduler = ImageSweepScheduler()
+
+    /// Periodic image-analysis sweep, gated by `imageSweepScheduler`'s
+    /// jittered interval (checked by the caller before spawning this).
+    /// Self-heals pull-synced images from other devices and any local
+    /// capture whose capture-time analysis Task never finished — see
+    /// `ImageAnalysisSweeper`'s doc comment for the full rationale.
+    nonisolated private static func runImageAnalysisSweepIfDue(store: Store) async {
+        guard await imageSweepGate.tryAcquire() else {
+            Log.cli.info("image-analysis sweep: previous batch still in flight, skipping")
+            return
+        }
+        defer { Task { await imageSweepGate.release() } }
+        let sweeper = ImageAnalysisSweeper(repository: EntryRepository(store: store))
+        do {
+            let report = try sweeper.runOnce(limit: 15)
+            if report.candidates > 0 {
+                Log.cli.info("image-analysis sweep: \(report.summary, privacy: .public)")
+            }
+        } catch {
+            Log.cli.error(
+                "image-analysis sweep failed: \(String(describing: error), privacy: .public)"
+            )
+        }
+    }
+
+    /// Tiny-batch image-analysis sweep fired right after a local image
+    /// capture. Shares `imageSweepGate` with the periodic path so a
+    /// capture during an in-flight periodic pass is a no-op — the
+    /// periodic pass already covers it since it's now top-of-queue
+    /// (`imagesNeedingAnalysis` orders newest-first).
+    nonisolated private static func runImageAnalysisSweepImmediate(store: Store) async {
+        guard await imageSweepGate.tryAcquire() else { return }
+        defer { Task { await imageSweepGate.release() } }
+        let sweeper = ImageAnalysisSweeper(repository: EntryRepository(store: store))
+        do {
+            let report = try sweeper.runOnce(limit: 3)
+            if report.analyzed > 0 {
+                Log.cli.info("image-analysis sweep (capture-wake): \(report.summary, privacy: .public)")
+            }
+        } catch {
+            Log.cli.error(
+                "image-analysis sweep (capture-wake) failed: \(String(describing: error), privacy: .public)"
             )
         }
     }

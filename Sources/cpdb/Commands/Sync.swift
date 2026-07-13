@@ -73,6 +73,7 @@ struct SyncPushOnce: ParsableCommand {
     var batch: Int = 200
 
     func run() throws {
+        try requireCloudKitEntitlement()
         let store = try Store.open()
         let syncer = try makeSyncer(store: store, batchSize: batch)
         let report = runBlocking { try await syncer.pushPendingChanges() }
@@ -94,12 +95,19 @@ struct SyncPullOnce: ParsableCommand {
 
     func run() throws {
         let store = try Store.open()
+        // --reset is a local-only rail (just clears the stored change
+        // token) — it must run BEFORE the entitlement gate, same
+        // reasoning as `gc-zone`'s string-only rails: it doesn't touch
+        // CloudKit at all, and gating it behind an entitlement check
+        // that the shipped CLI can never pass would make `--reset`
+        // permanently unreachable from this command.
         if reset {
             try store.dbQueue.write { db in
                 try PushQueue.State.delete(PushQueue.StateKey.zoneChangeToken, in: db)
             }
             print("cleared stored change token — next pull will fetch everything")
         }
+        try requireCloudKitEntitlement()
         let syncer = try makeSyncer(store: store)
         let report = runBlocking { try await syncer.pullRemoteChanges() }
         let gatedSuffix = report.gated ? " [GATED — sync paused for identity cutover, not idle]" : ""
@@ -142,6 +150,11 @@ struct SyncGcZone: ParsableCommand {
             FileHandle.standardError.write("error: \(error)\n".data(using: .utf8)!)
             throw ExitCode(2)
         }
+        // Same entitlement gate as push-once/pull-once, run right after
+        // the string-only rails above (which must stay first — they
+        // don't need CloudKit at all and should refuse a bad zone name
+        // even on an unentitled binary).
+        try requireCloudKitEntitlement()
 
         let containerID = "iCloud.\(Paths.bundleId)"
         let client = LiveCloudKitClient(containerIdentifier: containerID)
@@ -176,6 +189,20 @@ struct SyncGcZone: ParsableCommand {
 }
 
 // MARK: - helpers
+
+/// Exits 2 with a clear message instead of letting `LiveCloudKitClient`'s
+/// init trap (SIGTRAP, no output) on a process that lacks the iCloud
+/// entitlement — which the shipped CLI binary always is. Call before
+/// constructing any `LiveCloudKitClient`. See
+/// `CloudKitEntitlementPreflight`'s doc comment for the full story.
+private func requireCloudKitEntitlement() throws {
+    do {
+        try CloudKitEntitlementPreflight.verify()
+    } catch let error as CloudKitEntitlementPreflight.PreflightError {
+        FileHandle.standardError.write("\(error.description)\n".data(using: .utf8)!)
+        throw ExitCode(2)
+    }
+}
 
 private func makeSyncer(store: Store, batchSize: Int = 200) throws -> CloudKitSyncer {
     let containerID = "iCloud.\(Paths.bundleId)"
