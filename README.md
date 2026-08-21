@@ -207,7 +207,10 @@ make install-app        # builds, signs, installs to /Applications
 open -a cpdb
 ```
 
-First launch pops Preferences so you can pick a global hotkey. The
+First launch pops Preferences so you can pick a global hotkey. Summon
+is instant — hotkey to fully-rendered strip in ~36ms warm / ~113ms
+cold on a 10k-entry library (there's a permanent `popup-perf` line in
+the unified log if you ever want to check yours). The
 popup-to-paste path also needs **Accessibility** permission
 (System Settings → Privacy & Security → Accessibility → enable cpdb) so
 the synthesised `⌘V` lands in the app you were using.

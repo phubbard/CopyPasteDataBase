@@ -117,6 +117,20 @@ final class PopupState {
     /// `EntryStripView` knows to snap the first card to the leading edge.
     var scrollToken: Int = 0
 
+    /// Bumped only when a live-update observation (see
+    /// `startLiveUpdates`) actually triggers a `refresh()` — i.e. when
+    /// something wrote to `entries` or `previews` while the popup was
+    /// open. `ImageCard`/`LinkCard` fold this into their `.task(id:)`
+    /// key alongside `entry.id` so a thumbnail that lands *after* a
+    /// card first renders (e.g. the link-metadata backfiller writing
+    /// `previews` a few hundred ms into the summon) gets picked up —
+    /// `entry.id` alone never changes for an existing row, so without
+    /// this the card's `.task` would never re-run and the placeholder
+    /// would stick around indefinitely. NOT bumped by query/filter-
+    /// driven `refresh()` calls, so typing in the search field doesn't
+    /// re-trigger already-loaded thumbnails.
+    private(set) var liveRefreshToken: Int = 0
+
     /// Lifecycle banner. Set by `DaemonLifecycle` via the AppDelegate.
     var captureMode: CaptureMode = .capturing
 
@@ -327,9 +341,17 @@ final class PopupState {
                 previewCount: previewCount
             )
         }
+        // .async(onQueue: .main) rather than .immediate: with .immediate,
+        // starting the observation runs the 5 aggregate queries above
+        // synchronously on the caller (measured ~250ms for rows=200) before
+        // the popup is ever shown. Nothing consumes the first value ahead
+        // of show() — `refresh()` already populated `rows` moments earlier
+        // — so async delivery costs nothing but a debounced re-refresh
+        // shortly after first paint (see `scheduleLiveRefresh`), which
+        // re-reads the now-identical state and is not visible.
         liveObservation = observation.start(
             in: store.dbQueue,
-            scheduling: .immediate,
+            scheduling: .async(onQueue: .main),
             onError: { error in
                 Log.cli.error("popup live updates errored: \(String(describing: error), privacy: .public)")
             },
@@ -360,6 +382,7 @@ final class PopupState {
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 120_000_000)
             guard gen == self.liveRefreshGeneration else { return }
+            self.liveRefreshToken &+= 1
             self.refresh()
         }
     }

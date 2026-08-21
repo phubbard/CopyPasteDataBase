@@ -33,9 +33,13 @@ final class PopupController {
         self.state = state
 
         let panel = PopupPanel(contentRect: NSRect(x: 0, y: 0, width: 860, height: 420))
+        // .environment(\.cpdbStore, store) threads the Store down to
+        // ImageCard/LinkCard so they read thumbnails via the shared
+        // DatabaseQueue instead of each opening their own with
+        // Store.open() per render (see PopupEnvironment.swift).
         let hosting = NSHostingController(rootView: PopupRootView(state: state, onPaste: { [weak self] in
             self?.pasteSelected()
-        }))
+        }).environment(\.cpdbStore, store))
         hosting.view.frame = panel.contentLayoutRect
         panel.contentViewController = hosting
         self.panel = panel
@@ -46,24 +50,92 @@ final class PopupController {
             Log.cli.error("PopupController.show called before configure")
             return
         }
+        // perf: stage timestamps for the popup-perf log line emitted
+        // below, one runloop turn after makeKeyAndOrderFront. Measurement
+        // only — no behavior change. See PopupPerfCounters for the
+        // card-load (thumbnail) side of the accounting.
+        let perfEntry = ContinuousClock.now
+        PopupPerfCounters.shared.reset()
+
         // If a QL panel is still visible from a prior preview, close it —
         // the summon means the user wants the picker, not whatever they
         // last looked at.
         PreviewCoordinator.shared.dismiss()
+        let perfAfterDismiss = ContinuousClock.now
 
         previousApp = NSWorkspace.shared.frontmostApplication
         state.refresh()
-        // Start observing `entries` so new captures (local pasteboard
-        // watcher or CloudKit pull) update the strip in real time.
-        // Stopped in `hide()`.
-        state.startLiveUpdates()
+        let perfAfterRefresh = ContinuousClock.now
         // Bump after refresh so EntryStripView's onChange sees the freshly
         // populated `rows.first` when it scrolls to the newest entry.
         state.scrollToken &+= 1
         repositionOnActiveScreen(panel)
+        let perfAfterReposition = ContinuousClock.now
         panel.makeKeyAndOrderFront(nil)
+        let perfAfterMakeKey = ContinuousClock.now
         installMonitors()
         Log.cli.info("popup shown (previous=\(self.previousApp?.bundleIdentifier ?? "nil", privacy: .public))")
+
+        // perf: fire on the next runloop turn (≈ first CA commit after
+        // makeKeyAndOrderFront) so `firstFrame` approximates time-to-
+        // first-paint. Card loads that land after this point (e.g. from
+        // scrolling) keep accumulating into PopupPerfCounters and are
+        // reported by the `popup-perf-session` line in `hide()`.
+        //
+        // startLiveUpdates() is deliberately started here too, AFTER
+        // makeKeyAndOrderFront rather than before it. `Store` uses a
+        // single-connection `DatabaseQueue`, so its initial aggregate
+        // fetch (5 SQL statements, measured ~250ms for rows=200) and
+        // ImageCard/LinkCard's per-thumbnail `await dbQueue.read`s all
+        // serialize on the same dispatch queue in enqueue order.
+        // Starting live updates before the cards render — as this code
+        // originally did — enqueues that ~250ms fetch first and forces
+        // every visible thumbnail to wait behind it, producing a
+        // placeholder flash on every summon that the old fully-
+        // synchronous implementation never had (it used a separate,
+        // uncontended `Store.open()` connection per card). Starting it
+        // here instead lets the cards' `.task`s — which fire as part of
+        // the makeKeyAndOrderFront layout/appear pass just completed —
+        // enqueue their reads first. The aggregate fetch is background
+        // bookkeeping; a delay of one runloop turn before it starts is
+        // not user-visible.
+        let rowCount = state.rows.count
+        DispatchQueue.main.async {
+            // Guard against a hide() racing ahead of this deferred
+            // block (e.g. a fast toggle()/Escape in the same runloop
+            // turn as show()): hide() calls stopLiveUpdates() before
+            // this runs, so without the check we'd start a live
+            // observation for a popup that's already closed and leave
+            // it running (pinning the DB) until the *next* hide().
+            if panel.isVisible {
+                state.startLiveUpdates()
+            }
+            let perfFirstFrame = ContinuousClock.now
+            let refreshMs = Self.perfMs(perfAfterDismiss, perfAfterRefresh)
+            let repositionMs = Self.perfMs(perfAfterRefresh, perfAfterReposition)
+            let makeKeyMs = Self.perfMs(perfAfterReposition, perfAfterMakeKey)
+            let firstFrameMs = Self.perfMs(perfAfterMakeKey, perfFirstFrame)
+            let totalMs = Self.perfMs(perfEntry, perfFirstFrame)
+            let counters = PopupPerfCounters.shared
+            let thumbMs = Self.perfMs(nanos: counters.thumbNanos)
+            Log.cli.info(
+                "popup-perf: refresh=\(refreshMs, privacy: .public) reposition=\(repositionMs, privacy: .public) makeKey=\(makeKeyMs, privacy: .public) firstFrame=\(firstFrameMs, privacy: .public) total=\(totalMs, privacy: .public) rows=\(rowCount, privacy: .public) thumbLoads=\(counters.thumbLoads, privacy: .public) thumbMs=\(thumbMs, privacy: .public) storeOpens=\(counters.storeOpens, privacy: .public)"
+            )
+        }
+    }
+
+    /// perf: milliseconds (one decimal) between two `ContinuousClock`
+    /// instants, as used by the `popup-perf` log line.
+    private static func perfMs(_ from: ContinuousClock.Instant, _ to: ContinuousClock.Instant) -> String {
+        let components = from.duration(to: to).components
+        let millis = Double(components.seconds) * 1_000 + Double(components.attoseconds) / 1_000_000_000_000_000
+        return String(format: "%.1f", millis)
+    }
+
+    /// perf: milliseconds (one decimal) from a raw nanosecond count, as
+    /// used for `PopupPerfCounters.thumbNanos`.
+    private static func perfMs(nanos: UInt64) -> String {
+        String(format: "%.1f", Double(nanos) / 1_000_000)
     }
 
     /// Fully hide the popup AND close any open Quick Look. This is the
@@ -88,6 +160,15 @@ final class PopupController {
             state?.query = ""
             state?.selectedIndex = 0
         }
+        // perf: session totals for card loads triggered by this summon,
+        // including any that landed after the `popup-perf` first-frame
+        // marker in `show()` (e.g. from scrolling). Counters are reset
+        // at the top of the next `show()`.
+        let counters = PopupPerfCounters.shared
+        let thumbMs = Self.perfMs(nanos: counters.thumbNanos)
+        Log.cli.info(
+            "popup-perf-session: thumbLoads=\(counters.thumbLoads, privacy: .public) thumbMs=\(thumbMs, privacy: .public) storeOpens=\(counters.storeOpens, privacy: .public)"
+        )
         Log.cli.info("popup hidden (closeQL=\(closeQL, privacy: .public), preserved=\(preservePosition, privacy: .public))")
     }
 
@@ -150,7 +231,21 @@ final class PopupController {
             width: visible.width,
             height: panelHeight
         )
-        panel.setFrame(frame, display: true)
+        // display:false when the panel is currently ordered out (the
+        // common case — every show() call starting from hidden): a
+        // synchronous display pass would force layout+draw of the whole
+        // card tree before makeKeyAndOrderFront ever runs, and ordering
+        // the panel front right after this triggers the real display
+        // pass once anyway. But show() is also reachable while the
+        // panel is ALREADY visible (AppDelegate.applicationShouldHandleReopen
+        // calls PopupController.shared.show() unconditionally) — on
+        // that path makeKeyAndOrderFront on an already-front window
+        // does not force a synchronous redraw, so a deferred display
+        // pass could show stale backing-store content, stretched to
+        // the new frame, for one frame on a screen change. Use a
+        // synchronous display there, matching the pre-perf-fix behavior
+        // for the already-visible case.
+        panel.setFrame(frame, display: panel.isVisible)
     }
 
     // MARK: - Monitors

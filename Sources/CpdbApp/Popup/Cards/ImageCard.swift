@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import ImageIO
 import GRDB
 import CpdbCore
 import CpdbShared
@@ -12,9 +13,13 @@ import CpdbShared
 struct ImageCard: View {
     let row: EntryRepository.EntryRow
 
+    @Environment(\.cpdbStore) private var store
+    @Environment(\.popupLiveRefreshToken) private var liveRefreshToken
+    @State private var thumb: NSImage?
+
     var body: some View {
         ZStack(alignment: .bottomLeading) {
-            if let thumb = loadThumbnail() {
+            if let thumb {
                 Image(nsImage: thumb)
                     .resizable()
                     .scaledToFill()
@@ -73,6 +78,20 @@ struct ImageCard: View {
                 .help(row.entry.textPreview ?? host)
             }
         }
+        // Keyed on entry.id AND liveRefreshToken: entry.id alone never
+        // changes for an existing row, so a thumbnail written to
+        // `previews` *after* this card's first render (e.g. the link-
+        // metadata backfiller landing late) would never be picked up —
+        // ForEach keeps the card's identity, `refresh()` just hands it
+        // a new `row` value, which re-evaluates `body` but does not
+        // restart a `.task` whose id is unchanged. Bumping
+        // liveRefreshToken only on live-triggered refreshes (not on
+        // every keystroke-driven search refresh) re-runs this task so
+        // late thumbnails still appear, without refetching on every
+        // search-field edit.
+        .task(id: "\(row.entry.id ?? -1)#\(liveRefreshToken)") {
+            await loadThumbnail()
+        }
     }
 
     /// Best-effort host extraction. `text_preview` for browser image
@@ -96,17 +115,42 @@ struct ImageCard: View {
         return host
     }
 
-    /// Pulls the thumbnail blob from the `previews` table. This is main-
-    /// thread + synchronous; acceptable because thumbs are small and the
-    /// row count is capped at 200 on screen.
-    private func loadThumbnail() -> NSImage? {
-        guard let id = row.entry.id else { return nil }
-        // We don't have a store handle here, so open a fresh DatabaseQueue
-        // against the canonical DB. Readers are cheap in WAL mode.
-        // TODO: pass the store down through environment so this doesn't
-        // reopen on every render. Works for now.
-        guard let store = try? Store.open() else { return nil }
-        let data: Data? = (try? store.dbQueue.read { db in
+    /// Pulls the thumbnail blob from the `previews` table via the store
+    /// injected through the environment (`\.cpdbStore`, set once in
+    /// `PopupController.configure` — no more per-render `Store.open()`).
+    /// The DB read + `NSImage` decode both happen off the main actor in
+    /// `fetchThumbnail`; only the final `thumb = image` assignment lands
+    /// back on main. Placeholder art (the `if`/`else` above) covers the
+    /// gap while this is in flight, same as the old synchronous version.
+    ///
+    /// perf: bumps `PopupPerfCounters` (loads + elapsed time) so
+    /// `PopupController.show()`/`hide()` can log per-summon card-load
+    /// overhead. Measurement only — no behavior change. `storeOpens`
+    /// stays untouched here on purpose: this path makes zero
+    /// `Store.open()` calls, which is part of the acceptance evidence.
+    @MainActor
+    private func loadThumbnail() async {
+        // Already have a thumb from a prior run of this task (e.g. this
+        // re-run was triggered by liveRefreshToken bumping for an
+        // unrelated write, not a new preview for THIS row) — skip the
+        // DB round trip entirely.
+        guard thumb == nil else { return }
+        guard let id = row.entry.id, let store else {
+            thumb = nil
+            return
+        }
+        let perfStart = DispatchTime.now()
+        let image = await Self.fetchThumbnail(id: id, dbQueue: store.dbQueue)
+        let elapsedNanos = DispatchTime.now().uptimeNanoseconds - perfStart.uptimeNanoseconds
+        PopupPerfCounters.shared.recordThumbLoad(nanos: elapsedNanos)
+        thumb = image
+    }
+
+    /// `nonisolated` so awaiting it from the `@MainActor` caller above
+    /// actually hops off the main actor for the blocking GRDB read and
+    /// the image decode, instead of running them inline on main.
+    private nonisolated static func fetchThumbnail(id: Int64, dbQueue: DatabaseQueue) async -> NSImage? {
+        let data: Data? = (try? await dbQueue.read { db in
             try Row.fetchOne(
                 db,
                 sql: "SELECT thumb_large, thumb_small FROM previews WHERE entry_id = ?",
@@ -116,6 +160,24 @@ struct ImageCard: View {
             }
         }) ?? nil
         guard let data else { return nil }
-        return NSImage(data: data)
+        return Self.decode(data)
+    }
+
+    /// `NSImage(data:)` only parses headers eagerly — the raster decode
+    /// of a compressed representation (JPEG/PNG) is deferred until the
+    /// image is first drawn, which for an `Image(nsImage:)` in this
+    /// view happens on the main thread the frame `thumb` is set. That
+    /// would move the expensive part of "decode off main" right back
+    /// onto main. Going through `CGImageSource` forces the full raster
+    /// decode here, off the main actor, so all that's left for the
+    /// main thread is compositing an already-decoded bitmap.
+    private nonisolated static func decode(_ data: Data) -> NSImage? {
+        guard
+            let source = CGImageSourceCreateWithData(data as CFData, nil),
+            let cgImage = CGImageSourceCreateImageAtIndex(source, 0, nil)
+        else {
+            return NSImage(data: data)
+        }
+        return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
     }
 }

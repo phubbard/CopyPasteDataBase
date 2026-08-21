@@ -16,7 +16,7 @@ struct EntryStripView: View {
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 12) {
+                LazyHStack(spacing: 12) {
                     ForEach(Array(state.rows.enumerated()), id: \.element.entry.id) { index, row in
                         EntryCard(
                             row: row,

@@ -10,6 +10,20 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+- **Popup summons ~8x faster (cold), ~24x (warm).** Instrumented the
+  hotkey-to-first-frame path (permanent `popup-perf` log line), then
+  fixed what the numbers indicted: the card strip is lazy
+  (`LazyHStack` — ~12 cards build instead of all 200), the pre-show
+  reposition no longer forces a synchronous draw of a hidden window,
+  the live-update observation starts after first paint instead of
+  running five aggregate queries inline, and image/link cards get the
+  store from the environment with async off-main thumbnail loads
+  (previously each card opened a fresh database connection per render
+  — 142 opens per summon, now 0). Measured on an M2 with a
+  10k-entry library: 868ms -> 113ms cold, 36ms warm. Late-arriving
+  link thumbnails still render live via a refresh token, and decode
+  is forced off the main thread so thumbs don't stutter on arrival.
+
 ## [3.2.1] – 2026-07-13
 
 - **Fix: image entries could get permanently stuck unanalyzed.** Vision

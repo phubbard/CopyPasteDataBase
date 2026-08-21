@@ -46,6 +46,11 @@ struct PopupRootView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(.ultraThinMaterial)
+        // Threads PopupState.liveRefreshToken down to ImageCard/LinkCard
+        // (which only get a `row`, not `state`) so their `.task(id:)`
+        // re-runs when a live-update-triggered refresh lands, not just
+        // when `entry.id` changes. See PopupEnvironment.swift.
+        .environment(\.popupLiveRefreshToken, state.liveRefreshToken)
     }
 
     /// Header shown while in time-pivot mode. Replaces the search
