@@ -10,6 +10,8 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+## [3.2.2] – 2026-08-20
+
 - **Popup summons ~8x faster (cold), ~24x (warm).** Instrumented the
   hotkey-to-first-frame path (permanent `popup-perf` log line), then
   fixed what the numbers indicted: the card strip is lazy
