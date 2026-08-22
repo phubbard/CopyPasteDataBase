@@ -12,6 +12,65 @@ dated `[1.X.Y]` heading and reset `[Unreleased]` to empty.
 
 ## [Unreleased]
 
+- **Popup summon perf — instrumentation, measurement, no fixes needed (v1.39.0).**
+  Ran the method handoff from macOS
+  ([`docs/handoffs/windows-popup-perf.md`](../docs/handoffs/windows-popup-perf.md),
+  shipped in Mac cpdb 3.2.2 after the Mac's popup fell from 868ms to
+  113ms cold / 36ms warm). The handoff's rule is *instrument first,
+  then rank fixes by measurement, not intuition* — so we did the
+  instrumentation and then measured.
+
+  **Baseline on the user's live library (74 rows, dev build with
+  instrumentation, running against the real cpdb.db):**
+
+  | Path | Total | Detail |
+  |---|---|---|
+  | App-launch `Refresh` (74 rows) | 59 ms | query=4 · vm=34 · assign=10 · thumbLoads=14 · thumbMs=21 |
+  | Cold summon (hidden → visible) | 4–7 ms | show=1–3 · activate=0–1 · firstFrame=2–5 |
+  | Warm summon (already visible)  | 0–1 ms | dominated by dispatcher tick |
+
+  **Result: no fixes shipped, because there was nothing to fix.**
+  Summon latency is already an order of magnitude below Mac's post-fix
+  targets. The Windows implementation was already architected around
+  the wins Mac had to retrofit:
+  - Shared `EntryRepository` (no per-item `new SqliteConnection` — Mac's
+    142 fresh DB opens didn't have a Windows analogue)
+  - `ListView`'s default `ItemsStackPanel` virtualizes (no eager 200-card
+    build the Mac's `HStack` was doing)
+  - Row-card thumbnails stored inline with `entries` rows and read in
+    the single `Recent()` query (no per-card thumbnail fetch)
+  - `MainWindow` created + `Activate()`d during `App.OnLaunched` (no
+    lazy first-summon window construction cost)
+
+  **What DID ship: permanent instrumentation.** Per the handoff's
+  "keep the instrumentation forever" rule — new `PopupPerf.cs` emits
+  one line per summon to `%LOCALAPPDATA%\cpdb\popup-perf.log`:
+
+  ```
+  [ts] summon  trigger=hotkey  kind=cold  total=5ms  enter=0 show=3 activate=0 firstFrame=2  rows=0 thumbLoads=0 thumbMs=0
+  [ts] refresh  rows=74  total=59ms  query=4 vm=34 assign=10  thumbLoads=14 thumbMs=21
+  ```
+
+  - Summon stages: `enter` → `show` (AppWindow.Show) → `activate`
+    (ForceForeground + Activate) → `firstFrame` (Low-priority
+    dispatcher callback, fires after the layout pass that produced the
+    first visible frame).
+  - `trigger` names the caller (`hotkey` / `tray` / `second-instance`).
+  - `kind=cold` when the window was hidden at summon time; `warm` when
+    already visible — the same distinction Mac makes.
+  - `Refresh()` emits its own independent line (it runs on ingest,
+    filter change, search-box typing — not just summon — so per-summon
+    attribution alone would miss the interesting cost).
+  - `thumbLoads` / `thumbMs` come from a global counter incremented in
+    `ThumbnailFrom` so refresh-cost attribution works whether or not a
+    summon is in flight.
+  - Log self-rotates at 1 MB. Best-effort I/O: any file error is
+    swallowed so instrumentation can't break the UI.
+
+  Future regressions will land in `grep popup-perf.log` instead of a
+  hunch. Mac's own `popup-perf` line was the acceptance evidence for
+  its fix; this Windows line is the same watch for ours.
+
 - **Canonical-hash v2 — semantic content identity (v1.38.0).**
   Windows port of the cross-platform identity algorithm Mac shipped in
   cpdb 3.0.0 / 3.1.0. Driven by `docs/handoffs/windows-hash-v2.md`.

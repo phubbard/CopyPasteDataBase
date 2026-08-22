@@ -178,6 +178,15 @@ public sealed partial class MainWindow : Window
         // parsing as a XamlParseException 0x802B000A.
         if (_host is null) return;
 
+        // Standalone refresh-cost measurement, always on (Refresh() runs
+        // on ingest, filter change, search typing, and post-mutation — not
+        // just summon — so the summon perf line doesn't cover it). Per
+        // docs/handoffs/windows-popup-perf.md: keep the instrumentation
+        // forever; future regressions surface in log grep instead of a hunch.
+        var refreshSw = System.Diagnostics.Stopwatch.StartNew();
+        int thumbLoadsBefore = PopupPerf.GlobalThumbLoads;
+        long thumbMsBefore   = PopupPerf.GlobalThumbMs;
+
         // Preserve multi-selection across refreshes — clipboard events can
         // fire between user keystrokes; without this, Down → capture-Refresh
         // → Delete would no-op because the selection reset to empty.
@@ -188,6 +197,7 @@ public sealed partial class MainWindow : Window
 
         var query = SearchBox.Text;
         var kind = CurrentKindFilter();
+        var querySw = System.Diagnostics.Stopwatch.StartNew();
         IReadOnlyList<EntryRow> rows;
         try
         {
@@ -201,8 +211,34 @@ public sealed partial class MainWindow : Window
             // rather than blanking the list.
             rows = _host.Entries.Recent(kind: kind);
         }
+        querySw.Stop();
+        var vmSw = System.Diagnostics.Stopwatch.StartNew();
         var vms = rows.Select(EntryViewModel.From).ToList();
+        vmSw.Stop();
+        var assignSw = System.Diagnostics.Stopwatch.StartNew();
         EntryList.ItemsSource = vms;
+        assignSw.Stop();
+        // Independent refresh-perf line — one per Refresh() invocation
+        // regardless of trigger, so we can see the constructor-time
+        // populate cost, ingest-refresh cost, and filter-change cost
+        // separately from the summon path.
+        PopupPerf.LogRefresh(
+            rows: vms.Count,
+            queryMs: querySw.ElapsedMilliseconds,
+            vmMs:    vmSw.ElapsedMilliseconds,
+            assignMs: assignSw.ElapsedMilliseconds,
+            totalMs: refreshSw.ElapsedMilliseconds,
+            thumbLoads: PopupPerf.GlobalThumbLoads - thumbLoadsBefore,
+            thumbMs:    PopupPerf.GlobalThumbMs    - thumbMsBefore);
+        // Attribute this refresh's row count + any thumbnail work to
+        // the in-flight summon session (per docs/handoffs/windows-
+        // popup-perf.md). No-op when Refresh runs outside a summon
+        // (e.g. Ingest events, filter change, search-box typing).
+        if (PopupPerf.Current is { } perf)
+        {
+            perf.RowsShown = vms.Count;
+            perf.Stage("refresh");
+        }
 
         if (prevSelectedIds.Count > 0)
         {
@@ -1187,6 +1223,7 @@ public sealed class EntryViewModel
     private static ImageSource? ThumbnailFrom(byte[]? bytes)
     {
         if (bytes is null || bytes.Length == 0) return null;
+        var sw = System.Diagnostics.Stopwatch.StartNew();
         try
         {
             var img = new BitmapImage();
@@ -1204,6 +1241,22 @@ public sealed class EntryViewModel
         catch
         {
             return null;
+        }
+        finally
+        {
+            // Per-item attribution: how much of the calling refresh's
+            // (and, if in flight, summon's) wall-clock was spent decoding
+            // row-card thumbs. Global counters so Refresh() can measure
+            // itself even when running outside a summon (ingest, filter
+            // change); session mirrors when one is in flight.
+            sw.Stop();
+            PopupPerf.GlobalThumbLoads++;
+            PopupPerf.GlobalThumbMs += sw.ElapsedMilliseconds;
+            if (PopupPerf.Current is { } perf)
+            {
+                perf.ThumbLoads++;
+                perf.ThumbMs += sw.ElapsedMilliseconds;
+            }
         }
     }
 

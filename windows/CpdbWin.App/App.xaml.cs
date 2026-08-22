@@ -134,7 +134,7 @@ public partial class App : Application
         // A second launch pokes the singleton event → surface this
         // (the live) window instead of starting a duplicate process.
         _singleInstance.ShowRequested += () =>
-            _mainWindow.DispatcherQueue.TryEnqueue(BringMainToFront);
+            _mainWindow.DispatcherQueue.TryEnqueue(() => BringMainToFront("second-instance"));
         _ourMainHwnd = WindowNative.GetWindowHandle(_mainWindow);
         InstallForegroundHook();
         _mainWindow.Activate();
@@ -144,8 +144,8 @@ public partial class App : Application
             Tooltip = $"{CpdbVersion.Full} — {HotkeyFormatter.Format(_settings.Hotkey)}",
             AutoLaunchChecked = AutoLaunch.IsEnabled(),
         };
-        _tray.Activated            += () => _mainWindow.DispatcherQueue.TryEnqueue(BringMainToFront);
-        _tray.ShowRequested        += () => _mainWindow.DispatcherQueue.TryEnqueue(BringMainToFront);
+        _tray.Activated            += () => _mainWindow.DispatcherQueue.TryEnqueue(() => BringMainToFront("tray"));
+        _tray.ShowRequested        += () => _mainWindow.DispatcherQueue.TryEnqueue(() => BringMainToFront("tray"));
         _tray.PreferencesRequested += () => _mainWindow.DispatcherQueue.TryEnqueue(OpenPreferences);
         _tray.QuitRequested        += () => _mainWindow.DispatcherQueue.TryEnqueue(QuitApp);
         _tray.CheckForUpdatesRequested += () => _ = _updates.CheckAsync(userInitiated: true);
@@ -167,7 +167,7 @@ public partial class App : Application
     {
         _hotkey?.Dispose();
         _hotkey = new GlobalHotkey { Modifiers = cfg.Modifiers, VirtualKey = cfg.VirtualKey };
-        _hotkey.Pressed += () => _mainWindow!.DispatcherQueue.TryEnqueue(BringMainToFront);
+        _hotkey.Pressed += () => _mainWindow!.DispatcherQueue.TryEnqueue(() => BringMainToFront("hotkey"));
         try
         {
             _hotkey.Start();
@@ -263,7 +263,9 @@ public partial class App : Application
         uint eventMin, uint eventMax, IntPtr hmodWinEventProc,
         WinEventDelegate lpfnWinEventProc, uint idProcess, uint idThread, uint dwFlags);
 
-    private void BringMainToFront()
+    private void BringMainToFront() => BringMainToFront("unknown");
+
+    private void BringMainToFront(string trigger)
     {
         if (_mainWindow is null) return;
 
@@ -280,7 +282,15 @@ public partial class App : Application
             LastForegroundHwnd = prev;
         }
 
+        // Instrument the summon path per docs/handoffs/windows-popup-perf.md:
+        // one log line per summon with stages + per-item counters. The
+        // session is a static slot picked up by Refresh() and
+        // ThumbnailFrom() to attribute their work.
+        var perf = PopupPerf.Begin(trigger, wasVisible: _mainWindow.AppWindow.IsVisible);
+        perf.Stage("enter");
+
         _mainWindow.AppWindow.Show();
+        perf.Stage("show");
 
         // WinUI's Window.Activate() doesn't reliably steal the foreground
         // when called from a background-thread event (tray click /
@@ -291,6 +301,20 @@ public partial class App : Application
         // transition counts as "from the same input context."
         ForceForeground(ourHwnd);
         _mainWindow.Activate();
+        perf.Stage("activate");
+
+        // First-frame proxy: enqueue a Low-priority dispatcher callback.
+        // WinUI processes Layout at Normal priority; Low fires strictly
+        // after the layout pass that produced the first visible frame.
+        // Not exact (compositor commit is deeper still) but a stable
+        // upper bound and consistent across runs.
+        _mainWindow.DispatcherQueue.TryEnqueue(
+            Microsoft.UI.Dispatching.DispatcherQueuePriority.Low,
+            () =>
+            {
+                perf.Stage("firstFrame");
+                perf.EndAndEmit();
+            });
     }
 
     /// <summary>
