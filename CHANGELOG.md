@@ -10,6 +10,16 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+- **Fix: text cards unreadable — first line guillotined at the card top
+  (v3.2.3 regression, the last of the perf-work fallout).** The popup's
+  "420pt" height was never real: before v3.2.2 the hosting view's
+  default sizing silently grew the window to fit the strip's actual
+  need (~478pt). When v3.2.3 pinned window sizing to stop the menu-bar
+  ballooning, 420 became a hard constraint — the horizontal ScrollView
+  vertically centered its too-tall content and every card lost ~29pt
+  off the top and bottom, cutting the first text line in half. The
+  panel is now honestly sized at 480pt.
+
 ## [3.2.4] – 2026-08-25
 
 - **Fix: ghost text fragments and blank cards in the popup strip

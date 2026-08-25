@@ -18,6 +18,16 @@ import SwiftUI
 final class PopupController {
     static let shared = PopupController()
 
+    /// The strip needs card height (360) + vertical padding (28) = 388pt,
+    /// plus ~90pt of search/chips/divider chrome. The historical "420"
+    /// never actually held: before v3.2.2 the NSHostingView's default
+    /// sizingOptions silently grew the window to fit (~478pt). Once
+    /// v3.2.3 pinned window sizing (sizingOptions = []), 420 became a
+    /// real constraint — the horizontal ScrollView vertically centered
+    /// its too-tall content and clipped every card ~29pt top and
+    /// bottom. 480 is the honest number.
+    static let panelHeight: CGFloat = 480
+
     private var panel: PopupPanel?
     private var state: PopupState?
     private var escapeMonitor: Any?
@@ -32,7 +42,7 @@ final class PopupController {
         state.captureMode = captureMode
         self.state = state
 
-        let panel = PopupPanel(contentRect: NSRect(x: 0, y: 0, width: 860, height: 420))
+        let panel = PopupPanel(contentRect: NSRect(x: 0, y: 0, width: 860, height: Self.panelHeight))
         // .environment(\.cpdbStore, store) threads the Store down to
         // ImageCard/LinkCard so they read thumbnails via the shared
         // DatabaseQueue instead of each opening their own with
@@ -232,7 +242,7 @@ final class PopupController {
         // Span the full width of the active display. Height stays fixed at
         // 420; vertical anchor stays at ~35% from the bottom of the visible
         // frame (matches Paste's "just above centre" placement).
-        let panelHeight: CGFloat = 420
+        let panelHeight = Self.panelHeight
         let frame = NSRect(
             x: visible.minX,
             y: visible.minY + visible.height * 0.35 - panelHeight / 2,
