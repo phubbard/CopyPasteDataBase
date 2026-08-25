@@ -10,6 +10,8 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+## [3.2.5] – 2026-08-25
+
 - **Fix: text cards unreadable — first line guillotined at the card top
   (v3.2.3 regression, the last of the perf-work fallout).** The popup's
   "420pt" height was never real: before v3.2.2 the hosting view's
