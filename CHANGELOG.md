@@ -10,6 +10,21 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+- **Fix: ghost text fragments and blank cards in the popup strip
+  (v3.2.2 regression, second half).** The perf work's deferred
+  live-observation delivered its first (always-redundant) value right
+  after first paint, re-running an identical fetch and reassigning
+  `rows` while the LazyHStack was still materializing — the lazy diff
+  then painted items at estimated offsets: half-guillotined text
+  slivers above the strip, empty card bodies, stale cards in wrong
+  positions. `refresh()` now skips no-op reassignments entirely
+  (`EntryRow` gained `Equatable`), the observation's first delivery is
+  dropped, and the on-summon `scrollTo` is skipped when the strip is
+  already at its leading edge. Belt-and-braces from the same hunt: the
+  card's internal layout is now fully determinate (fixed footer band,
+  no infinity-height frames), so lazy proposal quirks can't displace
+  content again.
+
 ## [3.2.3] – 2026-08-25
 
 - **Fix: popup panel ballooning past its 420pt frame (v3.2.2

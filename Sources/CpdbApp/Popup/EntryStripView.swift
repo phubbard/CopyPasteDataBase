@@ -58,8 +58,20 @@ struct EntryStripView: View {
             // the other a navigation follow.
             .onChange(of: state.scrollToken) { _, _ in
                 guard state.rows.indices.contains(state.selectedIndex) else { return }
+                // Fresh summon (selection at the newest entry): the strip
+                // already sits at its leading edge — issuing a scrollTo
+                // here is not just redundant, it fires while the
+                // LazyHStack is still materializing its first items and
+                // paints them at estimated offsets (ghost text fragments
+                // above the strip, blank card bodies — the v3.2.2/3
+                // clipping reports). Only scroll when there's actually a
+                // remembered position to restore, and only after the
+                // current layout pass settles.
+                guard state.selectedIndex != 0 else { return }
                 let id = state.rows[state.selectedIndex].entry.id!
-                proxy.scrollTo(id, anchor: .leading)
+                DispatchQueue.main.async {
+                    proxy.scrollTo(id, anchor: .leading)
+                }
             }
         }
     }

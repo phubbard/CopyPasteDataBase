@@ -13,7 +13,7 @@ public struct EntryRepository {
         self.store = store
     }
 
-    public struct EntryRow: Sendable {
+    public struct EntryRow: Sendable, Equatable {
         public var entry: Entry
         public var appName: String?
         public var appBundleId: String?

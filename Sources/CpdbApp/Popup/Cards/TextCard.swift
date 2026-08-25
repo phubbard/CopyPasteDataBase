@@ -26,7 +26,13 @@ struct TextCard: View {
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.leading)
                 .lineLimit(nil)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                // No maxHeight:.infinity here — under the LazyHStack an
+                // infinity-height child inflates past the card's body slot
+                // and the overflow guillotines the headline on the top
+                // clip edge (v3.2.2 regression). The EntryCard body slot
+                // is a fixed band with .topLeading + .clipped(); natural
+                // text height + bottom clipping is the documented look.
+                .frame(maxWidth: .infinity, alignment: .topLeading)
         }
         .padding(12)
         // Clip the text to the card bounds instead of bleeding into the footer.

@@ -19,13 +19,26 @@ struct EntryCard: View {
 
     static let cardSize = CGSize(width: 320, height: 360)
 
+    /// Fixed footer band so the card's internal layout is fully
+    /// determinate. Under the LazyHStack, proposal-driven sizing
+    /// (body slot at maxHeight .infinity + natural-height footer)
+    /// measured ~a footer taller than the card and the overflow
+    /// centered, guillotining the first text line on the card's top
+    /// clip edge (v3.2.2 regression, invisible under the eager
+    /// HStack's full-height proposals). With both bands explicit,
+    /// the VStack always totals exactly cardSize.height.
+    static let footerBand: CGFloat = 32
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             body(for: row.entry.kind)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .frame(maxWidth: .infinity)
+                .frame(height: Self.cardSize.height - Self.footerBand, alignment: .topLeading)
+                .clipped()
             footer
+                .frame(height: Self.footerBand)
         }
-        .frame(width: Self.cardSize.width, height: Self.cardSize.height)
+        .frame(width: Self.cardSize.width, height: Self.cardSize.height, alignment: .top)
         .background(cardBackground)
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay(

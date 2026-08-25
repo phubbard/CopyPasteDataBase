@@ -272,9 +272,16 @@ final class PopupState {
                     kinds: kindFilter
                 )
                 guard gen == generation else { return }
-                rows = fetched
-                snippetsById = [:]
-                matchSourcesById = [:]
+                // Only reassign when content actually changed. A no-op
+                // reassignment is not free under the LazyHStack: swapping
+                // `rows` mid-materialization (e.g. the live-observation's
+                // first post-summon delivery re-running an identical
+                // fetch) makes the lazy diff repaint items at estimated
+                // offsets — ghost text fragments and blank cards
+                // (v3.2.2 regression).
+                if rows != fetched { rows = fetched }
+                if !snippetsById.isEmpty { snippetsById = [:] }
+                if !matchSourcesById.isEmpty { matchSourcesById = [:] }
             } else {
                 let results = try repository.search(
                     query: q,
@@ -283,13 +290,16 @@ final class PopupState {
                     limit: searchLimit
                 )
                 guard gen == generation else { return }
-                rows = results.map(\.row)
-                snippetsById = Dictionary(
+                let newRows = results.map(\.row)
+                let newSnippets = Dictionary(
                     uniqueKeysWithValues: results.map { ($0.row.entry.id!, $0.snippet) }
                 )
-                matchSourcesById = Dictionary(
+                let newSources = Dictionary(
                     uniqueKeysWithValues: results.map { ($0.row.entry.id!, $0.source) }
                 )
+                if rows != newRows { rows = newRows }
+                if snippetsById != newSnippets { snippetsById = newSnippets }
+                if matchSourcesById != newSources { matchSourcesById = newSources }
             }
             selectedIndex = rows.isEmpty ? 0 : min(selectedIndex, rows.count - 1)
         } catch {
@@ -312,8 +322,11 @@ final class PopupState {
     /// tables means more wake-ups with nothing to show. CloudKit pulls
     /// touch `entries` inside the same transaction that writes flavors,
     /// so we don't miss remote updates either.
+    private var skipNextLiveDelivery = false
+
     func startLiveUpdates() {
         guard liveObservation == nil else { return }
+        skipNextLiveDelivery = true
         // Projection that changes when anything user-visible changes:
         //   - row count (insert / tombstone)
         //   - max created_at (insert)
@@ -356,7 +369,17 @@ final class PopupState {
                 Log.cli.error("popup live updates errored: \(String(describing: error), privacy: .public)")
             },
             onChange: { [weak self] _ in
-                Task { @MainActor in self?.scheduleLiveRefresh() }
+                Task { @MainActor in
+                    guard let self else { return }
+                    // The async observation's first delivery reflects the
+                    // state refresh() just read synchronously — refreshing
+                    // again is churn (and churn glitches the lazy strip).
+                    if self.skipNextLiveDelivery {
+                        self.skipNextLiveDelivery = false
+                        return
+                    }
+                    self.scheduleLiveRefresh()
+                }
             }
         )
     }
