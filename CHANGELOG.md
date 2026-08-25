@@ -10,6 +10,15 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+- **Fix: popup panel ballooning past its 420pt frame (v3.2.2
+  regression).** The perf work's lazy card strip changed the SwiftUI
+  intrinsic-size profile, and `NSHostingController`'s default
+  `sizingOptions` let that resize the window out from under the
+  explicit `setFrame` — on some screens the panel swallowed the menu
+  bar and Dock and clipped card content. The hosting controller no
+  longer participates in window sizing (`sizingOptions = []`); the
+  summon path's frame is authoritative.
+
 ## [3.2.2] – 2026-08-20
 
 - **Popup summons ~8x faster (cold), ~24x (warm).** Instrumented the

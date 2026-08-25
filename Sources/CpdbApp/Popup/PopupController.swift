@@ -40,6 +40,14 @@ final class PopupController {
         let hosting = NSHostingController(rootView: PopupRootView(state: state, onPaste: { [weak self] in
             self?.pasteSelected()
         }).environment(\.cpdbStore, store))
+        // The panel's frame is authoritative (repositionOnActiveScreen sets
+        // it explicitly on every summon) — SwiftUI must never drive the
+        // window size. The default sizingOptions let intrinsic-size changes
+        // resize the window; the eager HStack never exercised that path,
+        // but the LazyHStack's estimated sizing does: the panel ballooned
+        // past its 420pt height and covered the menu bar/Dock (v3.2.2
+        // regression).
+        hosting.sizingOptions = []
         hosting.view.frame = panel.contentLayoutRect
         panel.contentViewController = hosting
         self.panel = panel
