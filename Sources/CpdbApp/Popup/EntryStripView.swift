@@ -6,12 +6,20 @@ import CpdbShared
 
 /// Horizontal, Paste-style card scroller.
 ///
-/// Cards are a fixed 180×280; the strip scrolls horizontally and scrolls the
+/// Cards are a fixed `EntryCard.cardSize` (320×360); the strip scrolls horizontally and scrolls the
 /// selected card into view automatically when the user moves the selection
 /// via the keyboard monitor in `PopupController`.
 struct EntryStripView: View {
     @Bindable var state: PopupState
     let onPaste: () -> Void
+
+    /// Vertical padding applied above and below the LazyHStack of cards.
+    /// Exposed so `PopupController.panelHeight`'s geometry-contract test
+    /// can assert the panel is tall enough to hold `EntryCard.cardSize.height`
+    /// plus this padding on both edges without the horizontal ScrollView
+    /// vertically centering (and clipping) the strip — the v3.2.3
+    /// regression.
+    static let verticalPadding: CGFloat = 14
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -39,7 +47,7 @@ struct EntryStripView: View {
                     }
                 }
                 .padding(.horizontal, 16)
-                .padding(.vertical, 14)
+                .padding(.vertical, Self.verticalPadding)
             }
             .onChange(of: state.selectedIndex) { _, newIndex in
                 guard state.rows.indices.contains(newIndex) else { return }

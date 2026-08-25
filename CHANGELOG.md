@@ -10,6 +10,17 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+- **Tests: regression coverage for the v3.2.2–v3.2.5 popup layout chain.**
+  A new `CpdbAppTests` target (test targets can depend on executable
+  targets directly, so the popup's SwiftUI code didn't need to move)
+  adds a geometry-contract test asserting `PopupController.panelHeight`
+  always has room for `EntryCard.cardSize.height` plus the strip's
+  padding, and a rendered-layout test that hosts the real popup view
+  tree offscreen and measures the first card's actual pixel geometry —
+  full height, headline visibility, and no ghost content above the
+  card. The rendered test fails as expected when panelHeight regresses
+  to the old, too-small 420pt.
+
 ## [3.2.5] – 2026-08-25
 
 - **Fix: text cards unreadable — first line guillotined at the card top

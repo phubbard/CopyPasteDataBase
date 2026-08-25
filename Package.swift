@@ -97,5 +97,21 @@ let package = Package(
             // Run `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test`,
             // or set it once in your shell. `swift build` works with Command Line Tools alone.
         ),
+        // Test target depending directly on the CpdbApp *executable*
+        // target — supported by SwiftPM since Swift 5.5 (test targets
+        // may depend on executables; `@testable import CpdbApp` works
+        // under `swift test`'s debug build). Lets us exercise popup
+        // layout code (PopupController/EntryStripView/EntryCard/
+        // PopupRootView/AppState) without relocating it out of the app
+        // target.
+        .testTarget(
+            name: "CpdbAppTests",
+            dependencies: [
+                "CpdbApp",
+                "CpdbCore",
+                "CpdbShared",
+                .product(name: "GRDB", package: "GRDB.swift"),
+            ]
+        ),
     ]
 )
