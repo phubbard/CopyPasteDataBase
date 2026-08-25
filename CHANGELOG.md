@@ -10,6 +10,8 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+## [3.2.3] – 2026-08-25
+
 - **Fix: popup panel ballooning past its 420pt frame (v3.2.2
   regression).** The perf work's lazy card strip changed the SwiftUI
   intrinsic-size profile, and `NSHostingController`'s default
