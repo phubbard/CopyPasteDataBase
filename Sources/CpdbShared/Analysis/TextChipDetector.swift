@@ -33,6 +33,15 @@ public enum TextChipDetector {
     /// `ImageIndexer.giantImageThresholdBytes`'s reasoning).
     public static let maxScanLength = 10_000
 
+    /// Matches an explicit time-of-day token ("3pm", "3 PM", "14:30")
+    /// inside an `NSDataDetector` date match's own substring — see the
+    /// `hasTime` comment in `classicChips` for why this exists instead
+    /// of trusting `result.timeZone`/`result.duration`.
+    private static let timeTokenPattern = try! NSRegularExpression(
+        pattern: #"\b\d{1,2}(:\d{2})?\s*(am|pm)\b|\b\d{1,2}:\d{2}\b"#,
+        options: [.caseInsensitive]
+    )
+
     public static func detect(in fullText: String) async -> [Chip] {
         let text = String(fullText.prefix(maxScanLength))
         guard !text.isEmpty else { return [] }
@@ -62,13 +71,22 @@ public enum TextChipDetector {
             case .date:
                 guard let date = result.date else { return }
                 let iso = ISO8601DateFormatter().string(from: date)
-                // NSDataDetector only populates `timeZone` when the
-                // matched text itself carried a time-of-day component
-                // ("March 5 at 3pm" vs. bare "March 5") — a more
-                // reliable signal than inspecting the `Date` value
-                // itself, which always has a time-of-day whether or
-                // not the source text mentioned one.
+                // `result.timeZone`/`result.duration` are NOT reliable
+                // "did the text mention a time-of-day" signals despite
+                // appearances: empirically, `NSDataDetector` only
+                // populates `timeZone` when the match names an
+                // *explicit zone* ("3pm PST"), not for the ordinary
+                // "January 5 at 3pm" case, and `duration` stays 0 for a
+                // plain point-in-time match either way. Fall back to
+                // scanning the matched substring itself for a
+                // recognizable time token (bare "3pm"/"3 PM" or
+                // "14:30") so the common case still renders and
+                // round-trips into the `.ics` SUMMARY with its time.
+                let matchedText = Range(result.range, in: text).map { String(text[$0]) } ?? ""
                 let hasTime = result.timeZone != nil || result.duration > 0
+                    || Self.timeTokenPattern.firstMatch(
+                        in: matchedText, range: NSRange(matchedText.startIndex..., in: matchedText)
+                    ) != nil
                 let display = DateFormatter.localizedString(
                     from: date, dateStyle: .medium, timeStyle: hasTime ? .short : .none)
                 chips.append(Chip(t: ChipType.date, v: iso, s: display))

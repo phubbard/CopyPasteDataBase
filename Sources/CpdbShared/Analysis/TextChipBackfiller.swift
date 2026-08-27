@@ -62,9 +62,24 @@ public struct TextChipBackfiller {
                 // Candidates are exactly the rows with chips_json IS
                 // NULL, so there's nothing existing to merge against —
                 // this write is what turns NULL into (at minimum) "[]",
-                // marking the row scanned either way.
+                // marking the row scanned either way. `setChipsIfUnset`
+                // guards against clobbering `Ingestor`'s own (fuller —
+                // `plainText` vs. this pass's truncated `text_preview`)
+                // scan if it raced us and already won for this row.
+                //
+                // `pushToCloud: false`: chips are re-derivable from the
+                // entry's own already-synced text, so this catch-up
+                // pass over what can be the entire pre-existing
+                // text/link corpus (a Paste.db import: thousands of
+                // rows) has nothing to gain from re-enqueuing every one
+                // of them for a full CloudKit push (entry + thumbnails
+                // + every flavor as a fresh CKAsset) — every device
+                // converges on the same chips by running this same
+                // backfill locally. Skipping the enqueue keeps this
+                // pass from flooding `cloudkit_push_queue` and starving
+                // real pending edits behind a corpus-wide re-upload.
                 let json = Chip.merge(existingJson: nil, adding: chips)
-                try repository.setChips(entryId: row.entryId, json: json)
+                try repository.setChipsIfUnset(entryId: row.entryId, json: json, pushToCloud: false)
                 report.scanned += 1
             } catch {
                 report.failed += 1

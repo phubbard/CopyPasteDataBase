@@ -149,12 +149,18 @@ public struct Ingestor {
                 let chips = await TextChipDetector.detect(in: text)
                 do {
                     let repo = EntryRepository(store: store)
-                    // No existing chips_json possible for a row this
-                    // freshly inserted — write straight through (still
-                    // via `Chip.merge` so an empty result correctly
-                    // becomes "[]" rather than staying NULL/unscanned).
+                    // This scan (over the full `plainText`) and
+                    // `TextChipBackfiller`'s catch-up pass (over the
+                    // much shorter `text_preview`) can both race to be
+                    // the first write for this row if a backfill tick
+                    // lands while this detached task is still running —
+                    // `setChipsIfUnset`'s guarded UPDATE makes whichever
+                    // commits first stick instead of whichever finishes
+                    // last silently overwriting it. `Chip.merge` still
+                    // turns an empty result into "[]" rather than
+                    // leaving the row NULL/unscanned.
                     let json = Chip.merge(existingJson: nil, adding: chips)
-                    try repo.setChips(entryId: entryId, json: json)
+                    try repo.setChipsIfUnset(entryId: entryId, json: json)
                 } catch {
                     Log.capture.error(
                         "chip detect failed for entry \(entryId, privacy: .public): \(String(describing: error), privacy: .public)"

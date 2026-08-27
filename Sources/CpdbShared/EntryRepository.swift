@@ -772,6 +772,46 @@ public struct EntryRepository {
         }
     }
 
+    /// Persist the *first* data-chip scan result for an entry — the
+    /// transition from `chips_json IS NULL` to a scanned value (`"[]"`
+    /// for "scanned, found nothing" or a populated array). Guarded
+    /// (`AND chips_json IS NULL` in the UPDATE) so it never clobbers an
+    /// already-scanned row: `Ingestor`'s capture-time scan (full
+    /// `plainText`, up to `TextChipDetector.maxScanLength`) and
+    /// `TextChipBackfiller`'s catch-up pass (the much shorter
+    /// `text_preview`) both race to be the first writer for a
+    /// freshly-inserted row, and whichever commits first should win —
+    /// not whichever happens to finish last, which `setChips`'s
+    /// unconditional overwrite would let happen, silently discarding
+    /// the better (Ingestor's) scan under the worse (backfiller's)
+    /// truncated one.
+    ///
+    /// `pushToCloud: false` skips the CloudKit-push enqueue: chips are
+    /// pure re-derived data from the entry's own text, which is already
+    /// synced, so a catch-up backfill over pre-existing rows has
+    /// nothing to gain from re-pushing the whole entry bundle (record +
+    /// thumbnails + every flavor as a fresh `CKAsset`) — every other
+    /// device converges on the same result by running the same
+    /// backfill locally against the text it already has.
+    @discardableResult
+    public func setChipsIfUnset(entryId: Int64, json: String?, pushToCloud: Bool = true) throws -> Bool {
+        let now = Date().timeIntervalSince1970
+        return try store.dbQueue.write { db in
+            try db.execute(
+                sql: """
+                    UPDATE entries SET chips_json = ?
+                    WHERE id = ? AND deleted_at IS NULL AND chips_json IS NULL
+                    """,
+                arguments: [json, entryId]
+            )
+            let wrote = db.changesCount > 0
+            if pushToCloud && wrote {
+                try PushQueue.enqueue(entryId: entryId, in: db, now: now)
+            }
+            return wrote
+        }
+    }
+
     /// Persist Foundation-Models-generated title + summary for an entry.
     /// Enrichment, not a mutable-state change: does not bump
     /// `modified_at` (mirrors `setLinkMetadata`). Enqueues for CloudKit

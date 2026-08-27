@@ -40,26 +40,35 @@ struct ChipRow: View {
         }
     }
 
+    // Deliberately not a `Button`: `EntryStripView` attaches
+    // `.onTapGesture(count: 2)` (paste) / `.onTapGesture` (select) to
+    // the whole card these chips render inside, and a `Button` claims
+    // the hit-test region exclusively — a double-click landing on a
+    // chip would fire the chip action twice (once per click of the
+    // pair) and never reach the card's paste gesture at all. A plain
+    // view + `.simultaneousGesture` lets this tap and the ancestor's
+    // tap gestures both get a chance to recognize; `ChipAction.perform`
+    // carries its own same-chip debounce (see its doc comment) to
+    // collapse a double-click's two taps into one action.
     private func chipButton(_ chip: Chip) -> some View {
-        Button {
-            ChipAction.perform(chip)
-        } label: {
-            HStack(spacing: 3) {
-                Image(systemName: Self.symbol(for: chip.t))
-                    .font(.system(size: 9, weight: .semibold))
-                Text(chip.s)
-                    .font(.system(size: 9, weight: .semibold, design: .rounded))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
-            .foregroundStyle(.white)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 3)
-            .background(Capsule().fill(Self.color(for: chip.t)))
+        HStack(spacing: 3) {
+            Image(systemName: Self.symbol(for: chip.t))
+                .font(.system(size: 9, weight: .semibold))
+            Text(chip.s)
+                .font(.system(size: 9, weight: .semibold, design: .rounded))
+                .lineLimit(1)
+                .truncationMode(.middle)
         }
-        .buttonStyle(.plain)
+        .foregroundStyle(.white)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 3)
+        .background(Capsule().fill(Self.color(for: chip.t)))
         .frame(maxWidth: 110)
         .help(chip.s)
+        .contentShape(Rectangle())
+        .simultaneousGesture(
+            TapGesture().onEnded { ChipAction.perform(chip) }
+        )
     }
 
     private static func symbol(for type: String) -> String {

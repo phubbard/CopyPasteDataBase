@@ -126,6 +126,22 @@ struct ChipDetectionTests {
         #expect(chips.count == 1)
     }
 
+    @Test(
+        "A labeled/key-value payload that Foundation's lenient URL(string:) parses with a scheme is NOT misclassified as a url chip",
+        arguments: ["NOTE: call mom", "SN:12345-ABC"]
+    )
+    func qrLabeledTextPayloadIsNotMisreadAsURL(_ payload: String) {
+        // Regression guard: `URL(string: payload)` returns non-nil with
+        // a `scheme` for both of these ("NOTE", "SN") even though
+        // neither is a URI — the old "any real scheme" test would have
+        // routed them to a url chip whose tap silently no-ops instead
+        // of the text chip's copy-to-pasteboard.
+        let chips = QRChipMapper.chips(from: [payload])
+        #expect(chips.count == 1)
+        #expect(chips[0].t == ChipType.text)
+        #expect(chips[0].v == payload)
+    }
+
     // MARK: - TrackingCarrier pattern table
 
     @Test("TrackingCarrier detects UPS, USPS, and FedEx shapes")
@@ -170,6 +186,27 @@ struct ChipDetectionTests {
     func classicChipsDetectsDate() {
         let chips = TextChipDetector.classicChips(in: "Let's meet on January 5, 2027")
         #expect(chips.contains { $0.t == ChipType.date })
+    }
+
+    @Test("classicChips renders a time-of-day for a date match with no explicit time zone named")
+    func classicChipsRendersTimeWithoutExplicitZone() {
+        // `NSDataDetector` only populates `result.timeZone` when the
+        // match names an explicit zone ("3pm PST"); it stays nil for
+        // the far more common "January 5, 2027 at 3pm" case even
+        // though the text clearly does carry a time-of-day. Relying on
+        // `timeZone != nil` alone (the pre-fix behavior) renders this
+        // chip as a bare date with no time, silently dropping "3pm"
+        // from both the chip face and the generated .ics SUMMARY.
+        let chips = TextChipDetector.classicChips(in: "Let's meet January 5, 2027 at 3pm")
+        let dateChip = chips.first { $0.t == ChipType.date }
+        #expect(dateChip != nil)
+        #expect(dateChip?.s.contains(":") == true)
+        // A bare date (no time-of-day mentioned at all) must still
+        // render with no time component.
+        let bareDateChips = TextChipDetector.classicChips(in: "Let's meet on January 5, 2027")
+        let bareDateChip = bareDateChips.first { $0.t == ChipType.date }
+        #expect(bareDateChip != nil)
+        #expect(bareDateChip?.s.contains(":") == false)
     }
 
     @Test("TextChipDetector.detect ignores content past maxScanLength")
@@ -277,5 +314,49 @@ struct ChipDetectionTests {
 
         let emptyEntry = try repo.fetch(id: noMatches)
         #expect(emptyEntry?.chipsJson == "[]")
+    }
+
+    @Test("TextChipBackfiller stamps chips_json without enqueuing a CloudKit push")
+    func backfillerDoesNotEnqueuePush() async throws {
+        // Chips are pure re-derived data from the entry's own
+        // already-synced text, so the catch-up pass over a whole
+        // pre-existing text/link corpus (e.g. a Paste.db import) must
+        // not turn into a full CloudKit re-push of every one of those
+        // rows — see `TextChipBackfiller.runOnce`'s doc comment.
+        let store = try Store.inMemory()
+        _ = try insertEntry(in: store, kind: .text, textPreview: "reach me at (415) 555-2671")
+        _ = try insertEntry(in: store, kind: .text, textPreview: "just some ordinary words")
+
+        let repo = EntryRepository(store: store)
+        let backfiller = TextChipBackfiller(repository: repo)
+        let report = try await backfiller.runOnce(limit: 10)
+        #expect(report.scanned == 2)
+
+        let queued = try await store.dbQueue.read { db in try PushQueue.count(in: db) }
+        #expect(queued == 0)
+    }
+
+    @Test("setChipsIfUnset guards against clobbering a row another writer already scanned")
+    func setChipsIfUnsetGuardsAgainstOverwrite() throws {
+        // Regression guard for the Ingestor-vs-TextChipBackfiller race:
+        // whichever of the two scans commits first for a given row must
+        // stick, not whichever happens to finish last.
+        let store = try Store.inMemory()
+        let id = try insertEntry(in: store, kind: .text, textPreview: "irrelevant")
+        let repo = EntryRepository(store: store)
+
+        let firstWriterJson = Chip.encodeArray([Chip(t: ChipType.phone, v: "415-555-2671", s: "415-555-2671")])
+        let wroteFirst = try repo.setChipsIfUnset(entryId: id, json: firstWriterJson)
+        #expect(wroteFirst)
+
+        // A second writer racing against the first (e.g. the
+        // backfiller's truncated-preview scan finishing after
+        // Ingestor's full-text scan already won) must be a no-op.
+        let secondWriterJson = "[]"
+        let wroteSecond = try repo.setChipsIfUnset(entryId: id, json: secondWriterJson)
+        #expect(!wroteSecond)
+
+        let entry = try repo.fetch(id: id)
+        #expect(entry?.chipsJson == firstWriterJson)
     }
 }
