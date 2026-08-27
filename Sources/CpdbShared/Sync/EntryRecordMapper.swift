@@ -35,6 +35,25 @@ public enum EntryRecordMapper {
         }
     }
 
+    /// A semantic-search embedding for one entry, exactly as it lives in
+    /// the local `entry_embeddings` row. Carried as scalar fields on the
+    /// Entry CKRecord (see `CKSchema.EntryField.embedding*`) rather than
+    /// its own record type — an entry has at most one embedding, so
+    /// there's no need for a separate child-record lifecycle.
+    public struct EmbeddingInfo: Sendable, Equatable {
+        public var modelId: String
+        public var revision: Int64
+        public var dims: Int64
+        public var vector: Data
+
+        public init(modelId: String, revision: Int64, dims: Int64, vector: Data) {
+            self.modelId = modelId
+            self.revision = revision
+            self.dims = dims
+            self.vector = vector
+        }
+    }
+
     /// The canonical CKRecord.ID for an Entry: derived from its
     /// `contentHash` (SHA-256, 32 bytes → 64 hex chars). Two devices
     /// that independently captured the same content produce the
@@ -59,7 +78,8 @@ public enum EntryRecordMapper {
     public static func populate(
         record: CKRecord,
         entry: Entry,
-        source: SourceInfo
+        source: SourceInfo,
+        embedding: EmbeddingInfo? = nil
     ) {
         record[CKSchema.EntryField.uuid]        = entry.uuid as NSData
         record[CKSchema.EntryField.createdAt]   = entry.createdAt  as NSNumber
@@ -93,6 +113,21 @@ public enum EntryRecordMapper {
         record[CKSchema.EntryField.hashVersion] = Int64(entry.hashVersion) as NSNumber
         record[CKSchema.EntryField.identityTag] = entry.identityTag as NSString?
         record[CKSchema.EntryField.modifiedAt]  = entry.modifiedAt as NSNumber
+
+        // Semantic enrichment (schema v12): adopt-once fields, nil until
+        // some device computes them.
+        record[CKSchema.EntryField.chipsJson]  = entry.chipsJson as NSString?
+        record[CKSchema.EntryField.aiTitle]    = entry.aiTitle   as NSString?
+        record[CKSchema.EntryField.aiSummary]  = entry.aiSummary as NSString?
+
+        // Embedding lives in a separate local table (`entry_embeddings`),
+        // so it isn't on `entry` itself — the caller loads it and passes
+        // it in. Nil clears all four wire fields (matches "no local
+        // embedding row").
+        record[CKSchema.EntryField.embeddingVector]   = embedding.map { $0.vector as NSData }
+        record[CKSchema.EntryField.embeddingModelId]  = embedding.map { $0.modelId as NSString }
+        record[CKSchema.EntryField.embeddingRevision] = embedding.map { $0.revision as NSNumber }
+        record[CKSchema.EntryField.embeddingDims]     = embedding.map { $0.dims as NSNumber }
     }
 
     /// Attach thumbnail `CKAsset`s to the record. Pass nil URLs to clear
@@ -159,6 +194,19 @@ public enum EntryRecordMapper {
         /// last-writer-wins for `deletedAt` + `pinned` on pull. Absent on
         /// pre-undo records → 0.
         public var modifiedAt: Double = 0
+        /// Data chips detected in this entry's text (schema v12).
+        /// Adopt-once: nil = no device has scanned this yet.
+        public var chipsJson: String?
+        /// Foundation-Models-generated short title (schema v12).
+        /// Adopt-once: nil = no device has enriched this yet.
+        public var aiTitle: String?
+        /// Foundation-Models-generated summary (schema v12). Adopt-once:
+        /// nil = no device has enriched this yet.
+        public var aiSummary: String?
+        /// Semantic-search embedding (schema v12). Nil when the
+        /// originating device has no local embedding row for this entry,
+        /// or any of the four wire fields is missing.
+        public var embedding: EmbeddingInfo?
     }
 
     public enum DecodeError: Error, CustomStringConvertible {
@@ -232,8 +280,26 @@ public enum EntryRecordMapper {
             identityTag: record[CKSchema.EntryField.identityTag] as? String,
             // Absent (pre-undo record) → 0, so any record carrying a real
             // mutation timestamp wins the LWW comparison against it.
-            modifiedAt: (record[CKSchema.EntryField.modifiedAt] as? NSNumber)?.doubleValue ?? 0
+            modifiedAt: (record[CKSchema.EntryField.modifiedAt] as? NSNumber)?.doubleValue ?? 0,
+            chipsJson: record[CKSchema.EntryField.chipsJson] as? String,
+            aiTitle:   record[CKSchema.EntryField.aiTitle] as? String,
+            aiSummary: record[CKSchema.EntryField.aiSummary] as? String,
+            embedding: decodeEmbedding(record)
         )
+    }
+
+    /// Decode the four embedding wire fields into an `EmbeddingInfo`, or
+    /// nil if any is missing (no local embedding on the originating
+    /// device, or a pre-v12 record).
+    private static func decodeEmbedding(_ record: CKRecord) -> EmbeddingInfo? {
+        guard let vector = optionalData(record, CKSchema.EntryField.embeddingVector),
+              let modelId = record[CKSchema.EntryField.embeddingModelId] as? String,
+              let revision = (record[CKSchema.EntryField.embeddingRevision] as? NSNumber)?.int64Value,
+              let dims = (record[CKSchema.EntryField.embeddingDims] as? NSNumber)?.int64Value
+        else {
+            return nil
+        }
+        return EmbeddingInfo(modelId: modelId, revision: revision, dims: dims, vector: vector)
     }
 
     // MARK: - Field extraction helpers
@@ -243,6 +309,15 @@ public enum EntryRecordMapper {
         if let data = value as? Data { return data }
         if let nsdata = value as? NSData { return nsdata as Data }
         throw DecodeError.invalidField(key, reason: "expected Data, got \(type(of: value))")
+    }
+
+    /// Non-throwing sibling of `requireData` for fields that are legally
+    /// absent (e.g. no local embedding row yet).
+    private static func optionalData(_ record: CKRecord, _ key: String) -> Data? {
+        guard let value = record[key] else { return nil }
+        if let data = value as? Data { return data }
+        if let nsdata = value as? NSData { return nsdata as Data }
+        return nil
     }
 
     private static func requireString(_ record: CKRecord, _ key: String) throws -> String {

@@ -491,5 +491,51 @@ enum Schema {
             try db.execute(sql: "ALTER TABLE entries ADD COLUMN modified_at REAL NOT NULL DEFAULT 0;")
             try db.execute(sql: "UPDATE entries SET modified_at = COALESCE(deleted_at, created_at);")
         }
+
+        migrator.registerMigration("v12_semantic_enrichment") { db in
+            // Schema-only foundation for the semantic-search / data-chips /
+            // Foundation-Models enrichment streams. The pipelines that
+            // populate these (background embedder, chip detector, FM
+            // summarizer) land in follow-on feature work, not here.
+            //
+            // entry_embeddings — one row per entry with a computed
+            // semantic vector. Kept as its own table (not columns on
+            // `entries`) because a model upgrade re-embeds by delete+
+            // insert, not a wide-table ALTER, and most entries (images,
+            // files) never get a row at all.
+            //
+            //   model_id    — identifies the embedding function that
+            //                 produced `vector` (e.g. 'nl-contextual-v1').
+            //   revision    — bump to trigger a background re-embed sweep
+            //                 without changing model_id (e.g. a prompt/
+            //                 preprocessing tweak to the same model).
+            //   vector      — dims × Float32, little-endian, L2-normalized
+            //                 so cosine similarity is a plain dot product.
+            try db.execute(sql: """
+                CREATE TABLE entry_embeddings (
+                    entry_id    INTEGER PRIMARY KEY REFERENCES entries(id) ON DELETE CASCADE,
+                    model_id    TEXT NOT NULL,
+                    revision    INTEGER NOT NULL,
+                    dims        INTEGER NOT NULL,
+                    vector      BLOB NOT NULL,
+                    embedded_at REAL NOT NULL
+                );
+            """)
+
+            // chips_json — JSON array of data chips detected in an
+            // entry's text (dates, addresses, phone numbers, URLs,
+            // tracking numbers, flights, money), each shaped
+            // {"t":"date|address|phone|url|tracking|flight|money",
+            // "v":"<value>","s":"<display>"}. NULL = not yet scanned by
+            // the chip detector.
+            try db.execute(sql: "ALTER TABLE entries ADD COLUMN chips_json TEXT;")
+
+            // ai_title / ai_summary — on-device Foundation-Models
+            // enrichment. Deliberately separate from the existing
+            // `title` column, which is UTI/pasteboard-derived, not
+            // model-generated. NULL = not yet enriched.
+            try db.execute(sql: "ALTER TABLE entries ADD COLUMN ai_title TEXT;")
+            try db.execute(sql: "ALTER TABLE entries ADD COLUMN ai_summary TEXT;")
+        }
     }
 }

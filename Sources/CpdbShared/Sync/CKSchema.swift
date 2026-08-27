@@ -94,6 +94,26 @@ public enum CKSchema {
         // defaults to 0 (so a record carrying real mutations always wins
         // over a legacy 0). See EntryRepository / CloudKitSyncer.upsert.
         public static let modifiedAt         = "modifiedAt"       // Double (unix seconds)
+        // Semantic enrichment (schema v12): data chips + Foundation
+        // Models title/summary. All three are adopt-once enrichment,
+        // same spirit as linkTitle — nil/absent means "no device has
+        // enriched this yet"; whichever device computes a value first
+        // wins and siblings adopt it on pull. Unlike linkTitle, there's
+        // no separate "attempted" sentinel field — the field's own
+        // nullability doubles as that sentinel.
+        public static let chipsJson          = "chipsJson"        // String? (JSON array of chip dicts)
+        public static let aiTitle            = "aiTitle"          // String?
+        public static let aiSummary          = "aiSummary"        // String?
+        // The embedding vector + the model identity that produced it,
+        // carried as scalar fields on the Entry record (not a separate
+        // CKRecord type — one embedding per entry, same lifecycle).
+        // `dims` × Float32, little-endian, L2-normalized — see
+        // `entry_embeddings` in Schema.swift. All four absent when the
+        // entry has no local embedding row yet.
+        public static let embeddingVector    = "embeddingVector"   // Data?
+        public static let embeddingModelId   = "embeddingModelId"  // String?
+        public static let embeddingRevision  = "embeddingRevision" // Int64?
+        public static let embeddingDims      = "embeddingDims"     // Int64?
     }
 
     public enum FlavorField {

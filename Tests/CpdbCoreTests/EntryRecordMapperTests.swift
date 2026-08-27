@@ -159,6 +159,66 @@ struct EntryRecordMapperTests {
         #expect(decoded.identityTag == nil)
     }
 
+    // MARK: - v12 semantic enrichment
+
+    @Test("round-trip: chipsJson, aiTitle, aiSummary survive the wire trip")
+    func semanticEnrichmentFieldsRoundTrip() throws {
+        var entry = fullEntry()
+        entry.chipsJson = #"[{"t":"date","v":"2026-08-26","s":"Aug 26"}]"#
+        entry.aiTitle = "Flight confirmation"
+        entry.aiSummary = "UA123 departing Aug 30."
+        let decoded = try roundTrip(entry, source: defaultSource())
+        #expect(decoded.chipsJson == entry.chipsJson)
+        #expect(decoded.aiTitle == entry.aiTitle)
+        #expect(decoded.aiSummary == entry.aiSummary)
+    }
+
+    @Test("decode: missing chipsJson/aiTitle/aiSummary default to nil (pre-v12 record)")
+    func semanticEnrichmentFieldsMissingDefaultNil() throws {
+        let entry = fullEntry()
+        let decoded = try roundTrip(entry, source: defaultSource())
+        #expect(decoded.chipsJson == nil)
+        #expect(decoded.aiTitle == nil)
+        #expect(decoded.aiSummary == nil)
+    }
+
+    @Test("round-trip: embedding survives the wire trip when supplied")
+    func embeddingRoundTrip() throws {
+        let entry = fullEntry(kind: .text)
+        let embedding = EntryRecordMapper.EmbeddingInfo(
+            modelId: "nl-contextual-v1",
+            revision: 3,
+            dims: 4,
+            vector: Data([0x00, 0x00, 0x80, 0x3F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
+        )
+        let id = EntryRecordMapper.recordID(forContentHash: entry.contentHash, in: Self.zone)
+        let record = CKRecord(recordType: CKSchema.RecordType.entry, recordID: id)
+        EntryRecordMapper.populate(record: record, entry: entry, source: defaultSource(), embedding: embedding)
+        let decoded = try EntryRecordMapper.decode(record)
+        #expect(decoded.embedding == embedding)
+    }
+
+    @Test("decode: no embedding argument to populate leaves embedding nil")
+    func embeddingAbsentByDefault() throws {
+        let entry = fullEntry(kind: .text)
+        let decoded = try roundTrip(entry, source: defaultSource())
+        #expect(decoded.embedding == nil)
+    }
+
+    @Test("decode: embedding is nil when only some of the four wire fields are present")
+    func embeddingPartialFieldsDecodeNil() throws {
+        let entry = fullEntry(kind: .text)
+        let embedding = EntryRecordMapper.EmbeddingInfo(modelId: "nl-v1", revision: 1, dims: 1, vector: Data([1]))
+        let id = EntryRecordMapper.recordID(forContentHash: entry.contentHash, in: Self.zone)
+        let record = CKRecord(recordType: CKSchema.RecordType.entry, recordID: id)
+        EntryRecordMapper.populate(record: record, entry: entry, source: defaultSource(), embedding: embedding)
+        // Strip one of the four fields — the whole embedding should
+        // decode as absent rather than a partially-populated struct.
+        record[CKSchema.EntryField.embeddingDims] = nil
+        let decoded = try EntryRecordMapper.decode(record)
+        #expect(decoded.embedding == nil)
+    }
+
     @Test("round-trip covers every EntryKind")
     func everyKind() throws {
         for kind in EntryKind.allCases {
