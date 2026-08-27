@@ -202,14 +202,50 @@ public enum AIService {
 
     /// Generate + persist title/summary for one entry. Returns whether it
     /// wrote a result, purely so callers can tally a report — failures of
-    /// every kind (unavailable, generation, persistence) are logged here
-    /// or in the callee and never thrown; an entry that fails just stays
-    /// `ai_title IS NULL` and is retried on the next sweep pass.
+    /// every kind (generation or persistence) are logged here or in the
+    /// callee and never thrown; an entry that fails just stays
+    /// `ai_title IS NULL` and is retried on the next sweep pass, up to
+    /// `AIEnrichmentSweeper.maxRetries` (via `recordAIEnrichmentFailure`,
+    /// bumping `ai_retry_count` on every entry-specific failure below —
+    /// the "tried and got nothing" convention `ImageIndexer.markAnalyzed`
+    /// uses, except here the row stays a candidate for a bounded number
+    /// of retries rather than being marked done on the first attempt,
+    /// since a transient model hiccup — as opposed to a deterministic
+    /// guardrail rejection — is worth one or two more tries).
+    ///
+    /// The bare `availability` guard below is deliberately NOT counted
+    /// as an entry failure: it reflects transient system-wide state (the
+    /// model still loading, Apple Intelligence toggled off mid-batch),
+    /// not something wrong with this particular entry's text, and both
+    /// callers already gate on `availability == .available` before ever
+    /// reaching here.
+    ///
+    /// De-dupes against a concurrent in-flight generation for the same
+    /// `entryId` — the capture-time hook (`enrichAtCaptureIfEligible`)
+    /// and the sweeper both ultimately call this, and the sweeper's
+    /// `isAIUnenriched` re-check only catches a generation that has
+    /// already *completed*, not one still running when a sweep pass
+    /// starts. Without this, a sweep firing during the few-second window
+    /// of a capture-time generation would kick off a second, fully
+    /// redundant on-device generation for the same row.
     @discardableResult
     public static func enrichEntry(entryId: Int64, text: String, repository: EntryRepository) async -> Bool {
+        // Checked before `availability` deliberately: this is a fact
+        // about the entry's text, not about system state, so it should
+        // count toward (and be bounded by) `ai_retry_count` regardless
+        // of whether the model happens to be available right now.
+        guard text.count > longTextThreshold else {
+            try? repository.recordAIEnrichmentFailure(entryId: entryId)
+            return false
+        }
         guard availability == .available else { return false }
-        guard text.count > longTextThreshold else { return false }
-        guard let (title, summary) = await generateTitleAndSummary(for: text) else { return false }
+        guard await InFlightEnrichments.shared.begin(entryId) else { return false }
+        defer { Task { await InFlightEnrichments.shared.end(entryId) } }
+
+        guard let (title, summary) = await generateTitleAndSummary(for: text) else {
+            try? repository.recordAIEnrichmentFailure(entryId: entryId)
+            return false
+        }
         do {
             try repository.setAITitleSummary(entryId: entryId, title: title, summary: summary)
             return true
@@ -217,7 +253,34 @@ public enum AIService {
             Log.capture.error(
                 "AIService: failed to persist title/summary for entry \(entryId, privacy: .public): \(String(describing: error), privacy: .public)"
             )
+            try? repository.recordAIEnrichmentFailure(entryId: entryId)
             return false
+        }
+    }
+
+    /// Tracks entry ids with a generation currently in flight, so a
+    /// sweep pass and a concurrent capture-time `Task.detached` (or two
+    /// overlapping sweep passes on different Macs' local state — though
+    /// cross-process/cross-Mac de-duping is out of scope here, this only
+    /// protects within one process) never both call into
+    /// `LanguageModelSession` for the same row at once. Process-local,
+    /// in-memory, and intentionally not persisted — losing this state on
+    /// relaunch just means a re-check via `isAIUnenriched` instead of via
+    /// this set, which is still correct, only slightly less eager.
+    private actor InFlightEnrichments {
+        static let shared = InFlightEnrichments()
+        private var entryIds: Set<Int64> = []
+
+        /// Returns `true` and marks `entryId` in flight iff no generation
+        /// is already running for it.
+        func begin(_ entryId: Int64) -> Bool {
+            guard !entryIds.contains(entryId) else { return false }
+            entryIds.insert(entryId)
+            return true
+        }
+
+        func end(_ entryId: Int64) {
+            entryIds.remove(entryId)
         }
     }
 

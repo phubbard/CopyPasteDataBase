@@ -537,5 +537,28 @@ enum Schema {
             try db.execute(sql: "ALTER TABLE entries ADD COLUMN ai_title TEXT;")
             try db.execute(sql: "ALTER TABLE entries ADD COLUMN ai_summary TEXT;")
         }
+
+        migrator.registerMigration("v13_ai_enrichment_retry_cap") { db in
+            // Pre-v13, `ai_title IS NULL` was the only sentinel
+            // `AIEnrichmentSweeper` used to pick candidates — a
+            // deterministically-failing generation (Foundation Models
+            // guardrail rejection, a context-window overflow on a
+            // particular clip) left it NULL forever, so
+            // `entriesNeedingAIEnrichment`'s `ORDER BY created_at DESC
+            // LIMIT n` re-selected and re-failed the same rows every
+            // pass, burning on-device model time indefinitely and
+            // starving every older candidate behind them. Same shape of
+            // bug `v9_link_retry_backoff` fixed for the link-metadata
+            // fetcher.
+            //
+            //   ai_retry_count — number of failed enrichment attempts
+            //                    observed for this row. No time-based
+            //                    backoff (unlike link fetches, on-device
+            //                    generation has no rate limit to
+            //                    protect) — just a hard cap, enforced by
+            //                    `EntryRepository.entriesNeedingAIEnrichment`,
+            //                    at `AIEnrichmentSweeper.maxRetries`.
+            try db.execute(sql: "ALTER TABLE entries ADD COLUMN ai_retry_count INTEGER NOT NULL DEFAULT 0;")
+        }
     }
 }

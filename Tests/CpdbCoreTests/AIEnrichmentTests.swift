@@ -14,8 +14,9 @@ import FoundationModels
 /// Model-dependent generation itself (`AIService.generateTitleAndSummary`
 /// actually calling into `LanguageModelSession`) is NOT unit-tested here —
 /// see the manual-run integration test at the bottom of this file, gated
-/// on `AIService.availability == .available` so it only ever runs on a
-/// machine that can actually do the generation.
+/// behind an explicit `CPDB_RUN_AI_INTEGRATION_TESTS` opt-in (and
+/// `AIService.availability == .available`) so it never runs as part of a
+/// plain `swift test`.
 @Suite("AI enrichment")
 struct AIEnrichmentTests {
 
@@ -165,6 +166,60 @@ struct AIEnrichmentTests {
         #expect(try repo.isAIUnenriched(entryId: 999_999) == false)
     }
 
+    // MARK: - Retry cap (v13_ai_enrichment_retry_cap)
+
+    @Test("recordAIEnrichmentFailure increments ai_retry_count and returns the new count")
+    func recordAIEnrichmentFailureIncrements() throws {
+        let store = try Store.inMemory()
+        let id = try insertTextEntry(store, textPreview: longText)
+        let repo = EntryRepository(store: store)
+        #expect(try repo.recordAIEnrichmentFailure(entryId: id) == 1)
+        #expect(try repo.recordAIEnrichmentFailure(entryId: id) == 2)
+        let entry = try store.dbQueue.read { db in try Entry.fetchOne(db, key: id) }
+        #expect(entry?.aiRetryCount == 2)
+    }
+
+    @Test("entriesNeedingAIEnrichment excludes entries at or above maxRetries")
+    func candidatesExcludeExhaustedRetries() throws {
+        let store = try Store.inMemory()
+        let stillTrying = try insertTextEntry(store, createdAt: 200, textPreview: longText)
+        let exhausted = try insertTextEntry(store, createdAt: 100, textPreview: longText)
+        let repo = EntryRepository(store: store)
+        for _ in 0..<AIEnrichmentSweeper.maxRetries {
+            _ = try repo.recordAIEnrichmentFailure(entryId: exhausted)
+        }
+        _ = try repo.recordAIEnrichmentFailure(entryId: stillTrying) // one failure, still under the cap
+        let candidates = try repo.entriesNeedingAIEnrichment(limit: 10, minLength: AIService.longTextThreshold)
+        #expect(candidates.map(\.entryId) == [stillTrying])
+    }
+
+    @Test("setAITitleSummary resets ai_retry_count to 0 on success")
+    func setAITitleSummaryResetsRetryCount() throws {
+        let store = try Store.inMemory()
+        let id = try insertTextEntry(store, textPreview: longText)
+        let repo = EntryRepository(store: store)
+        _ = try repo.recordAIEnrichmentFailure(entryId: id)
+        _ = try repo.recordAIEnrichmentFailure(entryId: id)
+        try repo.setAITitleSummary(entryId: id, title: "T", summary: "S")
+        let entry = try store.dbQueue.read { db in try Entry.fetchOne(db, key: id) }
+        #expect(entry?.aiRetryCount == 0)
+    }
+
+    @Test("enrichEntry bumps ai_retry_count when the grapheme-count re-check rejects a borderline entry")
+    func enrichEntryBumpsRetryCountOnShortTextRecheck() async throws {
+        let store = try Store.inMemory()
+        // A candidate that would clear a coarse SQL LENGTH() prefilter
+        // but fails AIService.enrichEntry's real `.count` check — see
+        // entriesNeedingAIEnrichment's doc comment on the codepoint vs.
+        // grapheme-cluster mismatch.
+        let id = try insertTextEntry(store, textPreview: shortText)
+        let repo = EntryRepository(store: store)
+        let wrote = await AIService.enrichEntry(entryId: id, text: shortText, repository: repo)
+        #expect(wrote == false)
+        let entry = try await store.dbQueue.read { db in try Entry.fetchOne(db, key: id) }
+        #expect(entry?.aiRetryCount == 1)
+    }
+
     // MARK: - Persistence round-trip
 
     @Test("setAITitleSummary round-trips through EntryRepository and enqueues a push")
@@ -210,14 +265,22 @@ struct AIEnrichmentTests {
 
     // MARK: - Manual-run integration test (real, tiny, on-device generation)
 
-    /// Actually calls into Foundation Models — only runs on a machine
-    /// where `AIService.availability == .available` (Apple-Intelligence-
-    /// enabled Mac, macOS 26+). Everywhere else this is skipped rather
-    /// than failing, since availability depends on hardware/System
-    /// Settings state the test suite doesn't control.
+    /// Actually calls into Foundation Models. Gated on an explicit opt-in
+    /// env var, NOT merely on `AIService.availability == .available` —
+    /// the latter alone would make this auto-run in every plain
+    /// `swift test` on any Apple-Intelligence-enabled Mac (including a
+    /// developer's own machine or a self-hosted CI runner), adding
+    /// multi-second live-model latency to the suite and turning a
+    /// transient model hiccup (an asset eviction under memory pressure,
+    /// a momentary `LanguageModelSession` error) into an unrelated hard
+    /// failure across the whole run via `#require` below. Run explicitly
+    /// with `CPDB_RUN_AI_INTEGRATION_TESTS=1 swift test`.
     @Test(
         "Real generation produces a non-empty, length-capped title and summary",
-        .enabled(if: AIService.availability == .available)
+        .enabled(
+            if: ProcessInfo.processInfo.environment["CPDB_RUN_AI_INTEGRATION_TESTS"] != nil
+                && AIService.availability == .available
+        )
     )
     func realGenerationProducesUsableResult() async throws {
         let text = """

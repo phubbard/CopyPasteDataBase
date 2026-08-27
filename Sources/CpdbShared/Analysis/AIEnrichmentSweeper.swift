@@ -26,6 +26,19 @@ import Foundation
 public struct AIEnrichmentSweeper {
     public let repository: EntryRepository
 
+    /// Maximum consecutive failed enrichment attempts before a row falls
+    /// out of `entriesNeedingAIEnrichment`'s candidate set — see that
+    /// method's doc comment and the `v13_ai_enrichment_retry_cap`
+    /// migration. Deliberately small: unlike the link backfill's
+    /// transient-failure retries (rate limits, network blips that
+    /// genuinely resolve on their own), an on-device generation failure
+    /// for a given input is normally deterministic (a guardrail
+    /// rejection, a context-window overflow) — a handful of attempts is
+    /// plenty to also absorb a merely-flaky one (a momentary model
+    /// asset eviction) without leaving a truly-stuck row occupying a
+    /// candidate slot indefinitely.
+    public static let maxRetries = 3
+
     public init(repository: EntryRepository) {
         self.repository = repository
     }
@@ -41,7 +54,10 @@ public struct AIEnrichmentSweeper {
         public var alreadyEnriched: Int = 0
         /// Generation ran but produced nothing usable (model
         /// unavailable, empty/refused result, or a persistence error).
-        /// The entry stays `ai_title IS NULL` and is retried next pass.
+        /// The entry stays `ai_title IS NULL`, `ai_retry_count` is
+        /// bumped, and it's retried next pass — until it hits
+        /// `maxRetries`, after which `entriesNeedingAIEnrichment` stops
+        /// selecting it.
         public var failed: Int = 0
 
         public init(candidates: Int = 0, enriched: Int = 0, alreadyEnriched: Int = 0, failed: Int = 0) {
@@ -65,7 +81,10 @@ public struct AIEnrichmentSweeper {
     /// Per-entry failures are caught and logged rather than propagated,
     /// same convention as `ImageAnalysisSweeper.runOnce`: one bad entry
     /// must not wedge every older candidate behind it on every future
-    /// pass.
+    /// pass. Each failure also bumps `ai_retry_count` (via
+    /// `recordAIEnrichmentFailure`) so a row that keeps failing falls out
+    /// of `entriesNeedingAIEnrichment`'s candidate set after
+    /// `maxRetries` attempts instead of occupying a slot forever.
     @discardableResult
     public func runOnce(limit: Int = 5) async throws -> Report {
         guard AIEnrichmentPrefs.load().enabled else { return Report() }
@@ -95,6 +114,9 @@ public struct AIEnrichmentSweeper {
                 if wrote {
                     report.enriched += 1
                 } else {
+                    // AIService.enrichEntry already bumped ai_retry_count
+                    // for this entry (see its doc comment) — nothing
+                    // further to do here beyond tallying the report.
                     report.failed += 1
                 }
             } catch {
