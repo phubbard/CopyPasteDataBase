@@ -106,6 +106,9 @@ struct EntryCard: View {
             // ingest time). Surface both so the user can see the lag.
             lines.append("Imported: \(f.string(from: Date(timeIntervalSince1970: row.entry.createdAt)))")
         }
+        if let summary = row.entry.aiSummary, !summary.isEmpty {
+            lines.append("Summary: \(summary)")
+        }
         return lines.joined(separator: "\n")
     }
 

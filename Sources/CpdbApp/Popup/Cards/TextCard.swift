@@ -51,8 +51,16 @@ struct TextCard: View {
         return row.entry.textPreview ?? ""
     }
 
+    /// Headline text: the on-device AI-generated title when present
+    /// (`Entry.aiTitle` — distinct from the raw pasteboard-derived
+    /// `title`), falling back to the existing first-line-of-text logic
+    /// for everything else (short clips, images, entries not yet
+    /// enriched). Same styling either way — see `body`'s `Text(firstLine)`.
     private var firstLine: String {
-        displayText.split(whereSeparator: \.isNewline).first.map(String.init)
+        if let aiTitle = row.entry.aiTitle, !aiTitle.isEmpty {
+            return aiTitle
+        }
+        return displayText.split(whereSeparator: \.isNewline).first.map(String.init)
             ?? row.entry.title
             ?? "(empty)"
     }

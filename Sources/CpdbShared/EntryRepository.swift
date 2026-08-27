@@ -788,4 +788,77 @@ public struct EntryRepository {
             }
         }
     }
+
+    // MARK: - AI title/summary enrichment sweep
+
+    /// One candidate for `AIEnrichmentSweeper`: an entry that needs a
+    /// Foundation-Models title/summary pass, plus the text to feed it —
+    /// pulled in the same query so the sweeper never has to re-fetch it.
+    public struct AIEnrichmentCandidate: Sendable, Equatable {
+        public var entryId: Int64
+        public var textPreview: String
+
+        public init(entryId: Int64, textPreview: String) {
+            self.entryId = entryId
+            self.textPreview = textPreview
+        }
+    }
+
+    /// Live text entries long enough to be worth summarizing that haven't
+    /// been enriched yet, newest first — mirrors `imagesNeedingAnalysis`'s
+    /// shape. `ai_title IS NULL` is the "not yet attempted" sentinel
+    /// (same convention as `analyzed_at`/`link_fetched_at`); a generation
+    /// that fails leaves it NULL too, so a persistently-failing entry is
+    /// retried every pass rather than silently stuck — acceptable here
+    /// since generation is on-device with no rate limit to protect,
+    /// unlike the link backfill's retry-count/backoff machinery.
+    ///
+    /// `minLength` filters in SQL as a coarse pre-filter only; SQLite's
+    /// `LENGTH()` counts UTF-8 codepoints, which can differ slightly from
+    /// Swift's grapheme-cluster `String.count` for text with combining
+    /// marks or emoji — `AIService.enrichEntry` re-checks the real
+    /// `.count` before ever calling the model, so this only affects which
+    /// pass a borderline entry happens to be picked up in, never
+    /// correctness.
+    public func entriesNeedingAIEnrichment(limit: Int, minLength: Int) throws -> [AIEnrichmentCandidate] {
+        try store.dbQueue.read { db in
+            try Row.fetchAll(
+                db,
+                sql: """
+                    SELECT id, text_preview FROM entries
+                    WHERE kind = 'text' AND deleted_at IS NULL
+                      AND ai_title IS NULL
+                      AND LENGTH(COALESCE(text_preview, '')) > ?
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                """,
+                arguments: [minLength, limit]
+            ).compactMap { row in
+                (row["text_preview"] as String?).map {
+                    AIEnrichmentCandidate(entryId: row["id"], textPreview: $0)
+                }
+            }
+        }
+    }
+
+    /// True iff a live entry still has `ai_title IS NULL`. The sweeper
+    /// re-checks this immediately before calling into the (comparatively
+    /// expensive, on-device-LLM) generation step, since the candidate
+    /// list was built moments earlier and a sibling Mac's result — or
+    /// this Mac's own capture-time enrichment — may have landed on this
+    /// row in the meantime. Mirrors `isImageUnanalyzed`'s doc comment for
+    /// the same check-then-write race.
+    public func isAIUnenriched(entryId: Int64) throws -> Bool {
+        try store.dbQueue.read { db in
+            guard let row = try Row.fetchOne(
+                db,
+                sql: "SELECT ai_title FROM entries WHERE id = ? AND deleted_at IS NULL",
+                arguments: [entryId]
+            ) else {
+                return false
+            }
+            let aiTitle: String? = row["ai_title"]
+            return aiTitle == nil
+        }
+    }
 }

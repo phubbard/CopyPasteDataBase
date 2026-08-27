@@ -134,6 +134,13 @@ public struct Ingestor {
             }
         }
 
+        // AI title/summary kickoff for a fresh long text capture. No-ops
+        // internally (kind/length/pref/availability) — see `AIService`'s
+        // doc comment — so it's always safe to call unconditionally.
+        if case .inserted(let entryId) = outcome {
+            AIService.enrichAtCaptureIfEligible(entryId: entryId, kind: snapshot.kind, textPreview: snapshot.plainText, store: store)
+        }
+
         return outcome
     }
 

@@ -83,6 +83,15 @@ private struct PreferencesView: View {
     @State private var tagThreshold: Double = Double(AnalysisPrefs.load().tagConfidenceThreshold)
     @State private var reanalyzeStatus: String = ""
 
+    // AI enrichment (Foundation Models title/summary) prefs.
+    @State private var aiEnrichmentEnabled: Bool = AIEnrichmentPrefs.load().enabled
+    /// Read once per view instance rather than per-render: Foundation
+    /// Models' own availability doesn't change while Preferences is open
+    /// (it depends on System Settings / model download state, not
+    /// anything this window mutates), so there's no need for a poller
+    /// like the permission rows below use.
+    private let aiAvailability: AIAvailability = AIService.availability
+
     // Popup UX
     @State private var rememberScrollOnPreview: Bool = UserDefaults.standard
         .bool(forKey: PopupState.rememberScrollKey)
@@ -283,6 +292,28 @@ private struct PreferencesView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
+                }
+            }
+
+            Section("AI enrichment") {
+                Text("Long text clips get a short title and summary from Apple's on-device Foundation Models. Nothing leaves your Mac.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                switch aiAvailability {
+                case .available:
+                    Toggle("Generate AI titles and summaries", isOn: $aiEnrichmentEnabled)
+                        .onChange(of: aiEnrichmentEnabled) { _, newValue in
+                            AIEnrichmentPrefs(enabled: newValue).save()
+                        }
+                case .notEnabled(let reason):
+                    Text(reason)
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                case .unsupportedOS:
+                    Text("Requires macOS 26 or later.")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
                 }
             }
 
