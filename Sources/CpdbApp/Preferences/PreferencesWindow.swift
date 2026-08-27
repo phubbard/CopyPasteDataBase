@@ -66,6 +66,8 @@ private struct PreferencesView: View {
     /// it doesn't burn CPU when the window is hidden.
     @State private var permissionPollerTask: Task<Void, Never>? = nil
     @State private var launchAtLoginEnabled = SMAppService.mainApp.status == .enabled
+    @State private var pasteboardAccessStatus: PasteboardAccessStatus = PasteboardAccessMonitor.liveProbe()
+    @State private var secureInputSkipCount: Int = SecureInputGuard.skipCount
     @State private var dbPath = Paths.databaseURL.path
     @State private var dbSize = "—"
     @State private var totalEntries = "—"
@@ -307,6 +309,29 @@ private struct PreferencesView: View {
                 )
             }
 
+            Section("Privacy") {
+                LabeledContent("Pasteboard access", value: pasteboardAccessStatus.displayLabel)
+                if case .denied = pasteboardAccessStatus {
+                    Text("cpdb can't read the clipboard until this is changed. Capture is paused.")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                    Button("Open System Settings…") {
+                        PasteboardAccessMonitor.openSystemSettings()
+                    }
+                } else {
+                    Text("Set to \"Always Allow\" in System Settings → Privacy & Security → Paste from Other Apps if you'd rather never see this prompted, once Apple enforces it.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                LabeledContent("Secure-input skips", value: "\(secureInputSkipCount)")
+                Text("Captures skipped this launch because a password field was focused elsewhere (macOS's secure keyboard input flag) — a coarse but free extra guard, independent of pasteboard access.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("Apple previewed an iOS-style permission prompt for programmatic pasteboard reads starting macOS 15.4. It isn't enforced yet outside a developer preview. To test cpdb's handling of it: `defaults write \(Paths.bundleId) EnablePasteboardPrivacyDeveloperPreview -bool yes`, relaunch, then set cpdb to Deny in the pane above.")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+
             Section("Storage") {
                 LabeledContent("Database", value: dbPath)
                     .lineLimit(1)
@@ -520,6 +545,8 @@ private struct PreferencesView: View {
                 if localNetworkStatus != .granted {
                     await refreshLocalNetwork()
                 }
+                pasteboardAccessStatus = PasteboardAccessMonitor.liveProbe()
+                secureInputSkipCount = SecureInputGuard.skipCount
             }
         }
     }

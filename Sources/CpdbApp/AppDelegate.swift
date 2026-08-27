@@ -60,8 +60,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case .notStarted:
                 Log.cli.error("daemon lifecycle did not start")
             }
+            // Seed the initial banner from whatever the pasteboard-access
+            // monitor already observed during start() — assigning
+            // onPrivacyStatusChange below only catches changes from here
+            // on, which would miss "denied at first launch".
+            if let status = lifecycle.privacyStatus, PasteboardAccessClassifier.shouldPauseCapture(for: status) {
+                captureMode = .privacyPaused(reason: status.displayLabel)
+            }
         } catch {
             Log.cli.error("daemon lifecycle failed to start: \(String(describing: error), privacy: .public)")
+        }
+
+        // Live updates: DaemonLifecycle's monitor keeps polling for the
+        // life of the app, pausing/resuming the watcher itself and
+        // notifying here so the popup banner tracks it.
+        lifecycle.onPrivacyStatusChange = { status in
+            let mode: PopupState.CaptureMode = PasteboardAccessClassifier.shouldPauseCapture(for: status)
+                ? .privacyPaused(reason: status.displayLabel)
+                : .capturing
+            PopupController.shared.updateCaptureMode(mode)
         }
 
         if let store = store {

@@ -46,16 +46,27 @@ public final class PasteboardWatcher {
         if change == lastChangeCount { return }
         lastChangeCount = change
 
+        // Cheapest possible gate: a password field is focused somewhere
+        // on the system (Carbon's secure-input flag). Skip before
+        // touching pasteboard content — or even its types — at all.
+        if SecureInputGuard.shouldSkip() { return }
+
         // Transient filter first — don't even copy the bytes if it's a skip.
         if let items = pb.pasteboardItems, TransientFilter.shouldSkip(items) {
             Log.capture.info("skipped transient/concealed item (changeCount=\(change, privacy: .public))")
             return
         }
 
-        guard let snapshot = PasteboardSnapshot.fromPasteboard(pb) else { return }
-
-        // Grab the frontmost app on the main actor before we leave the watcher queue.
         Task { @MainActor in
+            // Pre-read classification (macOS 15.4+ only; see
+            // PasteboardPreReadClassifier's doc comment). Alert-free, so
+            // this runs before the full flavor read below rather than
+            // after it.
+            if await PasteboardPreReadClassifier.looksSecretShaped(pb) {
+                Log.capture.info("skipped secret-shaped content (pre-read, changeCount=\(change, privacy: .public))")
+                return
+            }
+            guard let snapshot = PasteboardSnapshot.fromPasteboard(pb) else { return }
             let appInfo = FrontmostApp.current()
             await self.handle(snapshot: snapshot, appInfo: appInfo)
         }

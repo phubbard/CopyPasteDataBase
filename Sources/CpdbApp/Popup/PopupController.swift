@@ -63,6 +63,14 @@ final class PopupController {
         self.panel = panel
     }
 
+    /// Update the lifecycle banner after `configure`. `DaemonLifecycle`'s
+    /// pasteboard-access monitor fires status changes for the life of the
+    /// app, not just at launch — this is how `AppDelegate` threads a new
+    /// status into the already-configured popup.
+    func updateCaptureMode(_ mode: PopupState.CaptureMode) {
+        state?.captureMode = mode
+    }
+
     func show() {
         guard let panel = panel, let state = state else {
             Log.cli.error("PopupController.show called before configure")
