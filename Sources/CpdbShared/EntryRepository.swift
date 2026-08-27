@@ -18,6 +18,18 @@ public struct EntryRepository {
         public var appName: String?
         public var appBundleId: String?
         public var deviceName: String?
+
+        // Swift's synthesized memberwise init is only `internal` even
+        // for an all-public struct, so cross-module callers (e.g.
+        // CpdbApp's App Intents, which build an `EntryRow` from a bare
+        // `Entry` with no joined app/device columns) need this
+        // explicit one.
+        public init(entry: Entry, appName: String? = nil, appBundleId: String? = nil, deviceName: String? = nil) {
+            self.entry = entry
+            self.appName = appName
+            self.appBundleId = appBundleId
+            self.deviceName = deviceName
+        }
     }
 
     /// N most recent live entries, most recent first. Optionally filtered
