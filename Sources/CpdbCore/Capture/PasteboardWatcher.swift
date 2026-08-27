@@ -57,7 +57,14 @@ public final class PasteboardWatcher {
             return
         }
 
-        Task { @MainActor in
+        // Deliberately not `Task { @MainActor in ... }`: neither
+        // `detectedValues(for:)` nor `fromPasteboard` needs the main
+        // actor, and the flavor-bytes read below can be tens of MB
+        // (a screenshot's PNG+TIFF) — running that on the main actor
+        // would stall UI on every large copy. Only the two calls that
+        // actually require it (`FrontmostApp.current()`, `self.handle`)
+        // hop to `@MainActor`, each for as long as it takes.
+        Task {
             // Pre-read classification (macOS 15.4+ only; see
             // PasteboardPreReadClassifier's doc comment). Alert-free, so
             // this runs before the full flavor read below rather than
@@ -66,8 +73,20 @@ public final class PasteboardWatcher {
                 Log.capture.info("skipped secret-shaped content (pre-read, changeCount=\(change, privacy: .public))")
                 return
             }
+
+            // TOCTOU guard: the SecureInputGuard/TransientFilter checks
+            // above ran against the pasteboard as of `change`, but the
+            // await above yields the thread — another app can publish
+            // new content (e.g. a concealed item) before we get here.
+            // If the pasteboard has moved on, bail rather than read
+            // content that never passed its own gates: `lastChangeCount`
+            // is already stale for it, so the very next tick will see
+            // the new changeCount, and run every gate against the
+            // content that's actually there now.
+            guard pb.changeCount == change else { return }
+
             guard let snapshot = PasteboardSnapshot.fromPasteboard(pb) else { return }
-            let appInfo = FrontmostApp.current()
+            let appInfo = await FrontmostApp.current()
             await self.handle(snapshot: snapshot, appInfo: appInfo)
         }
     }

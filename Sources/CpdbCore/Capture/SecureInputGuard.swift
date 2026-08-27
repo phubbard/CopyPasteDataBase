@@ -1,6 +1,7 @@
 #if os(macOS)
 import Carbon
 import CpdbShared
+import os
 
 /// Wraps Carbon's `IsSecureEventInputEnabled()`. That flag is system-wide
 /// and true whenever *any* process has turned on secure keyboard input —
@@ -29,7 +30,16 @@ public enum SecureInputGuard {
     /// window's stats block, which is entirely DB-derived; this is
     /// ephemeral runtime state with no natural home there yet. A debug
     /// log line is the record of it for now.
-    public private(set) static var skipCount = 0
+    ///
+    /// Written from the watcher's utility-QoS queue (`shouldSkip`, on
+    /// every capture tick) and read from the main thread (Preferences'
+    /// 5 s poller) — genuinely concurrent access, so the backing count
+    /// is behind an unfair lock rather than a bare `static var`.
+    private static let skipCountLock = OSAllocatedUnfairLock(initialState: 0)
+
+    public static var skipCount: Int {
+        skipCountLock.withLock { $0 }
+    }
 
     /// Check-and-count. Returns true (and bumps `skipCount`) when `probe`
     /// reports secure input is active. `probe` defaults to the real
@@ -37,8 +47,11 @@ public enum SecureInputGuard {
     @discardableResult
     public static func shouldSkip(probe: () -> Bool = liveProbe) -> Bool {
         guard probe() else { return false }
-        skipCount += 1
-        Log.capture.debug("skipped capture: secure event input active (count=\(skipCount, privacy: .public))")
+        let newCount = skipCountLock.withLock { count -> Int in
+            count += 1
+            return count
+        }
+        Log.capture.debug("skipped capture: secure event input active (count=\(newCount, privacy: .public))")
         return true
     }
 }

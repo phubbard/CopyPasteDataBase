@@ -94,6 +94,14 @@ final class DaemonLifecycle {
         lock?.release()
         lock = nil
         mode = .notStarted
+        // Reset pause-tracking state along with everything else — a
+        // future start() begins a fresh `PasteboardWatcher` with no
+        // notion of "already paused", so `isPrivacyPaused` must agree,
+        // or the very first `applyPrivacyStatus` call after restart sees
+        // a false edge (or no edge at all) and either leaves capture
+        // running while denied, or double-starts the new watcher's timer.
+        isPrivacyPaused = false
+        privacyStatus = nil
     }
 
     /// Pause/resume `watcher` on the `.denied` ↔ not-`.denied` edge, and
