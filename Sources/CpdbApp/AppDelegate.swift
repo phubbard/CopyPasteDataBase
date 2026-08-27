@@ -1,5 +1,6 @@
 import AppKit
 import CloudKit
+import CoreSpotlight
 import CpdbCore
 import CpdbShared
 import KeyboardShortcuts
@@ -68,6 +69,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             PopupController.shared.configure(store: store, captureMode: captureMode)
             AboutWindowController.shared.configure(store: store)
             PreferencesWindowController.shared.configure(store: store)
+            // App Intents (Shortcuts/Siri) can fire moments after login,
+            // before this method returns — let them stop polling.
+            AppReadiness.shared.markReady(store: store)
+            // Opt-in Spotlight donation. Installs its capture-wake
+            // observer regardless of the current preference (so
+            // flipping it on later doesn't need a relaunch); the
+            // service itself no-ops while off.
+            SpotlightDonationService.shared.start(store: store)
             // canonical-hash v2: run the identity cutover (if this DB still
             // needs it) off the main actor, then heal any skew rows. Sync
             // stays gated until it completes (CloudKitSyncer checks
@@ -750,6 +759,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Log.cli.info("reopen received (hasVisibleWindows=\(flag, privacy: .public)); showing popup")
         PopupController.shared.show()
         return false
+    }
+
+    /// Click-through for `cpdb://clip/<id>` deep links — the URL a
+    /// donated Spotlight item's `contentURL` points at (see
+    /// `SpotlightDonationService.searchableItem(for:)`). Requires the
+    /// `CFBundleURLTypes` scheme registration in Info.plist.
+    func application(_ application: NSApplication, open urls: [URL]) {
+        for url in urls {
+            guard let id = ClipDeepLink.entryId(from: url) else {
+                Log.cli.info("ignoring unrecognized URL open: \(url.absoluteString, privacy: .public)")
+                continue
+            }
+            PopupController.shared.showAndSelect(entryId: id)
+        }
+    }
+
+    /// Fallback click-through path: on some macOS versions, activating
+    /// a `CSSearchableItem` result invokes this with an
+    /// `NSUserActivity` instead of routing through `contentURL` /
+    /// `application(_:open:)`. Handling both means the deep link works
+    /// regardless of which path System Search takes.
+    func application(
+        _ application: NSApplication,
+        continue userActivity: NSUserActivity,
+        restorationHandler: @escaping ([any NSUserActivityRestoring]) -> Void
+    ) -> Bool {
+        guard userActivity.activityType == CSSearchableItemActionType,
+              let uniqueId = userActivity.userInfo?[CSSearchableItemActivityIdentifier] as? String,
+              let id = SpotlightDonationService.entryId(fromUniqueIdentifier: uniqueId)
+        else { return false }
+        PopupController.shared.showAndSelect(entryId: id)
+        return true
     }
 
     func applicationWillTerminate(_ notification: Notification) {
