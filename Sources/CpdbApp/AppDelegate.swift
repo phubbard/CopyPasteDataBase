@@ -26,6 +26,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// kinds). See `ingestedObserver`'s registration site for why this
     /// is a separate observer rather than folded into that one.
     private var imageSweepIngestedObserver: NSObjectProtocol?
+    /// NotificationCenter token for the embedding sweep's capture-wake
+    /// observer (also `.cpdbLocalEntryIngested`, filtered to text/link
+    /// kinds). Same rationale as `imageSweepIngestedObserver`.
+    private var embeddingSweepIngestedObserver: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         Log.cli.info("cpdb.app starting (pid \(ProcessInfo.processInfo.processIdentifier, privacy: .public))")
@@ -347,6 +351,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Task.detached(priority: .utility) { await Self.runImageAnalysisSweepImmediate(store: store) }
         }
 
+        // Immediate small-batch embedding sweep — same `.bumped`-only
+        // reasoning as the image sweep above: `Ingestor` already fires
+        // its own capture-time embed Task for every `.inserted` text/
+        // link entry, so sweeping on `.inserted` too would just race it.
+        embeddingSweepIngestedObserver = NotificationCenter.default.addObserver(
+            forName: .cpdbLocalEntryIngested,
+            object: nil,
+            queue: .main
+        ) { [weak self] note in
+            guard let self, let store = self.store else { return }
+            let kindRaw = note.userInfo?["kind"] as? String
+            guard kindRaw == EntryKind.text.rawValue || kindRaw == EntryKind.link.rawValue else { return }
+            let outcomeRaw = note.userInfo?["outcome"] as? String
+            guard outcomeRaw == "bumped" else { return }
+            Task.detached(priority: .utility) { await Self.runEmbeddingSweepImmediate(store: store) }
+        }
+
         // Touch the Reachability singleton so NWPathMonitor starts
         // monitoring before the first periodic cycle fires.
         _ = Reachability.shared
@@ -474,6 +495,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 ) {
                     Log.cli.info("periodic tick \(tick, privacy: .public): spawning detached image-analysis sweep")
                     Task.detached(priority: .utility) { await Self.runImageAnalysisSweepIfDue(store: store) }
+                }
+                // Embedding sweep tick. Same jittered-independent-interval
+                // reasoning as the image-analysis sweep above — up to
+                // three Macs on one account shouldn't all embed the same
+                // freshly-pull-synced rows in lockstep.
+                if await Self.embeddingSweepScheduler.dueNow(
+                    base: Self.embeddingSweepBaseIntervalSeconds,
+                    jitter: Self.embeddingSweepJitterSeconds
+                ) {
+                    Log.cli.info("periodic tick \(tick, privacy: .public): spawning detached embedding sweep")
+                    Task.detached(priority: .utility) { await Self.runEmbeddingSweepIfDue(store: store) }
                 }
                 Log.cli.info("periodic tick \(tick, privacy: .public): tick complete (backoff=\(backoffSeconds, privacy: .public)s)")
                 if backoffSeconds > 0 {
@@ -670,6 +702,89 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } catch {
             Log.cli.error(
                 "image-analysis sweep (capture-wake) failed: \(String(describing: error), privacy: .public)"
+            )
+        }
+    }
+
+    // MARK: - Embedding sweep
+
+    /// Reentry guard for the detached embedding sweep, same shape as
+    /// `ImageSweepGate`.
+    private actor EmbeddingSweepGate {
+        private var running = false
+        func tryAcquire() -> Bool {
+            if running { return false }
+            running = true
+            return true
+        }
+        func release() { running = false }
+    }
+    private static let embeddingSweepGate = EmbeddingSweepGate()
+
+    /// Base interval between periodic embedding-sweep passes. Same value
+    /// as the image sweep — no reason for a different cadence, and a
+    /// shared magic number would be one more thing to keep in sync if
+    /// either changes independently later, so each sweep keeps its own.
+    private static let embeddingSweepBaseIntervalSeconds: TimeInterval = 10 * 60
+    /// Random extra delay layered on the base interval, re-rolled every
+    /// pass — see `imageSweepJitterSeconds`'s doc comment for why
+    /// (multiple Macs on one iCloud account sharing this periodic loop).
+    private static let embeddingSweepJitterSeconds: TimeInterval = 5 * 60
+
+    /// Tracks when the next periodic embedding-sweep pass is due. See
+    /// `ImageSweepScheduler`'s doc comment.
+    private actor EmbeddingSweepScheduler {
+        private var nextDueAt = Date.distantPast   // sweep soon after launch
+        func dueNow(base: TimeInterval, jitter: TimeInterval) -> Bool {
+            let now = Date()
+            guard now >= nextDueAt else { return false }
+            nextDueAt = now.addingTimeInterval(base + Double.random(in: 0...max(jitter, 0.001)))
+            return true
+        }
+    }
+    private static let embeddingSweepScheduler = EmbeddingSweepScheduler()
+
+    /// Periodic embedding sweep, gated by `embeddingSweepScheduler`'s
+    /// jittered interval (checked by the caller before spawning this).
+    /// Self-heals pull-synced text/link entries and any local capture
+    /// whose capture-time embed Task never finished — see
+    /// `EmbeddingSweeper`'s doc comment for the full rationale.
+    nonisolated private static func runEmbeddingSweepIfDue(store: Store) async {
+        guard await embeddingSweepGate.tryAcquire() else {
+            Log.cli.info("embedding sweep: previous batch still in flight, skipping")
+            return
+        }
+        defer { Task { await embeddingSweepGate.release() } }
+        let sweeper = EmbeddingSweeper(repository: EntryRepository(store: store))
+        do {
+            let report = try await sweeper.runOnce(limit: 15)
+            if report.candidates > 0 {
+                Log.cli.info("embedding sweep: \(report.summary, privacy: .public)")
+            }
+        } catch {
+            Log.cli.error(
+                "embedding sweep failed: \(String(describing: error), privacy: .public)"
+            )
+        }
+    }
+
+    /// Tiny-batch embedding sweep fired right after a local text/link
+    /// capture lands via `.bumped`. Shares `embeddingSweepGate` with the
+    /// periodic path so a capture during an in-flight periodic pass is a
+    /// no-op — the periodic pass already covers it since it's now
+    /// top-of-queue (`entriesNeedingEmbedding` orders newest-first).
+    nonisolated private static func runEmbeddingSweepImmediate(store: Store) async {
+        guard await embeddingSweepGate.tryAcquire() else { return }
+        defer { Task { await embeddingSweepGate.release() } }
+        let sweeper = EmbeddingSweeper(repository: EntryRepository(store: store))
+        do {
+            let report = try await sweeper.runOnce(limit: 3)
+            if report.embedded > 0 {
+                Log.cli.info("embedding sweep (capture-wake): \(report.summary, privacy: .public)")
+            }
+        } catch {
+            Log.cli.error(
+                "embedding sweep (capture-wake) failed: \(String(describing: error), privacy: .public)"
             )
         }
     }

@@ -87,6 +87,11 @@ public enum FtsIndex {
         case ocr          // matched ocr_text
         case tag          // matched image_tags
         case multiple     // matched more than one of the above
+        /// Surfaced only by the popup's semantic re-rank (`PopupState`) —
+        /// an entry the FTS pass never matched at all, pulled in purely
+        /// by embedding cosine similarity. Never produced by
+        /// `FtsIndex.search` itself.
+        case semantic
     }
 
     public struct Hit: Sendable {

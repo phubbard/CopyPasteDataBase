@@ -126,6 +126,12 @@ struct PopupRootView: View {
                           isOn: $state.searchScope.ocr)
                 ScopeChip(label: "tags",
                           isOn: $state.searchScope.tags)
+                // Only offered when `EmbeddingService` actually has a
+                // usable on-device model — see `PopupState.semanticAvailable`.
+                if state.semanticAvailable {
+                    ScopeChip(label: "semantic",
+                              isOn: $state.semanticSearchEnabled)
+                }
             }
 
             HStack(spacing: 8) {

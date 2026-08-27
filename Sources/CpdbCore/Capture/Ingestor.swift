@@ -134,6 +134,48 @@ public struct Ingestor {
             }
         }
 
+        // Kick off semantic embedding for fresh text/link captures, same
+        // shape as the image-analysis Task above. Mac-only: generating
+        // embeddings is a background CPU cost the Mac takes on for the
+        // whole account (see `EmbeddingSweeper`'s doc comment) — iOS
+        // receives the result via CloudKit pull like it does OCR/tags.
+        // Truncated to 2048 chars to match `textPreview` above exactly,
+        // so capture-time and sweep-time embedding of the same entry
+        // (e.g. a later re-embed after a model upgrade) start from
+        // identical input text.
+        #if os(macOS)
+        if case .inserted(let entryId) = outcome,
+           (snapshot.kind == .text || snapshot.kind == .link),
+           let plain = snapshot.plainText {
+            let textToEmbed = String(plain.prefix(2048))
+            if !textToEmbed.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                let store = self.store
+                Task.detached(priority: .utility) {
+                    guard let vector = await EmbeddingService.embed(text: textToEmbed),
+                          let dims = await EmbeddingService.currentDims()
+                    else { return }
+                    do {
+                        try await store.dbQueue.write { db in
+                            try EntryRepository.saveEmbedding(
+                                entryId: entryId,
+                                modelId: EmbeddingService.modelId,
+                                revision: EmbeddingService.revision,
+                                dims: dims,
+                                vector: vector,
+                                in: db
+                            )
+                        }
+                        await EmbeddingIndex.shared.invalidate()
+                    } catch {
+                        Log.capture.error(
+                            "embedding capture-hook save failed for entry \(entryId, privacy: .public): \(String(describing: error), privacy: .public)"
+                        )
+                    }
+                }
+            }
+        }
+        #endif
+
         return outcome
     }
 
