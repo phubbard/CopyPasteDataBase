@@ -12,6 +12,17 @@ import CpdbShared
 struct TextCard: View {
     let row: EntryRepository.EntryRow
     let snippet: String?
+    /// Decoded once per row (not a computed property re-decoded on
+    /// every `body` evaluation) — cheap either way for a handful of
+    /// chips, but this is the established pattern for anything backed
+    /// by a JSON column on this card.
+    private let chips: [Chip]
+
+    init(row: EntryRepository.EntryRow, snippet: String?) {
+        self.row = row
+        self.snippet = snippet
+        self.chips = Chip.decodeArray(row.entry.chipsJson)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -33,6 +44,8 @@ struct TextCard: View {
                 // is a fixed band with .topLeading + .clipped(); natural
                 // text height + bottom clipping is the documented look.
                 .frame(maxWidth: .infinity, alignment: .topLeading)
+
+            ChipRow(chips: chips)
         }
         .padding(12)
         // Clip the text to the card bounds instead of bleeding into the footer.

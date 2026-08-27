@@ -5,6 +5,10 @@ import Vision
 public struct ImageAnalysis: Sendable, Equatable {
     public var ocrText: String                  // "" when no text is found (not the same as "not analyzed")
     public var tags: [Tag]
+    /// Decoded string payloads of every barcode/QR code Vision found
+    /// (`VNBarcodeObservation.payloadStringValue`, nil entries dropped).
+    /// Mapped into chips by `QRChipMapper` — see `ImageIndexer`.
+    public var barcodePayloads: [String]
 
     public struct Tag: Sendable, Equatable {
         public var label: String
@@ -15,9 +19,10 @@ public struct ImageAnalysis: Sendable, Equatable {
         }
     }
 
-    public init(ocrText: String = "", tags: [Tag] = []) {
+    public init(ocrText: String = "", tags: [Tag] = [], barcodePayloads: [String] = []) {
         self.ocrText = ocrText
         self.tags = tags
+        self.barcodePayloads = barcodePayloads
     }
 
     /// Convenience: comma-separated, lowercased tag labels for FTS5 indexing
@@ -70,8 +75,14 @@ public enum ImageAnalyzer {
         // Image classification request
         let classifyRequest = VNClassifyImageRequest()
 
+        // Barcode/QR detection request. Bundled into the same
+        // `handler.perform` call as the other two requests so the image
+        // is still decoded exactly once regardless of how many requests
+        // ride along (this type's own doc comment's stated invariant).
+        let barcodeRequest = VNDetectBarcodesRequest()
+
         do {
-            try handler.perform([ocrRequest, classifyRequest])
+            try handler.perform([ocrRequest, classifyRequest, barcodeRequest])
         } catch {
             throw AnalysisError.visionFailed(error)
         }
@@ -91,7 +102,9 @@ public enum ImageAnalyzer {
             ImageAnalysis.Tag(label: $0.identifier, confidence: $0.confidence)
         }
 
-        return ImageAnalysis(ocrText: ocrText, tags: tags)
+        let barcodePayloads = (barcodeRequest.results ?? []).compactMap { $0.payloadStringValue }
+
+        return ImageAnalysis(ocrText: ocrText, tags: tags, barcodePayloads: barcodePayloads)
     }
 
     /// Lookup of the OCR recognition languages Vision supports on this

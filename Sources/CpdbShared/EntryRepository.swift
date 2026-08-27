@@ -788,4 +788,38 @@ public struct EntryRepository {
             }
         }
     }
+
+    /// One row from the chip-backfill candidate query: just enough to
+    /// drive `TextChipDetector` (the text to scan) and write the result
+    /// back (the id).
+    public struct ChipBackfillRow: Sendable {
+        public let entryId: Int64
+        public let textPreview: String?
+    }
+
+    /// Live text/link entries that have never been scanned for chips —
+    /// `chips_json IS NULL` — newest first. `TextChipDetector` only ever
+    /// runs at capture time (`Ingestor`, for freshly `.inserted` rows)
+    /// or via `TextChipBackfiller`'s catch-up pass over rows that
+    /// predate the feature (Paste.db imports, entries captured before
+    /// this shipped). A row this scanned and found nothing gets
+    /// `chips_json = "[]"` (see `setChips`'s doc comment), so it never
+    /// reappears here.
+    public func entriesNeedingChips(limit: Int) throws -> [ChipBackfillRow] {
+        try store.dbQueue.read { db in
+            try Row.fetchAll(
+                db,
+                sql: """
+                    SELECT id, text_preview FROM entries
+                    WHERE kind IN ('text', 'link') AND deleted_at IS NULL
+                      AND chips_json IS NULL
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                """,
+                arguments: [limit]
+            ).map { row in
+                ChipBackfillRow(entryId: row["id"], textPreview: row["text_preview"])
+            }
+        }
+    }
 }

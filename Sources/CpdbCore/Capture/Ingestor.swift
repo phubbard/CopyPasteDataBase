@@ -134,6 +134,35 @@ public struct Ingestor {
             }
         }
 
+        // Data-chip detection for freshly captured text/link entries
+        // (dates, addresses, phone numbers, URLs, tracking/flight/money
+        // — see `TextChipDetector`). Pre-existing rows are covered by
+        // `TextChipBackfiller`'s periodic catch-up pass, not this path.
+        // Detached like the image analysis above: NSDataDetector (and,
+        // on macOS/iOS 26+, the `DataDetection` framework) run fast but
+        // there's no reason to make the capture loop wait on them.
+        if case .inserted(let entryId) = outcome,
+           (snapshot.kind == .text || snapshot.kind == .link),
+           let text = snapshot.plainText, !text.isEmpty {
+            let store = self.store
+            Task.detached(priority: .utility) {
+                let chips = await TextChipDetector.detect(in: text)
+                do {
+                    let repo = EntryRepository(store: store)
+                    // No existing chips_json possible for a row this
+                    // freshly inserted — write straight through (still
+                    // via `Chip.merge` so an empty result correctly
+                    // becomes "[]" rather than staying NULL/unscanned).
+                    let json = Chip.merge(existingJson: nil, adding: chips)
+                    try repo.setChips(entryId: entryId, json: json)
+                } catch {
+                    Log.capture.error(
+                        "chip detect failed for entry \(entryId, privacy: .public): \(String(describing: error), privacy: .public)"
+                    )
+                }
+            }
+        }
+
         return outcome
     }
 

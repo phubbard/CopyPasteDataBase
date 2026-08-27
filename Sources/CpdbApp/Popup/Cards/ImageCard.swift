@@ -12,10 +12,19 @@ import CpdbShared
 /// so cheap re-renders don't re-decode.
 struct ImageCard: View {
     let row: EntryRepository.EntryRow
+    /// Decoded once per row — see `TextCard`'s identical field. Image
+    /// entries get chips from `QRChipMapper` (barcode/QR payloads found
+    /// during Vision analysis), not `TextChipDetector`.
+    private let chips: [Chip]
 
     @Environment(\.cpdbStore) private var store
     @Environment(\.popupLiveRefreshToken) private var liveRefreshToken
     @State private var thumb: NSImage?
+
+    init(row: EntryRepository.EntryRow) {
+        self.row = row
+        self.chips = Chip.decodeArray(row.entry.chipsJson)
+    }
 
     var body: some View {
         ZStack(alignment: .bottomLeading) {
@@ -76,6 +85,14 @@ struct ImageCard: View {
                 .padding(10)
                 .allowsHitTesting(false)
                 .help(row.entry.textPreview ?? host)
+            }
+
+            // QR/barcode chip row, opposite corner from the source-
+            // domain overlay above so the two never collide.
+            if !chips.isEmpty {
+                ChipRow(chips: chips)
+                    .padding(10)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
             }
         }
         // Keyed on entry.id AND liveRefreshToken: entry.id alone never

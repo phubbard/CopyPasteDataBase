@@ -459,6 +459,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // detached batches from piling up.
                 Log.cli.info("periodic tick \(tick, privacy: .public): spawning detached backfill")
                 Task.detached { await Self.runLinkTitleBackfillIfDue(store: store) }
+                // Text-chip backfill tick. On-device NSDataDetector work
+                // only (no network, no Vision) so — unlike the image
+                // sweep below — it runs every cycle with no jitter,
+                // same as the link backfill; see `TextChipBackfiller`'s
+                // doc comment for why it's a separate pass.
+                Task.detached(priority: .utility) { await Self.runChipBackfillIfDue(store: store) }
                 // Image-analysis sweep tick. Unlike the link backfill
                 // above, this isn't gated on every single tick — Vision
                 // has no network cost to amortize, but this account can
@@ -577,6 +583,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Log.cli.error(
                 "link-title backfill (capture-wake) failed: \(String(describing: error), privacy: .public)"
             )
+        }
+    }
+
+    // MARK: - Text-chip backfill
+
+    /// Reentry guard for the detached chip-backfill task, same shape as
+    /// `BackfillGate`/`ImageSweepGate`. Unlikely to actually wedge (no
+    /// network, no Vision) but cheap insurance against a slow tick
+    /// overlapping the next.
+    private actor ChipBackfillGate {
+        private var running = false
+        func tryAcquire() -> Bool {
+            if running { return false }
+            running = true
+            return true
+        }
+        func release() { running = false }
+    }
+    private static let chipBackfillGate = ChipBackfillGate()
+
+    /// Periodic catch-up pass for `chips_json` on pre-existing text/link
+    /// entries. See `TextChipBackfiller`'s doc comment for why this is
+    /// its own tiny backfiller rather than folded into the image sweep
+    /// below.
+    nonisolated private static func runChipBackfillIfDue(store: Store) async {
+        guard await chipBackfillGate.tryAcquire() else { return }
+        defer { Task { await chipBackfillGate.release() } }
+        let backfiller = TextChipBackfiller(repository: EntryRepository(store: store))
+        do {
+            let report = try await backfiller.runOnce(limit: 50)
+            if report.candidates > 0 {
+                Log.cli.info("chip backfill: \(report.summary, privacy: .public)")
+            }
+        } catch {
+            Log.cli.error("chip backfill failed: \(String(describing: error), privacy: .public)")
         }
     }
 
