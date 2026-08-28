@@ -106,8 +106,38 @@ public enum ImageIndexer {
         markAnalyzed(entryId: entryId, ocrText: analysis.ocrText, tags: tagsCSV, store: store)
 
         Log.capture.info(
-            "analyzed entry \(entryId, privacy: .public): ocr=\(analysis.ocrText.count, privacy: .public) chars, \(analysis.tags.count, privacy: .public) tags"
+            "analyzed entry \(entryId, privacy: .public): ocr=\(analysis.ocrText.count, privacy: .public) chars, \(analysis.tags.count, privacy: .public) tags, \(analysis.barcodePayloads.count, privacy: .public) barcodes"
         )
+
+        // QR/barcode chips. Separate from `markAnalyzed`'s transaction
+        // (and its own `EntryRepository.setChips` call, per that
+        // method's doc comment) — a read-modify-write against whatever
+        // `chips_json` happens to hold right now (nil from a fresh
+        // entry, or already-populated by a same-capture text-chip scan
+        // on the caption/OCR text) rather than something `markAnalyzed`
+        // would need to know about.
+        if !analysis.barcodePayloads.isEmpty {
+            mergeBarcodeChips(entryId: entryId, payloads: analysis.barcodePayloads, store: store)
+        }
+    }
+
+    /// Maps decoded barcode/QR payloads to chips (`QRChipMapper`) and
+    /// merges them into the entry's existing `chips_json`. Best-effort:
+    /// a failure here doesn't affect the OCR/tags result already
+    /// committed above, and the entry stays searchable either way.
+    private static func mergeBarcodeChips(entryId: Int64, payloads: [String], store: Store) {
+        let chips = QRChipMapper.chips(from: payloads)
+        guard !chips.isEmpty else { return }
+        let repo = EntryRepository(store: store)
+        do {
+            let existing = try repo.fetch(id: entryId)?.chipsJson
+            let merged = Chip.merge(existingJson: existing, adding: chips)
+            try repo.setChips(entryId: entryId, json: merged)
+        } catch {
+            Log.capture.error(
+                "barcode chip merge failed for entry \(entryId, privacy: .public): \(String(describing: error), privacy: .public)"
+            )
+        }
     }
 
     /// Downscale `data` to at most `maxPixelDimension` on its longest

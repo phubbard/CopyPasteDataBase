@@ -12,10 +12,17 @@ import CpdbShared
 /// below in the secondary/tertiary tint.
 struct LinkCard: View {
     let row: EntryRepository.EntryRow
+    /// Decoded once per row — see `TextCard`'s identical field.
+    private let chips: [Chip]
 
     @Environment(\.cpdbStore) private var store
     @Environment(\.popupLiveRefreshToken) private var liveRefreshToken
     @State private var thumb: NSImage?
+
+    init(row: EntryRepository.EntryRow) {
+        self.row = row
+        self.chips = Chip.decodeArray(row.entry.chipsJson)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -81,6 +88,7 @@ struct LinkCard: View {
             }
 
             Spacer(minLength: 0)
+            ChipRow(chips: chips)
         }
         .padding(12)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)

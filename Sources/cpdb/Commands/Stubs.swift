@@ -478,6 +478,8 @@ struct AnalyzeImages: ParsableCommand {
         var emptyResults = 0
         var noImageFlavor = 0
         var analyzerErrors = 0
+        var barcodesFound = 0
+        let repo = EntryRepository(store: store)
 
         for entryId in candidates {
             guard let imageData = try RegenerateThumbnails.loadImageBytes(
@@ -527,6 +529,27 @@ struct AnalyzeImages: ParsableCommand {
                 if ocrText.isEmpty && tagsCSV.isEmpty {
                     emptyResults += 1
                 }
+
+                // Fold decoded barcode/QR payloads into chips_json —
+                // this is the documented recovery path for images the
+                // sweeper marked pending/failed, so it must not silently
+                // drop the one piece of `analysis` that ImageIndexer's
+                // capture/sweep path (`analyzeAndStore` ->
+                // `mergeBarcodeChips`) already persists. Best-effort:
+                // a failure here doesn't affect the OCR/tags write above.
+                if !analysis.barcodePayloads.isEmpty {
+                    do {
+                        let chips = QRChipMapper.chips(from: analysis.barcodePayloads)
+                        if !chips.isEmpty {
+                            let existing = try repo.fetch(id: entryId)?.chipsJson
+                            let merged = Chip.merge(existingJson: existing, adding: chips)
+                            try repo.setChips(entryId: entryId, json: merged)
+                            barcodesFound += 1
+                        }
+                    } catch {
+                        Log.importer.error("barcode chip merge failed for entry \(entryId, privacy: .public): \(String(describing: error), privacy: .public)")
+                    }
+                }
             } catch {
                 analyzerErrors += 1
                 Log.importer.error("analyze failed for entry \(entryId, privacy: .public): \(String(describing: error), privacy: .public)")
@@ -543,6 +566,7 @@ struct AnalyzeImages: ParsableCommand {
         print("  empty results       : \(emptyResults)")
         print("  analyzer errors     : \(analyzerErrors)")
         print("  no image flavor     : \(noImageFlavor)")
+        print("  barcode chips found : \(barcodesFound)")
     }
 
     private func writeAnalysis(

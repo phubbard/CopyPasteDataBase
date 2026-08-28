@@ -141,6 +141,52 @@ public struct Ingestor {
             AIService.enrichAtCaptureIfEligible(entryId: entryId, kind: snapshot.kind, textPreview: snapshot.plainText, store: store)
         }
 
+        // Data-chip detection for freshly captured text/link entries
+        // (dates, addresses, phone numbers, URLs, tracking/flight/money
+        // — see `TextChipDetector`). Pre-existing rows are covered by
+        // `TextChipBackfiller`'s periodic catch-up pass, not this path.
+        // Detached like the image analysis above: NSDataDetector (and,
+        // on macOS/iOS 26+, the `DataDetection` framework) run fast but
+        // there's no reason to make the capture loop wait on them.
+        if case .inserted(let entryId) = outcome,
+           (snapshot.kind == .text || snapshot.kind == .link),
+           let text = snapshot.plainText, !text.isEmpty {
+            let store = self.store
+            Task.detached(priority: .utility) {
+                let chips = await TextChipDetector.detect(in: text)
+                do {
+                    let repo = EntryRepository(store: store)
+                    // This scan (over the full `plainText`) and
+                    // `TextChipBackfiller`'s catch-up pass (over the
+                    // much shorter `text_preview`) can both race to be
+                    // the first write for this row if a backfill tick
+                    // lands while this detached task is still running —
+                    // `setChipsIfUnset`'s guarded UPDATE makes whichever
+                    // commits first stick instead of whichever finishes
+                    // last silently overwriting it. `Chip.merge` still
+                    // turns an empty result into "[]" rather than
+                    // leaving the row NULL/unscanned.
+                    //
+                    // `pushToCloud: false`: the capture-wake push
+                    // observer typically drains this entry's own insert
+                    // push within milliseconds, well before this
+                    // detached detection task finishes — so the default
+                    // `pushToCloud: true` would enqueue a second, full
+                    // re-push (re-staged flavor CKAssets included) just
+                    // to carry `chips_json`, data every peer re-derives
+                    // locally anyway. Same "converges locally, no need
+                    // to sync it" reasoning `TextChipBackfiller` already
+                    // uses for its own `setChipsIfUnset` call.
+                    let json = Chip.merge(existingJson: nil, adding: chips)
+                    try repo.setChipsIfUnset(entryId: entryId, json: json, pushToCloud: false)
+                } catch {
+                    Log.capture.error(
+                        "chip detect failed for entry \(entryId, privacy: .public): \(String(describing: error), privacy: .public)"
+                    )
+                }
+            }
+        }
+
         return outcome
     }
 
