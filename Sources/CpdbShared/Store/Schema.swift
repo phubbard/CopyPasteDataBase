@@ -560,5 +560,22 @@ enum Schema {
             //                    at `AIEnrichmentSweeper.maxRetries`.
             try db.execute(sql: "ALTER TABLE entries ADD COLUMN ai_retry_count INTEGER NOT NULL DEFAULT 0;")
         }
+
+        migrator.registerMigration("v14_recency_index") { db in
+            // The popup's recent() query orders by (pinned DESC,
+            // created_at DESC) over live rows. No index matched, so
+            // SQLite full-scanned + temp-B-tree-sorted every live row on
+            // every summon — historically ~20ms and hidden inside the
+            // refresh budget, but v12/v13's per-row enrichment writes
+            // (chips_json, ai_*) fattened pages until the same sort cost
+            // >100ms on a 10k library (popup-perf caught it on the first
+            // v3.3 launch). This composite partial index turns it into
+            // an index walk that stops at LIMIT.
+            try db.execute(sql: """
+                CREATE INDEX idx_entries_recency
+                    ON entries(pinned DESC, created_at DESC)
+                    WHERE deleted_at IS NULL;
+                """)
+        }
     }
 }

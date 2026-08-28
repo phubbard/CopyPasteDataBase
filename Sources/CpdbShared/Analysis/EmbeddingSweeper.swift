@@ -67,6 +67,39 @@ public struct EmbeddingSweeper {
     /// Run one batch, capped at `limit` entries. Newest-first (mirrors
     /// `entriesNeedingEmbedding`'s ordering), so a big pull-synced backlog
     /// makes visible progress on recent history every pass.
+    /// Drain the backlog in repeated batches until it's empty or the
+    /// time budget runs out. A fresh v3.3 install has the entire library
+    /// (~10k text/link entries) to embed; at the single-batch cap of 15
+    /// per ~10-minute periodic tick that would take days — this loops
+    /// within one tick instead, yielding between batches and backing off
+    /// under thermal pressure so a MacBook doesn't cook. Embedding is
+    /// ~ms-per-entry on Apple Silicon; the budget keeps one tick's work
+    /// bounded regardless.
+    @discardableResult
+    public func drainBacklog(
+        batchLimit: Int = 200,
+        timeBudget: Duration = .seconds(30)
+    ) async throws -> Report {
+        let start = ContinuousClock.now
+        var total = Report()
+        while ContinuousClock.now - start < timeBudget {
+            if ProcessInfo.processInfo.thermalState == .serious
+                || ProcessInfo.processInfo.thermalState == .critical {
+                break
+            }
+            let batch = try await runOnce(limit: batchLimit)
+            total.candidates += batch.candidates
+            total.embedded += batch.embedded
+            total.skippedUnavailable += batch.skippedUnavailable
+            total.skippedEmpty += batch.skippedEmpty
+            total.failed += batch.failed
+            // Empty batch = backlog drained (or unavailable); stop.
+            if batch.candidates == 0 || batch.skippedUnavailable > 0 { break }
+            await Task.yield()
+        }
+        return total
+    }
+
     @discardableResult
     public func runOnce(limit: Int = 15) async throws -> Report {
         guard await EmbeddingService.isAvailable() else {

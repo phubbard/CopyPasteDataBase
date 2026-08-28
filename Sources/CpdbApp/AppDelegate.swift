@@ -949,7 +949,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         defer { Task { await embeddingSweepGate.release() } }
         let sweeper = EmbeddingSweeper(repository: EntryRepository(store: store))
         do {
-            let report = try await sweeper.runOnce(limit: 15)
+            // drainBacklog (not a single capped batch): a fresh v3.3
+            // install has the whole library to embed; the drain loop
+            // clears it in a handful of ticks (30s budget each,
+            // thermal-gated) instead of days at 15-per-tick.
+            let report = try await sweeper.drainBacklog()
             if report.candidates > 0 {
                 Log.cli.info("embedding sweep: \(report.summary, privacy: .public)")
             }
