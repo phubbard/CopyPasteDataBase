@@ -51,6 +51,17 @@ struct TextCard: View {
         return row.entry.textPreview ?? ""
     }
 
+    /// Whether the headline is the AI-generated title rather than the
+    /// clip's own first line. When true, `remaining` must show the *entire*
+    /// body text — the AI title didn't consume a line of it — so the user
+    /// can still see the entry verbatim to pick reliably.
+    private var usesAITitle: Bool {
+        if let aiTitle = row.entry.aiTitle, !aiTitle.isEmpty {
+            return true
+        }
+        return false
+    }
+
     /// Headline text: the on-device AI-generated title when present
     /// (`Entry.aiTitle` — distinct from the raw pasteboard-derived
     /// `title`), falling back to the existing first-line-of-text logic
@@ -66,6 +77,11 @@ struct TextCard: View {
     }
 
     private var remaining: String {
+        if usesAITitle {
+            // The headline came from aiTitle, not displayText's first line,
+            // so no line of displayText was consumed — show all of it.
+            return displayText
+        }
         let lines = displayText.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline)
         guard lines.count > 1 else { return "" }
         return lines.dropFirst().joined(separator: "\n")
