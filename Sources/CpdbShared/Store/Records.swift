@@ -78,6 +78,12 @@ public struct Entry: Codable, FetchableRecord, MutablePersistableRecord, Hashabl
     /// On-device Foundation-Models-generated summary. NULL = not yet
     /// enriched.
     public var aiSummary: String?
+    /// Number of failed enrichment attempts since the last success.
+    /// `EntryRepository.entriesNeedingAIEnrichment` excludes rows at or
+    /// above `AIEnrichmentSweeper.maxRetries` so a deterministically-
+    /// failing entry doesn't starve every older candidate forever. See
+    /// the `v13_ai_enrichment_retry_cap` migration.
+    public var aiRetryCount: Int = 0
 
     public static let databaseTableName = "entries"
 
@@ -108,6 +114,7 @@ public struct Entry: Codable, FetchableRecord, MutablePersistableRecord, Hashabl
         case chipsJson       = "chips_json"
         case aiTitle         = "ai_title"
         case aiSummary       = "ai_summary"
+        case aiRetryCount    = "ai_retry_count"
     }
 
     public mutating func didInsert(_ inserted: InsertionSuccess) {
@@ -140,7 +147,8 @@ public struct Entry: Codable, FetchableRecord, MutablePersistableRecord, Hashabl
         modifiedAt: Double = 0,
         chipsJson: String? = nil,
         aiTitle: String? = nil,
-        aiSummary: String? = nil
+        aiSummary: String? = nil,
+        aiRetryCount: Int = 0
     ) {
         self.id = id
         self.uuid = uuid
@@ -168,6 +176,7 @@ public struct Entry: Codable, FetchableRecord, MutablePersistableRecord, Hashabl
         self.chipsJson = chipsJson
         self.aiTitle = aiTitle
         self.aiSummary = aiSummary
+        self.aiRetryCount = aiRetryCount
     }
 }
 

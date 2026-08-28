@@ -27,6 +27,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// kinds). See `ingestedObserver`'s registration site for why this
     /// is a separate observer rather than folded into that one.
     private var imageSweepIngestedObserver: NSObjectProtocol?
+    /// NotificationCenter token for the AI-enrichment sweep's capture-
+    /// wake observer (filtered to text kinds landing via `.bumped` — a
+    /// fresh `.inserted` capture is already handled synchronously by
+    /// `Ingestor`'s own hook, same split as the image sweep's observer).
+    private var aiEnrichmentIngestedObserver: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         Log.cli.info("cpdb.app starting (pid \(ProcessInfo.processInfo.processIdentifier, privacy: .public))")
@@ -378,6 +383,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Task.detached(priority: .utility) { await Self.runImageAnalysisSweepImmediate(store: store) }
         }
 
+        // Immediate small-batch AI-enrichment sweep — only for a text
+        // entry landing via `.bumped`. A `.inserted` text capture is
+        // already handled synchronously by `Ingestor`'s own
+        // `AIService.enrichAtCaptureIfEligible` hook; `.bumped` gets no
+        // such hook, so this is the only same-Mac path that recovers it
+        // if a prior capture's enrichment never finished.
+        aiEnrichmentIngestedObserver = NotificationCenter.default.addObserver(
+            forName: .cpdbLocalEntryIngested,
+            object: nil,
+            queue: .main
+        ) { [weak self] note in
+            guard let self, let store = self.store else { return }
+            let kindRaw = note.userInfo?["kind"] as? String
+            guard kindRaw == EntryKind.text.rawValue else { return }
+            let outcomeRaw = note.userInfo?["outcome"] as? String
+            guard outcomeRaw == "bumped" else { return }
+            Task.detached(priority: .utility) { await Self.runAIEnrichmentSweepImmediate(store: store) }
+        }
+
         // Touch the Reachability singleton so NWPathMonitor starts
         // monitoring before the first periodic cycle fires.
         _ = Reachability.shared
@@ -505,6 +529,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 ) {
                     Log.cli.info("periodic tick \(tick, privacy: .public): spawning detached image-analysis sweep")
                     Task.detached(priority: .utility) { await Self.runImageAnalysisSweepIfDue(store: store) }
+                }
+                // AI-enrichment sweep tick. Same jittered-interval
+                // rationale as the image sweep above — multiple Macs on
+                // one iCloud account shouldn't wake for a batch of
+                // on-device generation calls in lockstep.
+                if await Self.aiEnrichmentScheduler.dueNow(
+                    base: Self.aiEnrichmentBaseIntervalSeconds,
+                    jitter: Self.aiEnrichmentJitterSeconds
+                ) {
+                    Log.cli.info("periodic tick \(tick, privacy: .public): spawning detached AI-enrichment sweep")
+                    Task.detached(priority: .utility) { await Self.runAIEnrichmentSweepIfDue(store: store) }
                 }
                 Log.cli.info("periodic tick \(tick, privacy: .public): tick complete (backoff=\(backoffSeconds, privacy: .public)s)")
                 if backoffSeconds > 0 {
@@ -701,6 +736,91 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } catch {
             Log.cli.error(
                 "image-analysis sweep (capture-wake) failed: \(String(describing: error), privacy: .public)"
+            )
+        }
+    }
+
+    // MARK: - AI-enrichment sweep
+
+    /// Reentry guard for the detached AI-enrichment sweep, same shape as
+    /// `ImageSweepGate`. Generation is a real (seconds-scale) on-device
+    /// LLM call, not a network request, but a slow batch on a big backlog
+    /// could still overlap the next scheduled sweep without this.
+    private actor AIEnrichmentGate {
+        private var running = false
+        func tryAcquire() -> Bool {
+            if running { return false }
+            running = true
+            return true
+        }
+        func release() { running = false }
+    }
+    private static let aiEnrichmentGate = AIEnrichmentGate()
+
+    /// Base interval between periodic AI-enrichment sweep passes.
+    private static let aiEnrichmentBaseIntervalSeconds: TimeInterval = 10 * 60
+    /// Random extra delay layered on the base interval, re-rolled every
+    /// pass — same de-lockstep rationale as `imageSweepJitterSeconds`.
+    /// Duplicate enrichment between Macs is harmless: whichever sibling's
+    /// `setAITitleSummary` write lands first "wins" in the sense that the
+    /// later one just overwrites it with an equally-valid result, and
+    /// `isAIUnenriched`'s re-check keeps this Mac from re-generating a
+    /// row a sibling (or this Mac's own capture-time hook) beat it to.
+    private static let aiEnrichmentJitterSeconds: TimeInterval = 5 * 60
+
+    /// Tracks when the next periodic sweep pass is due, same shape as
+    /// `ImageSweepScheduler`.
+    private actor AIEnrichmentScheduler {
+        private var nextDueAt = Date.distantPast   // sweep soon after launch
+        func dueNow(base: TimeInterval, jitter: TimeInterval) -> Bool {
+            let now = Date()
+            guard now >= nextDueAt else { return false }
+            nextDueAt = now.addingTimeInterval(base + Double.random(in: 0...max(jitter, 0.001)))
+            return true
+        }
+    }
+    private static let aiEnrichmentScheduler = AIEnrichmentScheduler()
+
+    /// Periodic AI-enrichment sweep, gated by `aiEnrichmentScheduler`'s
+    /// jittered interval. Self-heals pull-synced text entries from other
+    /// devices and any local capture whose capture-time generation Task
+    /// never finished — see `AIEnrichmentSweeper`'s doc comment.
+    nonisolated private static func runAIEnrichmentSweepIfDue(store: Store) async {
+        guard await aiEnrichmentGate.tryAcquire() else {
+            Log.cli.info("ai-enrichment sweep: previous batch still in flight, skipping")
+            return
+        }
+        defer { Task { await aiEnrichmentGate.release() } }
+        let sweeper = AIEnrichmentSweeper(repository: EntryRepository(store: store))
+        do {
+            let report = try await sweeper.runOnce(limit: 5)
+            if report.candidates > 0 {
+                Log.cli.info("ai-enrichment sweep: \(report.summary, privacy: .public)")
+            }
+        } catch {
+            Log.cli.error(
+                "ai-enrichment sweep failed: \(String(describing: error), privacy: .public)"
+            )
+        }
+    }
+
+    /// Tiny-batch AI-enrichment sweep fired right after a local text
+    /// capture lands via `.bumped`. Shares `aiEnrichmentGate` with the
+    /// periodic path so a capture during an in-flight periodic pass is a
+    /// no-op — the periodic pass already covers it since it's now
+    /// top-of-queue (`entriesNeedingAIEnrichment` orders newest-first).
+    nonisolated private static func runAIEnrichmentSweepImmediate(store: Store) async {
+        guard await aiEnrichmentGate.tryAcquire() else { return }
+        defer { Task { await aiEnrichmentGate.release() } }
+        let sweeper = AIEnrichmentSweeper(repository: EntryRepository(store: store))
+        do {
+            let report = try await sweeper.runOnce(limit: 3)
+            if report.enriched > 0 {
+                Log.cli.info("ai-enrichment sweep (capture-wake): \(report.summary, privacy: .public)")
+            }
+        } catch {
+            Log.cli.error(
+                "ai-enrichment sweep (capture-wake) failed: \(String(describing: error), privacy: .public)"
             )
         }
     }

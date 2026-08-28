@@ -870,13 +870,135 @@ public struct EntryRepository {
     public func setAITitleSummary(entryId: Int64, title: String?, summary: String?) throws {
         let now = Date().timeIntervalSince1970
         try store.dbQueue.write { db in
+            // Reset ai_retry_count on success — mirrors setLinkMetadata's
+            // "settled" semantics, so a future re-enrichment (title
+            // cleared by hand, a model upgrade) starts its retry budget
+            // fresh rather than inheriting whatever count a prior,
+            // unrelated failure streak left behind.
             try db.execute(
-                sql: "UPDATE entries SET ai_title = ?, ai_summary = ? WHERE id = ? AND deleted_at IS NULL",
+                sql: """
+                    UPDATE entries SET ai_title = ?, ai_summary = ?, ai_retry_count = 0
+                    WHERE id = ? AND deleted_at IS NULL
+                """,
                 arguments: [title, summary, entryId]
             )
             if db.changesCount > 0 {
                 try PushQueue.enqueue(entryId: entryId, in: db, now: now)
             }
+        }
+    }
+
+    // MARK: - AI title/summary enrichment sweep
+
+    /// One candidate for `AIEnrichmentSweeper`: an entry that needs a
+    /// Foundation-Models title/summary pass, plus the text to feed it —
+    /// pulled in the same query so the sweeper never has to re-fetch it.
+    public struct AIEnrichmentCandidate: Sendable, Equatable {
+        public var entryId: Int64
+        public var textPreview: String
+
+        public init(entryId: Int64, textPreview: String) {
+            self.entryId = entryId
+            self.textPreview = textPreview
+        }
+    }
+
+    /// Live text entries long enough to be worth summarizing that haven't
+    /// been enriched yet, newest first — mirrors `imagesNeedingAnalysis`'s
+    /// shape. `ai_title IS NULL` is the "not yet attempted" sentinel
+    /// (same convention as `analyzed_at`/`link_fetched_at`).
+    ///
+    /// `ai_retry_count < maxRetries` gives up on a row that has failed
+    /// too many times in a row, same shape as `linksNeedingMetadata`'s
+    /// retry cap — without it, a deterministically-failing generation
+    /// (a Foundation Models guardrail rejection, or a clip that
+    /// overflows the context window on every attempt) would leave
+    /// `ai_title` NULL forever, and `ORDER BY created_at DESC LIMIT n`
+    /// would re-select and re-fail that same row every pass, starving
+    /// every older candidate behind it. No time-based backoff (unlike
+    /// the link fetcher): on-device generation has no rate limit to
+    /// protect, so a hard cap is enough.
+    ///
+    /// `minLength` filters in SQL as a coarse pre-filter only; SQLite's
+    /// `LENGTH()` counts codepoints, which can differ substantially from
+    /// Swift's grapheme-cluster `String.count` for text with combining
+    /// marks or multi-scalar emoji (a few hundred ZWJ-sequence emoji can
+    /// clear this SQL threshold while their grapheme count does not).
+    /// `AIService.enrichEntry` re-checks the real `.count` before ever
+    /// calling the model and returns `false` if it's still too short —
+    /// a borderline entry that never passes the Swift check is
+    /// indistinguishable from a real generation failure and is retried,
+    /// then eventually capped, the same way via `ai_retry_count`.
+    public func entriesNeedingAIEnrichment(
+        limit: Int,
+        minLength: Int,
+        maxRetries: Int = AIEnrichmentSweeper.maxRetries
+    ) throws -> [AIEnrichmentCandidate] {
+        try store.dbQueue.read { db in
+            try Row.fetchAll(
+                db,
+                sql: """
+                    SELECT id, text_preview FROM entries
+                    WHERE kind = 'text' AND deleted_at IS NULL
+                      AND ai_title IS NULL
+                      AND ai_retry_count < ?
+                      AND LENGTH(COALESCE(text_preview, '')) > ?
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                """,
+                arguments: [maxRetries, minLength, limit]
+            ).compactMap { row in
+                (row["text_preview"] as String?).map {
+                    AIEnrichmentCandidate(entryId: row["id"], textPreview: $0)
+                }
+            }
+        }
+    }
+
+    /// Record a failed enrichment attempt (unavailable model, generation
+    /// error, empty result, or persistence failure — `AIService.enrichEntry`
+    /// doesn't distinguish these, same as `ImageIndexer`'s "tried and got
+    /// nothing" convention). Increments `ai_retry_count`; `ai_title`
+    /// stays NULL so the row remains a candidate until the cap in
+    /// `entriesNeedingAIEnrichment` excludes it.
+    ///
+    /// Returns the new retry count so the caller can log progress.
+    @discardableResult
+    public func recordAIEnrichmentFailure(entryId: Int64) throws -> Int {
+        try store.dbQueue.write { db in
+            try db.execute(
+                sql: """
+                    UPDATE entries SET ai_retry_count = ai_retry_count + 1
+                    WHERE id = ? AND deleted_at IS NULL
+                """,
+                arguments: [entryId]
+            )
+            return try Int.fetchOne(
+                db,
+                sql: "SELECT ai_retry_count FROM entries WHERE id = ?",
+                arguments: [entryId]
+            ) ?? 0
+        }
+    }
+
+    /// True iff a live entry still has `ai_title IS NULL`. The sweeper
+    /// re-checks this immediately before calling into the (comparatively
+    /// expensive, on-device-LLM) generation step, since the candidate
+    /// list was built moments earlier and a sibling Mac's result — or
+    /// this Mac's own capture-time enrichment — may have landed on this
+    /// row in the meantime. Mirrors `isImageUnanalyzed`'s doc comment for
+    /// the same check-then-write race.
+    public func isAIUnenriched(entryId: Int64) throws -> Bool {
+        try store.dbQueue.read { db in
+            guard let row = try Row.fetchOne(
+                db,
+                sql: "SELECT ai_title FROM entries WHERE id = ? AND deleted_at IS NULL",
+                arguments: [entryId]
+            ) else {
+                return false
+            }
+            let aiTitle: String? = row["ai_title"]
+            return aiTitle == nil
         }
     }
 }
