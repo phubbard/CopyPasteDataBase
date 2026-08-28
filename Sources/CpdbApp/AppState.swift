@@ -52,6 +52,26 @@ final class PopupState {
         }
     }
 
+    /// Whether the semantic (embedding cosine-similarity) re-rank pass
+    /// runs alongside FTS search. Persisted like `searchScope`. Toggling
+    /// it re-runs the current search so switching it off snaps back to
+    /// pure-FTS ordering immediately rather than waiting for the next
+    /// keystroke.
+    var semanticSearchEnabled: Bool = PopupState.loadSemanticSearchEnabled() {
+        didSet {
+            if semanticSearchEnabled != oldValue {
+                PopupState.saveSemanticSearchEnabled(semanticSearchEnabled)
+                refresh()
+            }
+        }
+    }
+
+    /// Whether `EmbeddingService` actually has a usable model on this
+    /// machine — checked once, asynchronously, at init. The popup's
+    /// "Semantic" chip only renders when this is true; there's no point
+    /// offering a toggle for a re-rank pass that can never do anything.
+    private(set) var semanticAvailable: Bool = false
+
     /// When true, dismissing the popup to launch Quick Look preserves
     /// the current search query and selection so the next summon
     /// resumes from the same spot — useful if the user has scrolled
@@ -177,6 +197,15 @@ final class PopupState {
         self.repository = EntryRepository(store: store)
         self.undo = UndoCoordinator(repo: EntryRepository(store: store))
         self.searchLimit = recentLimit
+
+        // One-time async probe: does this machine have a usable
+        // embedding model? Gates whether the "Semantic" chip renders at
+        // all. Cheap once cached — `EmbeddingService.isAvailable()`
+        // memoizes its verdict process-wide.
+        Task { @MainActor [weak self] in
+            let available = await EmbeddingService.isAvailable()
+            self?.semanticAvailable = available
+        }
     }
 
     // MARK: - Undoable mutations (popup entry points)
@@ -305,6 +334,19 @@ final class PopupState {
                 if rows != newRows { rows = newRows }
                 if snippetsById != newSnippets { snippetsById = newSnippets }
                 if matchSourcesById != newSources { matchSourcesById = newSources }
+
+                // Semantic re-rank runs as a second pass, not inline here:
+                // embedding the query is a few-millisecond model call we
+                // don't want blocking the summon-time refresh above. It
+                // lands as a follow-up `rows` update ONLY if merging in
+                // cosine-similarity rank actually changes the result —
+                // the `rows != newRows` guard inside `spawnSemanticRerank`
+                // reuses the same no-op-skip discipline as everywhere
+                // else in this file, so a query with no semantic lift
+                // doesn't churn the strip a second time.
+                if semanticAvailable, semanticSearchEnabled {
+                    spawnSemanticRerank(query: q, generation: gen, ftsHits: results)
+                }
             }
             selectedIndex = rows.isEmpty ? 0 : min(selectedIndex, rows.count - 1)
         } catch {
@@ -350,6 +392,167 @@ final class PopupState {
         rows.insert(EntryRepository.EntryRow(entry: entry), at: 0)
         selectedIndex = 0
         return true
+    }
+
+    /// Reciprocal-rank-fusion constant. 60 is the standard RRF default
+    /// from the literature (Cormack et al.) — large enough that a rank
+    /// near the bottom of either list still contributes a little, small
+    /// enough that a #1 rank in one list clearly outweighs a mid-pack
+    /// rank in the other.
+    nonisolated static let rrfK = 60.0
+
+    /// Cap on how many nearest neighbors `EmbeddingIndex.search` returns
+    /// for a re-rank pass. Deliberately smaller than `searchLimit` (the
+    /// FTS/"recent" page size): a re-rank only ever needs a modest
+    /// number of genuinely-similar candidates to fuse in, and asking for
+    /// as many neighbors as the whole popup page (`searchLimit`) forces
+    /// `EmbeddingIndex` to score and return matches far down its ranked
+    /// list — which `semanticScoreFloor` below would filter out anyway,
+    /// so there's no point paying to rank and hydrate them.
+    nonisolated static let semanticTopK = 50
+
+    /// Minimum cosine similarity (`EmbeddingIndex.Result.score`, range
+    /// [-1, 1]) for a semantic hit to be treated as an actual match
+    /// rather than noise. `EmbeddingIndex.search` returns its top-K by
+    /// rank regardless of how weak the best available match is — a
+    /// typo/garbage query with zero real semantic signal still returns
+    /// up to top-K entries at whatever (possibly near-zero) similarity
+    /// happens to lead the pack. Without a floor those get fused in and
+    /// shown with the same ≈ badge as a genuine paraphrase match. 0.35 is
+    /// a conservative starting point pending real calibration against
+    /// `NLContextualEmbedding`'s actual similarity distribution — the
+    /// goal is "clearly related," not a precise threshold.
+    nonisolated static let semanticScoreFloor: Float = 0.35
+
+    /// Merge two ranked id lists (FTS bm25 order, embedding cosine order)
+    /// by Reciprocal Rank Fusion: each list contributes `1/(k+rank)`
+    /// (rank is 1-based) for every id it contains, an id in both lists
+    /// sums both contributions, and the union is sorted by that score
+    /// descending. A tie breaks on id (descending — newer/higher-id
+    /// first) purely so the result is deterministic rather than at the
+    /// mercy of `Dictionary`'s iteration order.
+    ///
+    /// Pure and static so it's unit-testable without a loaded embedding
+    /// model, a `Store`, or the `@MainActor` hop `spawnSemanticRerank`
+    /// needs for everything else it does.
+    nonisolated static func fuseByReciprocalRank(
+        _ ftsIds: [Int64],
+        _ semanticIds: [Int64],
+        k: Double = rrfK
+    ) -> [Int64] {
+        var fused: [Int64: Double] = [:]
+        for (index, id) in ftsIds.enumerated() {
+            fused[id, default: 0] += 1.0 / (k + Double(index + 1))
+        }
+        for (index, id) in semanticIds.enumerated() {
+            fused[id, default: 0] += 1.0 / (k + Double(index + 1))
+        }
+        return fused.sorted { lhs, rhs in
+            lhs.value == rhs.value ? lhs.key > rhs.key : lhs.value > rhs.value
+        }.map(\.key)
+    }
+
+    /// Second-pass semantic re-rank for the current search. Embeds `q`,
+    /// runs it against `EmbeddingIndex`, fuses that ranking with the FTS
+    /// ranking already on screen via Reciprocal Rank Fusion, and — only
+    /// if the fused order actually differs from what's showing — swaps
+    /// `rows` to the merged result. Fire-and-forget: `refresh()` has
+    /// already returned with FTS-only results by the time this runs.
+    private func spawnSemanticRerank(query: String, generation: Int, ftsHits: [EntryRepository.SearchHit]) {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            guard let queryVector = await EmbeddingService.embed(text: query) else { return }
+            let semanticHits: [EmbeddingIndex.Result]
+            do {
+                let rawHits = try await EmbeddingIndex.shared.search(
+                    queryVector: queryVector,
+                    topK: Self.semanticTopK,
+                    store: self.store
+                )
+                // Drop weak matches before they ever reach RRF fusion —
+                // see `semanticScoreFloor`'s doc comment. A query with no
+                // real semantic signal should fuse in nothing, not the
+                // whole top-K by rank regardless of how unrelated it is.
+                semanticHits = rawHits.filter { $0.score >= Self.semanticScoreFloor }
+            } catch {
+                Log.cli.error("semantic re-rank search failed: \(String(describing: error), privacy: .public)")
+                return
+            }
+            guard !semanticHits.isEmpty else { return }
+            // Stale by the time the embed/search round-trip finished
+            // (query changed, popup dismissed and re-summoned, etc) —
+            // don't clobber whatever `refresh()` has moved on to.
+            guard generation == self.generation else { return }
+
+            let ftsIds = ftsHits.compactMap(\.row.entry.id)
+            let semanticIds = semanticHits.map(\.entryId)
+            let orderedIds = Self.fuseByReciprocalRank(ftsIds, semanticIds)
+            guard !orderedIds.isEmpty else { return }
+
+            let existingById = Dictionary(
+                uniqueKeysWithValues: ftsHits.compactMap { hit -> (Int64, EntryRepository.SearchHit)? in
+                    guard let id = hit.row.entry.id else { return nil }
+                    return (id, hit)
+                }
+            )
+            // Hydrate only the entries the FTS pass didn't already
+            // return a row for — a paraphrase with no literal overlap
+            // that the embedding index still ranked highly.
+            let missingIds = orderedIds.filter { existingById[$0] == nil }
+            var hydrated: [Int64: EntryRepository.EntryRow] = [:]
+            if !missingIds.isEmpty {
+                do {
+                    let fetched = try self.repository.rows(ids: missingIds, kinds: self.kindFilter)
+                    for row in fetched {
+                        if let id = row.entry.id { hydrated[id] = row }
+                    }
+                } catch {
+                    Log.cli.error("semantic re-rank hydrate failed: \(String(describing: error), privacy: .public)")
+                    return
+                }
+            }
+
+            var mergedRows: [EntryRepository.EntryRow] = []
+            let mergedSnippets = self.snippetsById
+            var mergedSources = self.matchSourcesById
+            mergedRows.reserveCapacity(min(orderedIds.count, self.searchLimit))
+            for id in orderedIds {
+                if mergedRows.count >= self.searchLimit { break }
+                if let hit = existingById[id] {
+                    mergedRows.append(hit.row)
+                    // Snippet/source already populated from the FTS pass.
+                } else if let row = hydrated[id] {
+                    mergedRows.append(row)
+                    mergedSources[id] = .semantic
+                }
+            }
+
+            guard generation == self.generation else { return }
+            // Only reassign when the fused order actually differs from
+            // what's on screen — same no-op-skip discipline as the rest
+            // of `refresh()`, so a query with no semantic lift over pure
+            // FTS never touches the LazyHStack a second time.
+            if self.rows != mergedRows {
+                // This reorder lands asynchronously, possibly after the
+                // user has already arrowed to a selection on the FTS-only
+                // rows that were showing. Follow that same entry to its
+                // new position (by id) rather than keeping the old
+                // numeric index, which would silently re-point the
+                // highlight — and a subsequent Return — at whatever
+                // entry the fused order now puts there instead.
+                let selectedId = self.rows.indices.contains(self.selectedIndex)
+                    ? self.rows[self.selectedIndex].entry.id
+                    : nil
+                self.rows = mergedRows
+                self.snippetsById = mergedSnippets
+                self.matchSourcesById = mergedSources
+                if let selectedId, let newIndex = self.rows.firstIndex(where: { $0.entry.id == selectedId }) {
+                    self.selectedIndex = newIndex
+                } else {
+                    self.selectedIndex = self.rows.isEmpty ? 0 : min(self.selectedIndex, self.rows.count - 1)
+                }
+            }
+        }
     }
 
     // MARK: - Live updates while the popup is visible
@@ -502,6 +705,25 @@ final class PopupState {
     private static func saveKindFilter(_ kinds: Set<EntryKind>) {
         let raw = kinds.map(\.rawValue).sorted()
         UserDefaults.standard.set(raw, forKey: kindFilterDefaultsKey)
+    }
+
+    // MARK: - Semantic search toggle persistence
+
+    private static let semanticSearchEnabledDefaultsKey = "cpdb.popup.semanticSearchEnabled"
+
+    private static func loadSemanticSearchEnabled() -> Bool {
+        // Default true: leaving it on costs nothing when
+        // `EmbeddingService` reports unavailable (the re-rank pass never
+        // even starts — see `semanticAvailable`), and finding paraphrased
+        // matches by default is the whole point of shipping this.
+        if UserDefaults.standard.object(forKey: semanticSearchEnabledDefaultsKey) == nil {
+            return true
+        }
+        return UserDefaults.standard.bool(forKey: semanticSearchEnabledDefaultsKey)
+    }
+
+    private static func saveSemanticSearchEnabled(_ enabled: Bool) {
+        UserDefaults.standard.set(enabled, forKey: semanticSearchEnabledDefaultsKey)
     }
 
     // MARK: - Remember-scroll-on-preview persistence

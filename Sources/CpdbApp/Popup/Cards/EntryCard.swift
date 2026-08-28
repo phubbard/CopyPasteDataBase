@@ -136,6 +136,8 @@ struct EntryCard: View {
                 badgeCapsule(label: "tag", color: .green)
             case .multiple:
                 badgeCapsule(label: "•••", color: .purple)
+            case .semantic:
+                badgeCapsule(label: "≈", color: .blue)
             case .text:
                 EmptyView()
             }

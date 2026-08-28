@@ -214,6 +214,45 @@ public struct EntryRepository {
         }
     }
 
+    /// Hydrate arbitrary entry ids into fully-joined `EntryRow`s (app +
+    /// device names), applying the same live-only + optional kind-filter
+    /// contract as `recent`/`search`. Order is NOT guaranteed to match
+    /// `ids` — callers that care (e.g. an RRF-merged rank list) re-sort
+    /// after the fetch.
+    ///
+    /// Used by the popup's semantic re-rank to pull in entries the FTS
+    /// pass didn't surface at all — a paraphrase with no literal token
+    /// overlap still has a hydrated row to show once the embedding index
+    /// ranks it.
+    public func rows(ids: [Int64], kinds: Set<EntryKind>? = nil) throws -> [EntryRow] {
+        guard !ids.isEmpty else { return [] }
+        return try store.dbQueue.read { db in
+            let idPlaceholders = Array(repeating: "?", count: ids.count).joined(separator: ",")
+            var sql = """
+                SELECT e.*, a.name AS app_name_, a.bundle_id AS app_bundle_id_, d.name AS device_name_
+                FROM entries e
+                LEFT JOIN apps a ON a.id = e.source_app_id
+                LEFT JOIN devices d ON d.id = e.source_device_id
+                WHERE e.deleted_at IS NULL AND e.id IN (\(idPlaceholders))
+            """
+            var args = StatementArguments(ids)
+            if let kinds = kinds, !kinds.isEmpty, kinds.count < EntryKind.allCases.count {
+                let kindPlaceholders = Array(repeating: "?", count: kinds.count).joined(separator: ",")
+                sql += " AND e.kind IN (\(kindPlaceholders))"
+                for k in kinds { args += [k.rawValue] }
+            }
+            return try Row.fetchAll(db, sql: sql, arguments: args).map { row in
+                let entry = try Entry(row: row)
+                return EntryRow(
+                    entry: entry,
+                    appName: row["app_name_"],
+                    appBundleId: row["app_bundle_id_"],
+                    deviceName: row["device_name_"]
+                )
+            }
+        }
+    }
+
     /// One row from the link-metadata backfill query: just enough
     /// to drive a fetch (the URL string + the local id we need to
     /// write back to).

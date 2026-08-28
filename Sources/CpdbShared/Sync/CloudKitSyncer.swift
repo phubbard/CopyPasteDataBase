@@ -1051,6 +1051,18 @@ public actor CloudKitSyncer {
             return (ins, upd, tomb)
         }
 
+        // A pulled entry can arrive with its embedding already attached
+        // (`upsert` applies it via `EntryRepository.saveEmbedding` inside
+        // the write above). Those entries are never local sweep
+        // candidates — model/revision already match — so nothing else
+        // would ever invalidate the cached search buffer for them; a
+        // passively-used Mac with a warm popup index would keep serving
+        // a semantic search that's silently missing every pulled entry
+        // until an unrelated local capture happened to invalidate it.
+        if entriesSnapshot.contains(where: { $0.embedding != nil }) {
+            await EmbeddingIndex.shared.invalidate()
+        }
+
         // Process ActionRequests targeting THIS device AFTER the
         // write txn closes so the executor (e.g. Mac's Restorer,
         // which opens its own DB read) doesn't deadlock against
