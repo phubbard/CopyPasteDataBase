@@ -20,6 +20,7 @@ struct DatabaseMigrationTests {
             "entries_fts",
             "cloudkit_push_queue",
             "cloudkit_state",
+            "entry_embeddings",
         ]
         try store.dbQueue.read { db in
             for name in expected {
@@ -151,6 +152,95 @@ struct DatabaseMigrationTests {
                 contentHash: hash, totalSize: 0
             )
             try e3.insert(db)
+        }
+    }
+
+    // MARK: - v12 semantic enrichment
+
+    @Test("v12 creates entry_embeddings with the expected columns")
+    func v12CreatesEntryEmbeddingsTable() throws {
+        let store = try Store.inMemory()
+        try store.dbQueue.read { db in
+            let exists = try db.tableExists("entry_embeddings")
+            #expect(exists)
+            let cols = try Row.fetchAll(db, sql: "PRAGMA table_info(entry_embeddings)")
+                .map { $0["name"] as String }
+            #expect(Set(cols) == ["entry_id", "model_id", "revision", "dims", "vector", "embedded_at"])
+        }
+    }
+
+    @Test("v12 adds chips_json, ai_title, ai_summary columns to entries")
+    func v12AddsEnrichmentColumns() throws {
+        let store = try Store.inMemory()
+        try store.dbQueue.read { db in
+            let info = try Row.fetchAll(db, sql: "PRAGMA table_info(entries)")
+                .map { $0["name"] as String }
+            #expect(info.contains("chips_json"))
+            #expect(info.contains("ai_title"))
+            #expect(info.contains("ai_summary"))
+        }
+    }
+
+    @Test("v12 leaves the existing title column untouched")
+    func v12DoesNotTouchTitleColumn() throws {
+        // Guards against a regression where an enrichment column
+        // accidentally collides with / replaces the pasteboard-derived
+        // `title` column instead of adding new `ai_title`/`ai_summary`
+        // columns alongside it.
+        let store = try Store.inMemory()
+        try store.dbQueue.read { db in
+            let info = try Row.fetchAll(db, sql: "PRAGMA table_info(entries)")
+                .map { $0["name"] as String }
+            #expect(info.contains("title"))
+            #expect(info.filter { $0 == "title" }.count == 1)
+        }
+    }
+
+    @Test("entry_embeddings row is deleted when its entry is deleted (ON DELETE CASCADE)")
+    func v12EmbeddingsCascadeOnEntryDelete() throws {
+        let store = try Store.inMemory()
+        try store.dbQueue.write { db in
+            var device = Device(identifier: "D-EMB", name: "M", kind: "mac")
+            try device.insert(db)
+            var entry = Entry(
+                uuid: Data(repeating: 0x30, count: 16),
+                createdAt: 1, capturedAt: 1, kind: .text,
+                sourceDeviceId: device.id!, title: nil, textPreview: "some text",
+                contentHash: Data(repeating: 0x31, count: 32), totalSize: 9
+            )
+            try entry.insert(db)
+
+            try EntryRepository.saveEmbedding(
+                entryId: entry.id!, modelId: "nl-contextual-v1", revision: 1,
+                dims: 3, vector: Data([0, 1, 2]), in: db
+            )
+            let countBefore = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM entry_embeddings")
+            #expect(countBefore == 1)
+
+            try db.execute(sql: "DELETE FROM entries WHERE id = ?", arguments: [entry.id])
+            let countAfter = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM entry_embeddings")
+            #expect(countAfter == 0)
+        }
+    }
+
+    @Test("running migrations twice is a no-op (idempotent)")
+    func migrationsAreIdempotent() throws {
+        // Store.inMemory() already runs the full migrator once; opening a
+        // second DatabaseQueue against the same migrator on a fresh file
+        // and running it again must not throw (GRDB's migrator tracks
+        // applied migrations in grdb_migrations and skips them).
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cpdb-migration-idempotent-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let dbPath = dir.appendingPathComponent("test.sqlite").path
+
+        let store1 = try Store(path: dbPath)
+        _ = store1
+        let store2 = try Store(path: dbPath)
+        try store2.dbQueue.read { db in
+            let exists = try db.tableExists("entry_embeddings")
+            #expect(exists)
         }
     }
 }

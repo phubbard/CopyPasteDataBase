@@ -301,7 +301,7 @@ public actor CloudKitSyncer {
                 in: zoneID
             )
             let record = CKRecord(recordType: CKSchema.RecordType.entry, recordID: recordID)
-            EntryRecordMapper.populate(record: record, entry: bundle.entry, source: bundle.source)
+            EntryRecordMapper.populate(record: record, entry: bundle.entry, source: bundle.source, embedding: bundle.embedding)
 
             if let (smallURL, largeURL) = try stageThumbnails(bundle.preview) {
                 if let u = smallURL { tempFiles.append(u) }
@@ -638,6 +638,10 @@ public actor CloudKitSyncer {
         var entry: Entry
         var source: EntryRecordMapper.SourceInfo
         var preview: PreviewRecord?
+        /// This entry's local embedding row, if it has one. Loaded
+        /// alongside everything else the mapper needs so a single
+        /// `dbQueue.read` builds the whole push record.
+        var embedding: EntryRecordMapper.EmbeddingInfo?
     }
 
     /// True when the named entry is live (deleted_at IS NULL).
@@ -671,7 +675,19 @@ public actor CloudKitSyncer {
                 deviceName: dev?.name ?? fallbackName
             )
             let preview = try PreviewRecord.fetchOne(db, key: entryId)
-            return EntryBundle(entry: entry, source: source, preview: preview)
+            let embedding: EntryRecordMapper.EmbeddingInfo? = try Row.fetchOne(
+                db,
+                sql: "SELECT model_id, revision, dims, vector FROM entry_embeddings WHERE entry_id = ?",
+                arguments: [entryId]
+            ).map { row in
+                EntryRecordMapper.EmbeddingInfo(
+                    modelId: row["model_id"],
+                    revision: row["revision"],
+                    dims: row["dims"],
+                    vector: row["vector"]
+                )
+            }
+            return EntryBundle(entry: entry, source: source, preview: preview, embedding: embedding)
         }
     }
 
@@ -1279,7 +1295,38 @@ public actor CloudKitSyncer {
             }
             existing.hashVersion = d.hashVersion
             existing.identityTag = d.identityTag
+            // Semantic enrichment (schema v12) — adopt-once, same spirit
+            // as linkTitle above: whichever device enriches first wins,
+            // and every other device just takes it on the next pull.
+            // These three have no separate "attempted" sentinel field
+            // (unlike linkFetchedAt), so the field's own nullability
+            // doubles as that sentinel: adopt remote only while local is
+            // still nil, keep local once it has a value.
+            if existing.chipsJson == nil { existing.chipsJson = d.chipsJson }
+            if existing.aiTitle == nil { existing.aiTitle = d.aiTitle }
+            if existing.aiSummary == nil { existing.aiSummary = d.aiSummary }
             try existing.update(db)
+            // Embedding lives in its own table, same adopt-once rule:
+            // only take the remote embedding if we don't already have
+            // one locally. (Revision-based re-adoption is a decision for
+            // the semantic-search feature work, not this foundation.)
+            if let embedding = d.embedding {
+                let hasLocalEmbedding = try Bool.fetchOne(
+                    db,
+                    sql: "SELECT EXISTS(SELECT 1 FROM entry_embeddings WHERE entry_id = ?)",
+                    arguments: [existing.id!]
+                ) ?? false
+                if !hasLocalEmbedding {
+                    try EntryRepository.saveEmbedding(
+                        entryId: existing.id!,
+                        modelId: embedding.modelId,
+                        revision: embedding.revision,
+                        dims: embedding.dims,
+                        vector: embedding.vector,
+                        in: db
+                    )
+                }
+            }
             // FTS follows the RESOLVED liveness: a row that ends up live
             // is searchable; one that ends up tombstoned must not be (so
             // an inbound delete that wins drops it from search, and an
@@ -1419,7 +1466,10 @@ public actor CloudKitSyncer {
                 linkFetchedAt: d.linkFetchedAt,
                 hashVersion: d.hashVersion,
                 identityTag: d.identityTag,
-                modifiedAt: d.modifiedAt
+                modifiedAt: d.modifiedAt,
+                chipsJson: d.chipsJson,
+                aiTitle: d.aiTitle,
+                aiSummary: d.aiSummary
             )
             // Insert hardening: a uuid (or content_hash) unique-constraint
             // collision must NOT abort the whole page's write transaction
@@ -1446,6 +1496,19 @@ public actor CloudKitSyncer {
             )
             try applyThumbnails(d, entryId: entry.id!, in: db)
             try drainOrphanFlavors(forHash: d.contentHash, entryId: entry.id!, blobs: blobs, in: db)
+            // Semantic enrichment (schema v12): a brand-new local row has
+            // no embedding to conflict with, so just adopt whatever the
+            // remote record carries.
+            if let embedding = d.embedding {
+                try EntryRepository.saveEmbedding(
+                    entryId: entry.id!,
+                    modelId: embedding.modelId,
+                    revision: embedding.revision,
+                    dims: embedding.dims,
+                    vector: embedding.vector,
+                    in: db
+                )
+            }
             Log.cli.info(
                 "pull: inserted id=\(entry.id ?? -1, privacy: .public) kind=\(d.kind.rawValue, privacy: .public) textprev=\"\(d.textPreview?.prefix(40) ?? "", privacy: .public)\""
             )

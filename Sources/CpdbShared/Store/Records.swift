@@ -66,6 +66,19 @@ public struct Entry: Codable, FetchableRecord, MutablePersistableRecord, Hashabl
     /// `created_at` on insert; bumped on every mutation.
     public var modifiedAt: Double = 0
 
+    /// JSON array of data chips detected in this entry's text (dates,
+    /// addresses, phone numbers, URLs, tracking numbers, flights,
+    /// money). NULL = not yet scanned by the chip detector. Adopt-once
+    /// enrichment, same convention as `linkTitle`.
+    public var chipsJson: String?
+    /// On-device Foundation-Models-generated short title. Distinct from
+    /// `title` (UTI/pasteboard-derived, never model-generated). NULL =
+    /// not yet enriched.
+    public var aiTitle: String?
+    /// On-device Foundation-Models-generated summary. NULL = not yet
+    /// enriched.
+    public var aiSummary: String?
+
     public static let databaseTableName = "entries"
 
     enum CodingKeys: String, CodingKey {
@@ -92,6 +105,9 @@ public struct Entry: Codable, FetchableRecord, MutablePersistableRecord, Hashabl
         case prevContentHash = "prev_content_hash"
         case identityTag     = "identity_tag"
         case modifiedAt      = "modified_at"
+        case chipsJson       = "chips_json"
+        case aiTitle         = "ai_title"
+        case aiSummary       = "ai_summary"
     }
 
     public mutating func didInsert(_ inserted: InsertionSuccess) {
@@ -121,7 +137,10 @@ public struct Entry: Codable, FetchableRecord, MutablePersistableRecord, Hashabl
         hashVersion: Int = 1,
         prevContentHash: Data? = nil,
         identityTag: String? = nil,
-        modifiedAt: Double = 0
+        modifiedAt: Double = 0,
+        chipsJson: String? = nil,
+        aiTitle: String? = nil,
+        aiSummary: String? = nil
     ) {
         self.id = id
         self.uuid = uuid
@@ -146,6 +165,9 @@ public struct Entry: Codable, FetchableRecord, MutablePersistableRecord, Hashabl
         self.prevContentHash = prevContentHash
         self.identityTag = identityTag
         self.modifiedAt = modifiedAt
+        self.chipsJson = chipsJson
+        self.aiTitle = aiTitle
+        self.aiSummary = aiSummary
     }
 }
 

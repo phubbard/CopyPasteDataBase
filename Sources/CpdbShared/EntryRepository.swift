@@ -642,4 +642,150 @@ public struct EntryRepository {
         "public.heic",
         "public.image",
     ]
+
+    // MARK: - Semantic enrichment (v12)
+
+    /// A stored embedding vector for one entry, exactly as persisted in
+    /// `entry_embeddings`. `vector` is `dims` × Float32, little-endian,
+    /// L2-normalized.
+    public struct EmbeddingRow: Sendable, Equatable {
+        public var entryId: Int64
+        public var modelId: String
+        public var revision: Int64
+        public var dims: Int64
+        public var vector: Data
+        public var embeddedAt: Double
+
+        public init(entryId: Int64, modelId: String, revision: Int64, dims: Int64, vector: Data, embeddedAt: Double) {
+            self.entryId = entryId
+            self.modelId = modelId
+            self.revision = revision
+            self.dims = dims
+            self.vector = vector
+            self.embeddedAt = embeddedAt
+        }
+    }
+
+    /// Upsert an entry's embedding row. Unlike every other writer in this
+    /// file, this takes the caller's `Database` directly instead of
+    /// opening its own `store.dbQueue.write` — it needs to compose inside
+    /// an existing transaction, most importantly `CloudKitSyncer.upsert`,
+    /// which persists the pulled entry row and its embedding atomically.
+    /// Mirrors `PushQueue`'s `in db:` convention for the same reason.
+    ///
+    /// Deliberately does NOT enqueue a CloudKit push and does NOT touch
+    /// `entries.modified_at` — this is enrichment, not a mutable-state
+    /// change (mirrors `setLinkMetadata`'s doc comment on that point).
+    /// Skipping the push-enqueue also matters for the pull path
+    /// specifically: `CloudKitSyncer.upsert` calls this to apply an
+    /// embedding it just pulled, and re-enqueueing that unchanged state
+    /// would push it right back for no reason. A future local writer
+    /// (e.g. a background embedder) that wants its result synced should
+    /// call `PushQueue.enqueue` itself in the same transaction, the same
+    /// way callers compose with `PushQueue` elsewhere.
+    public static func saveEmbedding(
+        entryId: Int64,
+        modelId: String,
+        revision: Int64,
+        dims: Int64,
+        vector: Data,
+        in db: Database
+    ) throws {
+        try db.execute(
+            sql: """
+                INSERT INTO entry_embeddings (entry_id, model_id, revision, dims, vector, embedded_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(entry_id) DO UPDATE SET
+                    model_id    = excluded.model_id,
+                    revision    = excluded.revision,
+                    dims        = excluded.dims,
+                    vector      = excluded.vector,
+                    embedded_at = excluded.embedded_at
+            """,
+            arguments: [entryId, modelId, revision, dims, vector, Date().timeIntervalSince1970]
+        )
+    }
+
+    /// The current embedding row for an entry, or nil if it hasn't been
+    /// embedded yet.
+    public func embedding(entryId: Int64) throws -> EmbeddingRow? {
+        try store.dbQueue.read { db in
+            try Row.fetchOne(
+                db,
+                sql: """
+                    SELECT entry_id, model_id, revision, dims, vector, embedded_at
+                    FROM entry_embeddings WHERE entry_id = ?
+                """,
+                arguments: [entryId]
+            ).map { row in
+                EmbeddingRow(
+                    entryId: row["entry_id"],
+                    modelId: row["model_id"],
+                    revision: row["revision"],
+                    dims: row["dims"],
+                    vector: row["vector"],
+                    embeddedAt: row["embedded_at"]
+                )
+            }
+        }
+    }
+
+    /// Live text/link entries that need a (re-)embed: either they have no
+    /// `entry_embeddings` row yet, or their existing row doesn't match
+    /// the caller's current `modelId`/`revision` (a model upgrade or a
+    /// revision bump). Newest-first, mirroring `imagesNeedingAnalysis` —
+    /// the background embedder works through recent captures first.
+    public func entriesNeedingEmbedding(modelId: String, revision: Int64, limit: Int) throws -> [Int64] {
+        try store.dbQueue.read { db in
+            try Int64.fetchAll(
+                db,
+                sql: """
+                    SELECT e.id FROM entries e
+                    LEFT JOIN entry_embeddings v ON v.entry_id = e.id
+                    WHERE e.kind IN ('text', 'link') AND e.deleted_at IS NULL
+                      AND (v.entry_id IS NULL OR v.model_id != ? OR v.revision != ?)
+                    ORDER BY e.created_at DESC
+                    LIMIT ?
+                """,
+                arguments: [modelId, revision, limit]
+            )
+        }
+    }
+
+    /// Persist the data-chip scan result for an entry. `json` is the
+    /// serialized chip array; pass nil for "not yet scanned" (the
+    /// column's own default) — a scan that found nothing should pass an
+    /// explicit `"[]"` so it's distinguishable from never having run.
+    /// Enrichment, not a mutable-state change: does not bump
+    /// `modified_at` (mirrors `setLinkMetadata`). Enqueues for CloudKit
+    /// push so siblings adopt the scan result instead of re-scanning.
+    public func setChips(entryId: Int64, json: String?) throws {
+        let now = Date().timeIntervalSince1970
+        try store.dbQueue.write { db in
+            try db.execute(
+                sql: "UPDATE entries SET chips_json = ? WHERE id = ? AND deleted_at IS NULL",
+                arguments: [json, entryId]
+            )
+            if db.changesCount > 0 {
+                try PushQueue.enqueue(entryId: entryId, in: db, now: now)
+            }
+        }
+    }
+
+    /// Persist Foundation-Models-generated title + summary for an entry.
+    /// Enrichment, not a mutable-state change: does not bump
+    /// `modified_at` (mirrors `setLinkMetadata`). Enqueues for CloudKit
+    /// push so siblings adopt the result instead of re-summarizing.
+    public func setAITitleSummary(entryId: Int64, title: String?, summary: String?) throws {
+        let now = Date().timeIntervalSince1970
+        try store.dbQueue.write { db in
+            try db.execute(
+                sql: "UPDATE entries SET ai_title = ?, ai_summary = ? WHERE id = ? AND deleted_at IS NULL",
+                arguments: [title, summary, entryId]
+            )
+            if db.changesCount > 0 {
+                try PushQueue.enqueue(entryId: entryId, in: db, now: now)
+            }
+        }
+    }
 }
