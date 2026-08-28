@@ -21,6 +21,30 @@ final class DaemonLifecycle {
     private var lock: DaemonLock?
     private var watcher: PasteboardWatcher?
     private var store: Store?
+    /// Polls `NSPasteboard.general.accessBehavior` (macOS 15.4+ preview;
+    /// see `PasteboardAccessMonitor`'s doc comment) and pauses/resumes
+    /// `watcher` when the OS reports the app has been denied pasteboard
+    /// access. Only created in `.capturing` mode — read-only mode never
+    /// owns a watcher to pause in the first place.
+    private var privacyMonitor: PasteboardAccessMonitor?
+    /// Tracks whether `watcher` is currently paused for a `.denied`
+    /// privacy status, so `applyPrivacyStatus` only calls `stop()`/
+    /// `start()` on an actual edge rather than on every poll tick
+    /// (`PasteboardWatcher.start()` isn't idempotent — a second call
+    /// without an intervening `stop()` would leak a second timer).
+    private var isPrivacyPaused = false
+    /// Fired whenever the pasteboard-access status changes, whether or
+    /// not it caused a pause — the Preferences/popup banner reacts to
+    /// every observed status, not just the pause edge. `AppDelegate`
+    /// wires this to update `PopupState.captureMode`.
+    var onPrivacyStatusChange: ((PasteboardAccessStatus) -> Void)?
+    /// Latest observed status. Set synchronously inside `start()` (in
+    /// `.capturing` mode) before that call returns, so `AppDelegate` can
+    /// read it once to seed the popup's *initial* banner — assigning
+    /// `onPrivacyStatusChange` only catches changes from that point on,
+    /// which would miss "already denied at launch". Stays nil in
+    /// read-only/not-started mode (no monitor is created there).
+    private(set) var privacyStatus: PasteboardAccessStatus?
 
     /// Open the store and attempt to acquire the daemon lock. On success,
     /// start the in-process watcher. On `heldBy` failure, fall back to
@@ -41,6 +65,14 @@ final class DaemonLifecycle {
             self.watcher = watcher
             self.mode = .capturing
             Log.daemon.info("cpdb.app captured daemon lock; watcher started")
+
+            let monitor = PasteboardAccessMonitor()
+            monitor.onStatusChange = { [weak self] status in
+                self?.applyPrivacyStatus(status)
+            }
+            self.privacyMonitor = monitor
+            monitor.start()
+            applyPrivacyStatus(monitor.status)
         } catch let error as DaemonLock.LockError {
             switch error {
             case .heldBy(let pid, let owner, _):
@@ -55,10 +87,40 @@ final class DaemonLifecycle {
     }
 
     func stop() {
+        privacyMonitor?.stop()
+        privacyMonitor = nil
         watcher?.stop()
         watcher = nil
         lock?.release()
         lock = nil
         mode = .notStarted
+        // Reset pause-tracking state along with everything else — a
+        // future start() begins a fresh `PasteboardWatcher` with no
+        // notion of "already paused", so `isPrivacyPaused` must agree,
+        // or the very first `applyPrivacyStatus` call after restart sees
+        // a false edge (or no edge at all) and either leaves capture
+        // running while denied, or double-starts the new watcher's timer.
+        isPrivacyPaused = false
+        privacyStatus = nil
+    }
+
+    /// Pause/resume `watcher` on the `.denied` ↔ not-`.denied` edge, and
+    /// always forward the raw status to `onPrivacyStatusChange` for the
+    /// UI. Guarded by `isPrivacyPaused` so repeated polls at the same
+    /// status are no-ops on the watcher itself.
+    private func applyPrivacyStatus(_ status: PasteboardAccessStatus) {
+        privacyStatus = status
+        let shouldPause = PasteboardAccessClassifier.shouldPauseCapture(for: status)
+        if shouldPause != isPrivacyPaused {
+            isPrivacyPaused = shouldPause
+            if shouldPause {
+                watcher?.stop()
+                Log.daemon.warning("pasteboard access denied — capture paused")
+            } else if mode == .capturing {
+                watcher?.start()
+                Log.daemon.info("pasteboard access restored — capture resumed")
+            }
+        }
+        onPrivacyStatusChange?(status)
     }
 }

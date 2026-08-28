@@ -43,6 +43,9 @@ struct PopupRootView: View {
             if case .readOnly(let holder) = state.captureMode {
                 readOnlyBanner(holder: holder)
             }
+            if case .privacyPaused(let reason) = state.captureMode {
+                privacyPausedBanner(reason: reason)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(.ultraThinMaterial)
@@ -248,6 +251,25 @@ struct PopupRootView: View {
             Text("Running read-only — capture daemon is held by \(holder). Stop it and restart the app to take over.")
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 6)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.orange.opacity(0.1))
+    }
+
+    private func privacyPausedBanner(reason: String) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+            Text("Capture paused — \(reason)")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+            Spacer()
+            Button("Open Settings…") {
+                PasteboardAccessMonitor.openSystemSettings()
+            }
+            .font(.system(size: 11))
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 6)

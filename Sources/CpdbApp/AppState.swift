@@ -137,6 +137,11 @@ final class PopupState {
     enum CaptureMode: Equatable {
         case capturing
         case readOnly(holder: String)
+        /// The OS reports this app's pasteboard access as denied (macOS
+        /// 15.4+ preview — see `PasteboardAccessMonitor`). `reason` is a
+        /// short human-readable string for the banner; capture itself is
+        /// already paused by `DaemonLifecycle` by the time this lands.
+        case privacyPaused(reason: String)
     }
 
     let store: Store

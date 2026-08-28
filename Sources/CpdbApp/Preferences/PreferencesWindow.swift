@@ -20,11 +20,29 @@ final class PreferencesWindowController {
     /// "Reset change token" and "Re-push everything" actions need a
     /// Store; pause is pure UserDefaults and works without one.
     private(set) var store: Store?
+    /// Mirrors `DaemonLifecycle`'s actual capture state, wired the same
+    /// way as `PopupController`'s banner: seeded at launch and updated
+    /// live via `onPrivacyStatusChange`. The Privacy section's "Capture
+    /// is paused." claim reads THIS rather than its own faster
+    /// `PasteboardAccessMonitor.liveProbe()` poll — that OS probe alone
+    /// can observe `.denied` up to 5 minutes before `DaemonLifecycle`'s
+    /// own (slower) monitor actually stops the watcher, which would
+    /// otherwise make Preferences assert a pause that hasn't happened
+    /// yet. Also distinguishes the CLI-writer case: this app has no
+    /// `PasteboardAccessMonitor` at all in `.readOnly` mode, so this
+    /// stays `.readOnly` and the pane can say so instead of implying a
+    /// pause that will never come from this process.
+    private(set) var captureMode: PopupState.CaptureMode = .capturing
 
     private init() {}
 
-    func configure(store: Store) {
+    func configure(store: Store, captureMode: PopupState.CaptureMode) {
         self.store = store
+        self.captureMode = captureMode
+    }
+
+    func updateCaptureMode(_ mode: PopupState.CaptureMode) {
+        captureMode = mode
     }
 
     func show() {
@@ -66,6 +84,14 @@ private struct PreferencesView: View {
     /// it doesn't burn CPU when the window is hidden.
     @State private var permissionPollerTask: Task<Void, Never>? = nil
     @State private var launchAtLoginEnabled = SMAppService.mainApp.status == .enabled
+    @State private var pasteboardAccessStatus: PasteboardAccessStatus = PasteboardAccessMonitor.liveProbe()
+    /// `DaemonLifecycle`'s actual capture state (mirrored via
+    /// `PreferencesWindowController`), refreshed on the same 5 s poll as
+    /// `pasteboardAccessStatus` below. Drives the Privacy section's
+    /// "Capture is paused." wording so it never claims a pause ahead of
+    /// (or independent of) the process that actually enacts one.
+    @State private var actualCaptureMode: PopupState.CaptureMode = PreferencesWindowController.shared.captureMode
+    @State private var secureInputSkipCount: Int = SecureInputGuard.skipCount
     @State private var dbPath = Paths.databaseURL.path
     @State private var dbSize = "—"
     @State private var totalEntries = "—"
@@ -320,6 +346,29 @@ private struct PreferencesView: View {
                 )
             }
 
+            Section("Privacy") {
+                LabeledContent("Pasteboard access", value: pasteboardAccessStatus.displayLabel)
+                if case .denied = pasteboardAccessStatus {
+                    Text(deniedCaptureStatusMessage)
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                    Button("Open System Settings…") {
+                        PasteboardAccessMonitor.openSystemSettings()
+                    }
+                } else {
+                    Text("Set to \"Always Allow\" in System Settings → Privacy & Security → Paste from Other Apps if you'd rather never see this prompted, once Apple enforces it.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                LabeledContent("Secure-input skips", value: "\(secureInputSkipCount)")
+                Text("Captures skipped this launch because a password field was focused elsewhere (macOS's secure keyboard input flag) — a coarse but free extra guard, independent of pasteboard access.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("Apple previewed an iOS-style permission prompt for programmatic pasteboard reads starting macOS 15.4. It isn't enforced yet outside a developer preview. To test cpdb's handling of it: `defaults write \(Paths.bundleId) EnablePasteboardPrivacyDeveloperPreview -bool yes`, relaunch, then set cpdb to Deny in the pane above.")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+
             Section("Storage") {
                 LabeledContent("Database", value: dbPath)
                     .lineLimit(1)
@@ -459,6 +508,31 @@ private struct PreferencesView: View {
         }
     }
 
+    /// Wording for the "Denied" caption, keyed off `actualCaptureMode`
+    /// (the real `DaemonLifecycle` state) rather than assuming a pause
+    /// follows immediately from `pasteboardAccessStatus == .denied`. See
+    /// `PreferencesWindowController.captureMode`'s doc comment for why
+    /// the two can disagree for up to 5 minutes, or indefinitely when
+    /// this app isn't the capture writer.
+    private var deniedCaptureStatusMessage: String {
+        switch actualCaptureMode {
+        case .privacyPaused:
+            return "cpdb can't read the clipboard until this is changed. Capture is paused."
+        case .readOnly:
+            // This app isn't the capture writer (another process, e.g.
+            // `cpdb-cli daemon`, holds the lock) — it has no privacy
+            // monitor of its own, so it never pauses anything here.
+            // Whether captures actually stop depends on that other
+            // process, which this pane can't see.
+            return "cpdb can't read the clipboard until this is changed. This app isn't the active capture writer, so check the process that is (e.g. `cpdb-cli daemon`) separately — it may keep capturing regardless."
+        case .capturing:
+            // Denied was just observed by this pane's faster probe;
+            // DaemonLifecycle's own (slower, up to 5-minute) monitor
+            // hasn't caught up and paused the watcher yet.
+            return "cpdb can't read the clipboard until this is changed. Capture will pause automatically within the next few minutes."
+        }
+    }
+
     /// Reusable row for the "Permissions" section. Renders a green
     /// checkmark / orange exclamation / neutral hourglass next to a
     /// state-appropriate label, plus a help blurb + "Open System
@@ -533,6 +607,9 @@ private struct PreferencesView: View {
                 if localNetworkStatus != .granted {
                     await refreshLocalNetwork()
                 }
+                pasteboardAccessStatus = PasteboardAccessMonitor.liveProbe()
+                actualCaptureMode = PreferencesWindowController.shared.captureMode
+                secureInputSkipCount = SecureInputGuard.skipCount
             }
         }
     }
