@@ -103,6 +103,19 @@ struct ChipDetectionTests {
         #expect(chips[0].t == ChipType.phone)
     }
 
+    @Test("QR payload that is a bare digit run (retail barcode/tracking number, no punctuation) does not become a phone chip")
+    func qrBareDigitRunDoesNotBecomePhoneChip() {
+        // An EAN-13 retail barcode decodes to a plain 13-digit string
+        // with no separators — `VNDetectBarcodesRequest` detects this
+        // symbology same as QR, and `ImageAnalysis.barcodePayloads`
+        // carries no symbology to distinguish it, so the phone sniff
+        // must require actual phone-number punctuation, not just a
+        // digit count in range.
+        let chips = QRChipMapper.chips(from: ["4006381333931"])
+        #expect(chips.count == 1)
+        #expect(chips[0].t != ChipType.phone)
+    }
+
     @Test("QR payload that is neither URL- nor phone-shaped becomes a generic text chip")
     func qrGenericPayloadBecomesTextChip() {
         let chips = QRChipMapper.chips(from: ["Employee Badge #4471"])
@@ -197,16 +210,36 @@ struct ChipDetectionTests {
         // `timeZone != nil` alone (the pre-fix behavior) renders this
         // chip as a bare date with no time, silently dropping "3pm"
         // from both the chip face and the generated .ics SUMMARY.
+        // Compare against `DateFormatter.localizedString` recomputed
+        // here from the chip's own ISO 8601 `v` field, rather than
+        // asserting a literal ":" separator — `DateFormatter`'s time
+        // style is locale-sensitive (e.g. fi_FI/da_DK render short
+        // times with "." instead of ":"), so a hardcoded ":" check is
+        // only ever true under en-US-shaped locale settings and would
+        // false-fail on a differently-configured machine even though
+        // the detector is behaving correctly. Recomputing the expected
+        // string with the same API under whatever `Locale.current`
+        // happens to be keeps this deterministic everywhere.
         let chips = TextChipDetector.classicChips(in: "Let's meet January 5, 2027 at 3pm")
         let dateChip = chips.first { $0.t == ChipType.date }
         #expect(dateChip != nil)
-        #expect(dateChip?.s.contains(":") == true)
+        let date = dateChip.flatMap { ISO8601DateFormatter().date(from: $0.v) }
+        #expect(date != nil)
+        if let date {
+            let expected = DateFormatter.localizedString(from: date, dateStyle: .medium, timeStyle: .short)
+            #expect(dateChip?.s == expected)
+        }
         // A bare date (no time-of-day mentioned at all) must still
         // render with no time component.
         let bareDateChips = TextChipDetector.classicChips(in: "Let's meet on January 5, 2027")
         let bareDateChip = bareDateChips.first { $0.t == ChipType.date }
         #expect(bareDateChip != nil)
-        #expect(bareDateChip?.s.contains(":") == false)
+        let bareDate = bareDateChip.flatMap { ISO8601DateFormatter().date(from: $0.v) }
+        #expect(bareDate != nil)
+        if let bareDate {
+            let expected = DateFormatter.localizedString(from: bareDate, dateStyle: .medium, timeStyle: .none)
+            #expect(bareDateChip?.s == expected)
+        }
     }
 
     @Test("TextChipDetector.detect ignores content past maxScanLength")

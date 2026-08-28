@@ -77,10 +77,23 @@ public enum QRChipMapper {
     /// Conservative bare-phone-number sniff for payloads with no `tel:`
     /// scheme — digits (plus common separators) only, in a plausible
     /// phone-number length range.
+    ///
+    /// Requires at least one non-digit phone-punctuation character
+    /// (`+ - ( ) .` or a space) — not just "digit-count in range".
+    /// `VNDetectBarcodesRequest` decodes every symbology Vision
+    /// supports, not just QR: a retail EAN-13/UPC-A barcode
+    /// ("4006381333931") or a bare 12-digit tracking number is *only*
+    /// digits and would otherwise satisfy the same 7-15-digit window,
+    /// misclassifying it as a tap-to-call phone chip instead of the
+    /// correct copy/tracking chip — `ImageAnalysis.barcodePayloads`
+    /// carries no symbology to tell the two apart, so punctuation is
+    /// the only signal left that this was actually formatted as a
+    /// phone number rather than a plain digit run.
     private static func looksLikePhoneNumber(_ s: String) -> Bool {
         let digitCount = s.filter(\.isNumber).count
         guard digitCount >= 7, digitCount <= 15 else { return false }
         let allowed = CharacterSet(charactersIn: "0123456789+-() .")
-        return s.unicodeScalars.allSatisfy { allowed.contains($0) }
+        guard s.unicodeScalars.allSatisfy({ allowed.contains($0) }) else { return false }
+        return s.contains { "+-() .".contains($0) }
     }
 }

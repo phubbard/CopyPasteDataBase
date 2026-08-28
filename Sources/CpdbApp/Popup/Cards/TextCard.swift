@@ -25,27 +25,48 @@ struct TextCard: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(firstLine)
-                .font(.system(size: 14, weight: .semibold, design: .rounded))
-                .lineLimit(2)
-                .multilineTextAlignment(.leading)
-                .fixedSize(horizontal: false, vertical: true)
+        // ZStack, not a single VStack with ChipRow as its last child:
+        // a long paste's `remaining` text can naturally size taller
+        // than the card's body slot, and a VStack lays ChipRow out
+        // *after* that overflow — past the bottom clip edge, so it
+        // never renders (that was the bug). Pinning ChipRow as a
+        // bottom-leading overlay, the same technique `ImageCard` uses
+        // for its own chip row, keeps it inside the visible band
+        // regardless of how tall the text above it wants to be.
+        ZStack(alignment: .bottomLeading) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(firstLine)
+                    .font(.system(size: 14, weight: .semibold, design: .rounded))
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
 
-            Text(remaining)
-                .font(.system(size: 11, design: .monospaced))
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.leading)
-                .lineLimit(nil)
-                // No maxHeight:.infinity here — under the LazyHStack an
-                // infinity-height child inflates past the card's body slot
-                // and the overflow guillotines the headline on the top
-                // clip edge (v3.2.2 regression). The EntryCard body slot
-                // is a fixed band with .topLeading + .clipped(); natural
-                // text height + bottom clipping is the documented look.
-                .frame(maxWidth: .infinity, alignment: .topLeading)
+                Text(remaining)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.leading)
+                    .lineLimit(nil)
+                    // No maxHeight:.infinity here — under the LazyHStack an
+                    // infinity-height child inflates past the card's body slot
+                    // and the overflow guillotines the headline on the top
+                    // clip edge (v3.2.2 regression). The EntryCard body slot
+                    // is a fixed band with .topLeading + .clipped(); natural
+                    // text height + bottom clipping is the documented look.
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+            }
+            .frame(maxWidth: .infinity, alignment: .topLeading)
 
-            ChipRow(chips: chips)
+            if !chips.isEmpty {
+                // `maxHeight: .infinity` here — not on the body text
+                // above — is what actually pins this row to the card's
+                // bottom edge: it claims the ZStack's full proposed
+                // height so `alignment: .bottomLeading` has room to
+                // place it, mirroring `ImageCard`'s identical
+                // `.frame(maxWidth: .infinity, maxHeight: .infinity,
+                // alignment: .bottomTrailing)` on its own `ChipRow`.
+                ChipRow(chips: chips)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+            }
         }
         .padding(12)
         // Clip the text to the card bounds instead of bleeding into the footer.

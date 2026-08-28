@@ -14,11 +14,20 @@ import Foundation
 /// comparison — no Vision, no network, just `NSDataDetector` over a
 /// capped text preview — so bolting a second, unrelated
 /// `kind IN ('text','link')` query onto the image sweeper would be a
-/// scope mismatch for work this cheap. QR/barcode chips need no
-/// equivalent backfiller: they piggyback for free on
-/// `ImageAnalysisSweeper`, which already calls `ImageIndexer.analyzeAndStore`
-/// per candidate image, and that function now runs barcode detection as
-/// part of the same Vision pass (see `ImageAnalyzer`).
+/// scope mismatch for work this cheap.
+///
+/// QR/barcode chips do NOT get the same free ride, despite appearances:
+/// `ImageAnalysisSweeper`'s candidate query
+/// (`EntryRepository.imagesNeedingAnalysis`) is gated on
+/// `analyzed_at IS NULL`, with no analyzer-version stamp. So the barcode
+/// detection `ImageAnalyzer` now runs as part of `analyzeAndStore`'s
+/// Vision pass only reaches images that are *freshly* captured, or
+/// pulled-in-unanalyzed, after this feature shipped — any image whose
+/// `analyzed_at` was already stamped by an older build never runs
+/// through this codepath again and so never gets a chance at a QR chip.
+/// Closing that gap needs its own analyzer-version-aware backfill (or a
+/// dedicated barcode-only candidate query), which is real, separate
+/// work — not something this type or the image sweeper currently do.
 public struct TextChipBackfiller {
     public let repository: EntryRepository
 

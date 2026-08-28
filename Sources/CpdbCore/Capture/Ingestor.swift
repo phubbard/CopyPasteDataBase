@@ -159,8 +159,19 @@ public struct Ingestor {
                     // last silently overwriting it. `Chip.merge` still
                     // turns an empty result into "[]" rather than
                     // leaving the row NULL/unscanned.
+                    //
+                    // `pushToCloud: false`: the capture-wake push
+                    // observer typically drains this entry's own insert
+                    // push within milliseconds, well before this
+                    // detached detection task finishes — so the default
+                    // `pushToCloud: true` would enqueue a second, full
+                    // re-push (re-staged flavor CKAssets included) just
+                    // to carry `chips_json`, data every peer re-derives
+                    // locally anyway. Same "converges locally, no need
+                    // to sync it" reasoning `TextChipBackfiller` already
+                    // uses for its own `setChipsIfUnset` call.
                     let json = Chip.merge(existingJson: nil, adding: chips)
-                    try repo.setChipsIfUnset(entryId: entryId, json: json)
+                    try repo.setChipsIfUnset(entryId: entryId, json: json, pushToCloud: false)
                 } catch {
                     Log.capture.error(
                         "chip detect failed for entry \(entryId, privacy: .public): \(String(describing: error), privacy: .public)"

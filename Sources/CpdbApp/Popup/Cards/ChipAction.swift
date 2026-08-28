@@ -7,27 +7,50 @@ import CpdbShared
 /// convenience shortcut, never the only way to get at the underlying
 /// value (it's still visible as plain text in the card body above it).
 enum ChipAction {
-    /// Debounce state for `perform`, below.
-    private static var lastFire: (key: String, at: Date)?
+    /// Pending, not-yet-fired taps keyed by `"\(chip.t)|\(chip.v)"`,
+    /// scheduled by `tap(_:)` below.
+    private static var pendingTaps: [String: DispatchWorkItem] = [:]
 
-    static func perform(_ chip: Chip) {
-        // `ChipRow` can't use a `Button` for these (see its doc
-        // comment) without swallowing the card's own double-click-to-
-        // paste gesture, and without `Button`'s single-hit-test
-        // exclusivity a double-click's two individual clicks can each
-        // independently recognize as a tap on this same chip — firing
-        // whatever the action is (open a URL, write + open an `.ics`
-        // file, ...) twice for what the user experienced as one click.
-        // `NSEvent.doubleClickInterval` is the same window AppKit uses
-        // to decide two clicks are "one double-click" rather than two
-        // separate single-clicks, so it's the right window to collapse
-        // here too.
+    /// Entry point for `ChipRow`'s tap gesture — NOT `perform(_:)`
+    /// directly. `ChipRow` can't use a `Button` for these (see its doc
+    /// comment) without swallowing the card's own double-click-to-
+    /// paste gesture, and without `Button`'s single-hit-test
+    /// exclusivity a double-click's two individual clicks each
+    /// independently recognize as a tap on this same chip — landing
+    /// alongside the ancestor card's `.onTapGesture(count: 2)` paste,
+    /// not instead of it. A same-chip double-click is therefore never
+    /// "the user tapped this chip twice"; it's "the user double-
+    /// clicked the card to paste it, and it happened to land on a
+    /// chip" — the chip action must NOT fire at all in that case (an
+    /// unexpected browser tab / `.ics` import alongside a paste the
+    /// user only meant as a paste), not just fire once instead of
+    /// twice.
+    ///
+    /// So a single tap doesn't act immediately: it schedules `perform`
+    /// after `NSEvent.doubleClickInterval` — the same window AppKit
+    /// itself uses to decide two clicks are "one double-click" rather
+    /// than two separate single-clicks. If a second tap on the SAME
+    /// chip arrives before that timer fires, it's part of a double-
+    /// click: cancel the pending action instead of performing (or
+    /// re-scheduling) it, and let the ancestor's paste gesture own the
+    /// click. A genuine single tap still acts, just after a brief,
+    /// user-imperceptible delay.
+    static func tap(_ chip: Chip) {
         let key = "\(chip.t)|\(chip.v)"
-        let now = Date()
-        if let last = lastFire, last.key == key, now.timeIntervalSince(last.at) < NSEvent.doubleClickInterval {
+        if let pending = pendingTaps[key] {
+            pending.cancel()
+            pendingTaps[key] = nil
             return
         }
-        lastFire = (key, now)
+        let work = DispatchWorkItem {
+            pendingTaps[key] = nil
+            perform(chip)
+        }
+        pendingTaps[key] = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + NSEvent.doubleClickInterval, execute: work)
+    }
+
+    static func perform(_ chip: Chip) {
         switch chip.t {
         case ChipType.date:
             openCalendarEvent(chip)

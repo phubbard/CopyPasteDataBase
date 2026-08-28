@@ -47,9 +47,10 @@ struct ChipRow: View {
     // chip would fire the chip action twice (once per click of the
     // pair) and never reach the card's paste gesture at all. A plain
     // view + `.simultaneousGesture` lets this tap and the ancestor's
-    // tap gestures both get a chance to recognize; `ChipAction.perform`
-    // carries its own same-chip debounce (see its doc comment) to
-    // collapse a double-click's two taps into one action.
+    // tap gestures both get a chance to recognize; calling
+    // `ChipAction.tap` (not `.perform` directly) is what keeps a
+    // double-click-to-paste that lands on a chip from ALSO firing the
+    // chip's action — see that method's doc comment.
     private func chipButton(_ chip: Chip) -> some View {
         HStack(spacing: 3) {
             Image(systemName: Self.symbol(for: chip.t))
@@ -67,7 +68,7 @@ struct ChipRow: View {
         .help(chip.s)
         .contentShape(Rectangle())
         .simultaneousGesture(
-            TapGesture().onEnded { ChipAction.perform(chip) }
+            TapGesture().onEnded { ChipAction.tap(chip) }
         )
     }
 
