@@ -15,13 +15,17 @@ import CpdbShared
 /// same check, just phrased as a runtime Bool for non-UI callers.
 @available(macOS 26.0, *)
 @MainActor
-final class TablePreviewController {
+final class TablePreviewController: NSObject, NSWindowDelegate {
     static let shared = TablePreviewController()
 
     private var window: NSWindow?
     private var model: TablePreviewModel?
+    /// The app frontmost before we bumped to `.regular` — captured in
+    /// `showWindow` and restored in `windowWillClose`. Mirrors
+    /// `PreviewCoordinator.previousAppOnOpen`.
+    private var previousApp: NSRunningApplication?
 
-    private init() {}
+    private override init() { super.init() }
 
     /// Show the window immediately in its loading state, then resolve
     /// asynchronously: load the entry's image bytes and run table
@@ -29,6 +33,16 @@ final class TablePreviewController {
     /// `Task.detached` hand-off to `ImageIndexer.analyzeAndStore`), and
     /// update the visible window when it finishes.
     func present(entryId: Int64, store: Store) {
+        // One-window-at-a-time with the popup — same contract Quick Look
+        // (`previewSelected()`) and Preferences (`PopupRootView`'s gear
+        // button) already follow. Without this, the popup's floating
+        // panel visually overlaps this window AND its local keyDown
+        // monitor (installed in `PopupController.show()`, removed only
+        // by `hide()`) keeps intercepting Return/Escape/Space here —
+        // Return would fire `pasteSelected()` instead of this window's
+        // own Copy button.
+        PopupController.shared.hide()
+
         let model = TablePreviewModel()
         self.model = model
         showWindow(model: model)
@@ -52,14 +66,28 @@ final class TablePreviewController {
             window.isReleasedWhenClosed = false
             window.setContentSize(NSSize(width: 560, height: 420))
             window.center()
+            window.delegate = self
             self.window = window
         }
         // Matches PreferencesWindowController: this is a normal utility
         // window, not the popup's nonactivating panel, so it needs
         // regular activation to become key and accept typing/clicks.
+        // Reversed in `windowWillClose` — the accessory app has no menu
+        // bar/Cmd-W, so the red close button is the only way out and
+        // must restore .accessory the way `PreviewCoordinator.dismiss()`
+        // does for Quick Look.
+        previousApp = PopupController.shared.previousApp
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
+    }
+
+    // MARK: - NSWindowDelegate
+
+    func windowWillClose(_ notification: Notification) {
+        NSApp.setActivationPolicy(.accessory)
+        previousApp?.activate()
+        previousApp = nil
     }
 
     /// Off-main: load the entry's largest image flavor and run Vision
