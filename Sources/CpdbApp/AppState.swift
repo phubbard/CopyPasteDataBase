@@ -360,6 +360,29 @@ final class PopupState {
     /// rank in the other.
     nonisolated static let rrfK = 60.0
 
+    /// Cap on how many nearest neighbors `EmbeddingIndex.search` returns
+    /// for a re-rank pass. Deliberately smaller than `searchLimit` (the
+    /// FTS/"recent" page size): a re-rank only ever needs a modest
+    /// number of genuinely-similar candidates to fuse in, and asking for
+    /// as many neighbors as the whole popup page (`searchLimit`) forces
+    /// `EmbeddingIndex` to score and return matches far down its ranked
+    /// list — which `semanticScoreFloor` below would filter out anyway,
+    /// so there's no point paying to rank and hydrate them.
+    nonisolated static let semanticTopK = 50
+
+    /// Minimum cosine similarity (`EmbeddingIndex.Result.score`, range
+    /// [-1, 1]) for a semantic hit to be treated as an actual match
+    /// rather than noise. `EmbeddingIndex.search` returns its top-K by
+    /// rank regardless of how weak the best available match is — a
+    /// typo/garbage query with zero real semantic signal still returns
+    /// up to top-K entries at whatever (possibly near-zero) similarity
+    /// happens to lead the pack. Without a floor those get fused in and
+    /// shown with the same ≈ badge as a genuine paraphrase match. 0.35 is
+    /// a conservative starting point pending real calibration against
+    /// `NLContextualEmbedding`'s actual similarity distribution — the
+    /// goal is "clearly related," not a precise threshold.
+    nonisolated static let semanticScoreFloor: Float = 0.35
+
     /// Merge two ranked id lists (FTS bm25 order, embedding cosine order)
     /// by Reciprocal Rank Fusion: each list contributes `1/(k+rank)`
     /// (rank is 1-based) for every id it contains, an id in both lists
@@ -400,11 +423,16 @@ final class PopupState {
             guard let queryVector = await EmbeddingService.embed(text: query) else { return }
             let semanticHits: [EmbeddingIndex.Result]
             do {
-                semanticHits = try await EmbeddingIndex.shared.search(
+                let rawHits = try await EmbeddingIndex.shared.search(
                     queryVector: queryVector,
-                    topK: self.searchLimit,
+                    topK: Self.semanticTopK,
                     store: self.store
                 )
+                // Drop weak matches before they ever reach RRF fusion —
+                // see `semanticScoreFloor`'s doc comment. A query with no
+                // real semantic signal should fuse in nothing, not the
+                // whole top-K by rank regardless of how unrelated it is.
+                semanticHits = rawHits.filter { $0.score >= Self.semanticScoreFloor }
             } catch {
                 Log.cli.error("semantic re-rank search failed: \(String(describing: error), privacy: .public)")
                 return
@@ -464,10 +492,24 @@ final class PopupState {
             // of `refresh()`, so a query with no semantic lift over pure
             // FTS never touches the LazyHStack a second time.
             if self.rows != mergedRows {
+                // This reorder lands asynchronously, possibly after the
+                // user has already arrowed to a selection on the FTS-only
+                // rows that were showing. Follow that same entry to its
+                // new position (by id) rather than keeping the old
+                // numeric index, which would silently re-point the
+                // highlight — and a subsequent Return — at whatever
+                // entry the fused order now puts there instead.
+                let selectedId = self.rows.indices.contains(self.selectedIndex)
+                    ? self.rows[self.selectedIndex].entry.id
+                    : nil
                 self.rows = mergedRows
                 self.snippetsById = mergedSnippets
                 self.matchSourcesById = mergedSources
-                self.selectedIndex = self.rows.isEmpty ? 0 : min(self.selectedIndex, self.rows.count - 1)
+                if let selectedId, let newIndex = self.rows.firstIndex(where: { $0.entry.id == selectedId }) {
+                    self.selectedIndex = newIndex
+                } else {
+                    self.selectedIndex = self.rows.isEmpty ? 0 : min(self.selectedIndex, self.rows.count - 1)
+                }
             }
         }
     }

@@ -105,6 +105,13 @@ public struct EmbeddingSweeper {
                         vector: vector,
                         in: db
                     )
+                    // saveEmbedding deliberately doesn't enqueue a push
+                    // itself (see its doc comment) — without this, a
+                    // vector this sweep generates for an entry whose
+                    // capture push already went out (the common case:
+                    // this sweep is the self-heal path, running well
+                    // after capture) would never reach sibling devices.
+                    try PushQueue.enqueue(entryId: entryId, in: db)
                 }
                 await EmbeddingIndex.shared.invalidate()
                 report.embedded += 1

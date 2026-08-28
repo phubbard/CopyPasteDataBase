@@ -39,6 +39,10 @@ public enum EmbeddingService {
     nonisolated(unsafe) private static var cachedModel: NLContextualEmbedding?
     nonisolated(unsafe) private static var cachedUnavailable = false
     nonisolated(unsafe) private static var loggedUnavailableOnce = false
+    /// In-flight model load, so concurrent first callers await the same
+    /// probe instead of each constructing/loading their own
+    /// `NLContextualEmbedding` — see `prepare()`.
+    nonisolated(unsafe) private static var loadTask: Task<NLContextualEmbedding?, Never>?
 
     /// True once the Latin-script model is loaded and ready to embed.
     /// False (persistently, until relaunch) once unavailability has been
@@ -129,8 +133,27 @@ public enum EmbeddingService {
         case .undecided: break
         }
 
+        // Three independent probes race by design at cold start (the
+        // popup's availability check, the periodic sweep's first tick,
+        // the first capture's embed hook) — without coalescing, every
+        // one of them would see `.undecided` above and construct,
+        // request assets for, and load its own `NLContextualEmbedding`
+        // in parallel, only for all but the last to be discarded. Route
+        // concurrent undecided callers onto the same in-flight `Task`
+        // instead so the model loads once.
+        let task: Task<NLContextualEmbedding?, Never> = withLock {
+            if let loadTask { return loadTask }
+            let t = Task { await Self.loadModel() }
+            loadTask = t
+            return t
+        }
+        return await task.value
+    }
+
+    private static func loadModel() async -> NLContextualEmbedding? {
         guard let model = NLContextualEmbedding(script: .latin) else {
             markUnavailable("NLContextualEmbedding(script: .latin) returned nil — unsupported on this OS")
+            withLock { loadTask = nil }
             return nil
         }
         if !model.hasAvailableAssets {
@@ -139,10 +162,12 @@ public enum EmbeddingService {
                 result = try await model.requestAssets()
             } catch {
                 markUnavailable("requestAssets threw: \(error)")
+                withLock { loadTask = nil }
                 return nil
             }
             guard result == .available else {
                 markUnavailable("assets not available after request (\(result))")
+                withLock { loadTask = nil }
                 return nil
             }
         }
@@ -150,10 +175,14 @@ public enum EmbeddingService {
             try model.load()
         } catch {
             markUnavailable("load() failed: \(error)")
+            withLock { loadTask = nil }
             return nil
         }
 
-        withLock { cachedModel = model }
+        withLock {
+            cachedModel = model
+            loadTask = nil
+        }
         return model
     }
 
@@ -174,6 +203,7 @@ public enum EmbeddingService {
             cachedModel = nil
             cachedUnavailable = false
             loggedUnavailableOnce = false
+            loadTask = nil
         }
     }
 

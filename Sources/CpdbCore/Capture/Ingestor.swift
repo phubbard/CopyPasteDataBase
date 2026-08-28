@@ -164,6 +164,14 @@ public struct Ingestor {
                                 vector: vector,
                                 in: db
                             )
+                            // saveEmbedding deliberately doesn't enqueue a
+                            // push itself (see its doc comment) — the
+                            // initial capture push almost always wins the
+                            // race against this detached embed Task, so
+                            // without a second enqueue here the vector
+                            // would ship with empty wire fields and never
+                            // get pushed again.
+                            try PushQueue.enqueue(entryId: entryId, in: db)
                         }
                         await EmbeddingIndex.shared.invalidate()
                     } catch {

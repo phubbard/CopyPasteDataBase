@@ -62,8 +62,8 @@ public actor EmbeddingIndex {
     /// `invalidate()`. Returns `[]` if the index is empty or the query's
     /// dimensionality doesn't match the loaded model's (e.g. mid-upgrade
     /// before a re-embed sweep finishes).
-    public func search(queryVector: Data, topK: Int, store: Store) throws -> [Result] {
-        try reloadIfNeeded(store: store)
+    public func search(queryVector: Data, topK: Int, store: Store) async throws -> [Result] {
+        try await reloadIfNeeded(store: store)
         guard let loaded, !loaded.entryIds.isEmpty, topK > 0 else { return [] }
         let query = EmbeddingService.float32Array(fromLittleEndianData: queryVector)
         guard query.count == loaded.dims else { return [] }
@@ -91,26 +91,86 @@ public actor EmbeddingIndex {
         return ranked.map { Result(entryId: loaded.entryIds[$0], score: scores[$0]) }
     }
 
-    private func reloadIfNeeded(store: Store) throws {
+    /// Rows fetched per round-trip while rebuilding the buffer. Chosen so
+    /// a full reload is many small reads rather than one giant one:
+    /// `store.dbQueue` is a single-connection `DatabaseQueue` shared with
+    /// every other synchronous read in the app (notably `PopupState`'s
+    /// summon-time and keystroke-time search, which run right on the
+    /// main thread) — one unbroken read of the whole table would hold
+    /// that queue for the full scan and stall those. Splitting into
+    /// chunks, each its own `read` call with a yield in between, lets a
+    /// competing read that arrives mid-reload get its turn between
+    /// chunks instead of waiting out the entire table.
+    private static let reloadChunkSize = 500
+
+    private func reloadIfNeeded(store: Store) async throws {
         if let loaded, loaded.generation == currentGeneration { return }
-        let rows = try store.dbQueue.read { db in
-            try Row.fetchAll(db, sql: "SELECT entry_id, dims, vector FROM entry_embeddings")
+        let generationAtStart = currentGeneration
+
+        var rows: [Row] = []
+        var offset = 0
+        while true {
+            let offsetForThisChunk = offset
+            let chunk = try await store.dbQueue.read { db in
+                try Row.fetchAll(
+                    db,
+                    sql: """
+                        SELECT entry_id, model_id, revision, dims, vector
+                        FROM entry_embeddings
+                        ORDER BY entry_id
+                        LIMIT ? OFFSET ?
+                    """,
+                    arguments: [Self.reloadChunkSize, offsetForThisChunk]
+                )
+            }
+            rows.append(contentsOf: chunk)
+            if chunk.count < Self.reloadChunkSize { break }
+            offset += chunk.count
+            await Task.yield()
         }
-        guard let firstDims = rows.first.map({ Int($0["dims"] as Int64) }), firstDims > 0 else {
+
+        // A concurrent invalidate() (or a whole second reload racing in
+        // from another `search` call) means this snapshot may already be
+        // stale — don't stamp it with a generation newer than what it
+        // actually reflects, and don't clobber a fresher `loaded` that
+        // finished first. The next `search` will reload again.
+        guard currentGeneration == generationAtStart else { return }
+        if let loaded, loaded.generation >= generationAtStart { return }
+
+        // Group by (model_id, revision) and keep only the largest group.
+        // A bare `dims` check on an arbitrary row (the previous
+        // approach) can't tell two same-dims models/revisions apart —
+        // it would silently fuse vectors from incompatible embedding
+        // spaces, where cosine similarity is meaningless. And picking
+        // whichever row happened to load first (oldest, by rowid) as
+        // the dims authority means one leftover stale-revision row can
+        // make every current row look "mismatched" and get skipped.
+        // The largest group is the current model in steady state, or
+        // whichever side is winning a mid-backfill transition — either
+        // way a single consistent embedding space.
+        struct GroupKey: Hashable {
+            var modelId: String
+            var revision: Int64
+        }
+        var groups: [GroupKey: [Row]] = [:]
+        for row in rows {
+            let key = GroupKey(modelId: row["model_id"], revision: row["revision"])
+            groups[key, default: []].append(row)
+        }
+        guard let winningRows = groups.values.max(by: { $0.count < $1.count }),
+              let firstDims = winningRows.first.map({ Int($0["dims"] as Int64) }),
+              firstDims > 0
+        else {
             loaded = Loaded(entryIds: [], dims: 0, vectors: [], generation: currentGeneration)
             return
         }
 
         var ids: [Int64] = []
-        ids.reserveCapacity(rows.count)
+        ids.reserveCapacity(winningRows.count)
         var buffer: [Float] = []
-        buffer.reserveCapacity(rows.count * firstDims)
-        for row in rows {
+        buffer.reserveCapacity(winningRows.count * firstDims)
+        for row in winningRows {
             let dims: Int64 = row["dims"]
-            // A model/revision upgrade mid-backfill can leave old- and
-            // new-dims rows coexisting briefly. Skip mismatched rows
-            // rather than crash or corrupt the buffer's row stride — the
-            // sweep will overwrite them with the new model's vector soon.
             guard Int(dims) == firstDims else { continue }
             let vectorData: Data = row["vector"]
             let floats = EmbeddingService.float32Array(fromLittleEndianData: vectorData)
