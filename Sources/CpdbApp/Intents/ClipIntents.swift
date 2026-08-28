@@ -68,23 +68,26 @@ struct PasteLatestIntent: AppIntent {
         guard let store = await AppReadiness.shared.waitForStore() else {
             throw ClipIntentError.storeNotReady
         }
-        guard try ClipIntentSupport.recentEntries(store: store, limit: 1).first != nil else {
+        guard try ClipIntentSupport.latestEntries(store: store, limit: 1).first != nil else {
             throw ClipIntentError.nothingToPaste
         }
-        PopupController.shared.pasteRecent(atIndex: 1)
+        PopupController.shared.pasteLatest()
         return .result()
     }
 }
 
-/// Pastes the Nth-most-recent clip (1 = newest, matching card position
-/// in the popup strip) into the frontmost app.
+/// Pastes the clip at position N in the popup strip (1 = the top card)
+/// into the frontmost app. Matches popup card order, which is
+/// pinned-first — so position 1 is a pinned entry whenever one exists,
+/// not necessarily the most recently captured clip (see
+/// `PasteLatestIntent` for that).
 struct PasteNthIntent: AppIntent {
     static let title: LocalizedStringResource = "Paste Clip by Position"
     static let description = IntentDescription(
-        "Pastes the Nth most recent clipboard entry (1 = newest) into the frontmost app."
+        "Pastes the clip at position N in the popup strip (1 = top card; pinned clips sort first) into the frontmost app."
     )
 
-    @Parameter(title: "Position", description: "1 = newest, 2 = second most recent, and so on.")
+    @Parameter(title: "Position", description: "Card position in the popup strip: 1 = top card, 2 = second, and so on. Pinned clips sort first.")
     var n: Int
 
     static var parameterSummary: some ParameterSummary {
@@ -125,7 +128,7 @@ struct TogglePinLatestIntent: AppIntent {
         guard let store = await AppReadiness.shared.waitForStore() else {
             throw ClipIntentError.storeNotReady
         }
-        guard try ClipIntentSupport.recentEntries(store: store, limit: 1).first != nil else {
+        guard try ClipIntentSupport.latestEntries(store: store, limit: 1).first != nil else {
             throw ClipIntentError.nothingToPaste
         }
         PopupController.shared.togglePinLatest()
@@ -137,13 +140,24 @@ struct TogglePinLatestIntent: AppIntent {
 /// the intents above. Each phrase must include `\(.applicationName)`
 /// per App Intents' requirement that the app name be discoverable in
 /// speech.
+///
+/// `SearchClipsIntent.query` and `PasteNthIntent.n` are deliberately
+/// left out of their phrases below — `appintentsmetadataprocessor`
+/// hard-rejects an open-ended `String`/`Int` `@Parameter` embedded in
+/// an `AppShortcut` phrase ("Invalid parameter type. AppEntity and
+/// AppEnum are the only allowed types", verified against this
+/// toolchain — only enumerable types resolve without a spoken
+/// disambiguation step). Omitting the parameter from the phrase is
+/// the documented shape for this case: Siri still runs the intent and
+/// prompts for the missing value as a follow-up, one beat slower than
+/// speaking it in one breath but not silently broken/unbuildable.
 struct ClipAppShortcuts: AppShortcutsProvider {
     static var appShortcuts: [AppShortcut] {
         AppShortcut(
             intent: SearchClipsIntent(),
             phrases: [
-                "Search my clipboard for \(\.$query) in \(.applicationName)",
-                "Search \(.applicationName) for \(\.$query)",
+                "Search my clipboard in \(.applicationName)",
+                "Search \(.applicationName)",
             ],
             shortTitle: "Search Clips",
             systemImageName: "magnifyingglass"
@@ -160,7 +174,7 @@ struct ClipAppShortcuts: AppShortcutsProvider {
         AppShortcut(
             intent: PasteNthIntent(),
             phrases: [
-                "Paste clip number \(\.$n) with \(.applicationName)",
+                "Paste a clip by position with \(.applicationName)",
             ],
             shortTitle: "Paste Clip by Position",
             systemImageName: "doc.on.clipboard.fill"

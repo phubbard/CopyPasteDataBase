@@ -8,12 +8,25 @@ import CpdbShared
 /// testable without a real popup panel, window server, or Spotlight —
 /// this is the "testable seam" the intents sit on top of.
 enum ClipIntentSupport {
-    /// Entries considered "recent" for intent purposes. Same ordering
-    /// `PopupState`/`EntryStripView` show — pinned-first, then
-    /// newest-first — so "your last clip" / "clip number N" always
-    /// matches what the user would see as card N in the popup itself.
+    /// Entries considered "recent" for intent purposes, in popup-card
+    /// order: pinned-first, then newest-first — matching what the user
+    /// would see as card N in the popup itself. Used by `PasteNthIntent`,
+    /// where "clip number N" should mean "the Nth card", pins included.
+    ///
+    /// For "your *last* clip" semantics (most recently *captured*,
+    /// regardless of pins), use `latestEntries` instead — pinned-first
+    /// ordering here would resolve "latest" to a days-old pinned entry
+    /// whenever one exists.
     static func recentEntries(store: Store, limit: Int) throws -> [EntryRepository.EntryRow] {
         try EntryRepository(store: store).recent(limit: limit)
+    }
+
+    /// Entries in pure capture order (`created_at` descending), ignoring
+    /// pin status. Backs `PasteLatestIntent` and `TogglePinLatestIntent`,
+    /// where "latest" must track the most recent copy, not whatever
+    /// happens to be pinned.
+    static func latestEntries(store: Store, limit: Int) throws -> [EntryRepository.EntryRow] {
+        try EntryRepository(store: store).recent(limit: limit, pinnedFirst: false)
     }
 
     /// 1-based index into `rows` (1 = newest/top card). Returns nil for

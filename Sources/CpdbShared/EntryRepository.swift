@@ -38,10 +38,17 @@ public struct EntryRepository {
     /// `kinds` takes precedence when both are supplied. An empty set is
     /// treated the same as nil — "match any kind" — so callers don't
     /// accidentally hide everything by clearing the UI.
+    /// - Parameter pinnedFirst: When true (the default, and what the
+    ///   popup itself uses), pinned entries sort ahead of everything
+    ///   else regardless of capture time. Pass false for "most recent"
+    ///   in the literal capture-order sense — e.g. the Latest-clip App
+    ///   Intents, where a days-old pin must not shadow what was just
+    ///   copied.
     public func recent(
         limit: Int,
         kind: EntryKind? = nil,
-        kinds: Set<EntryKind>? = nil
+        kinds: Set<EntryKind>? = nil,
+        pinnedFirst: Bool = true
     ) throws -> [EntryRow] {
         try store.dbQueue.read { db in
             var sql = """
@@ -66,7 +73,11 @@ public struct EntryRepository {
             // Pinned-first ordering: SQLite ORDER BY interprets boolean
             // expressions as 0/1, so `pinned DESC` puts pinned (1)
             // ahead of unpinned (0). Within each group, newest first.
-            sql += " ORDER BY e.pinned DESC, e.created_at DESC LIMIT ?"
+            if pinnedFirst {
+                sql += " ORDER BY e.pinned DESC, e.created_at DESC LIMIT ?"
+            } else {
+                sql += " ORDER BY e.created_at DESC LIMIT ?"
+            }
             args += [limit]
             return try Row.fetchAll(db, sql: sql, arguments: args).map { row in
                 let entry = try Entry(row: row)
@@ -496,7 +507,7 @@ public struct EntryRepository {
     /// row no-ops. Blob cleanup is handled by `cpdb gc` out of band.
     public func tombstone(id: Int64) throws {
         let now = Date().timeIntervalSince1970
-        try store.dbQueue.write { db in
+        let changed = try store.dbQueue.write { db -> Bool in
             try db.execute(
                 sql: """
                     UPDATE entries
@@ -508,16 +519,22 @@ public struct EntryRepository {
             // db.execute returns Void; row count comes from the
             // separate changesCount property. Skip the FTS + push
             // work when the UPDATE was a no-op (already tombstoned).
-            if db.changesCount > 0 {
-                // Remove from FTS so the deleted row stops showing
-                // up in search results. The entries row itself stays
-                // (with deleted_at set) until `cpdb gc` clears it.
-                try db.execute(
-                    sql: "DELETE FROM entries_fts WHERE rowid = ?",
-                    arguments: [id]
-                )
-                try PushQueue.enqueue(entryId: id, in: db, now: now)
-            }
+            guard db.changesCount > 0 else { return false }
+            // Remove from FTS so the deleted row stops showing
+            // up in search results. The entries row itself stays
+            // (with deleted_at set) until `cpdb gc` clears it.
+            try db.execute(
+                sql: "DELETE FROM entries_fts WHERE rowid = ?",
+                arguments: [id]
+            )
+            try PushQueue.enqueue(entryId: id, in: db, now: now)
+            return true
+        }
+        if changed {
+            NotificationCenter.default.post(
+                name: .cpdbEntryTombstoneChanged, object: nil,
+                userInfo: ["entryId": id, "deleted": true]
+            )
         }
     }
 
@@ -529,12 +546,12 @@ public struct EntryRepository {
     /// to be re-fetched.
     public func restore(id: Int64) throws {
         let now = Date().timeIntervalSince1970
-        try store.dbQueue.write { db in
+        let changed = try store.dbQueue.write { db -> Bool in
             try db.execute(
                 sql: "UPDATE entries SET deleted_at = NULL, modified_at = ? WHERE id = ? AND deleted_at IS NOT NULL",
                 arguments: [now, id]
             )
-            guard db.changesCount > 0 else { return }
+            guard db.changesCount > 0 else { return false }
             // Re-index FTS from the row's current fields.
             if let row = try Row.fetchOne(
                 db,
@@ -552,6 +569,68 @@ public struct EntryRepository {
                     ocrText: row["ocr_text"], imageTags: row["image_tags"], linkTitle: row["link_title"])
             }
             try PushQueue.enqueue(entryId: id, in: db, now: now)
+            return true
+        }
+        if changed {
+            NotificationCenter.default.post(
+                name: .cpdbEntryTombstoneChanged, object: nil,
+                userInfo: ["entryId": id, "deleted": false]
+            )
+        }
+    }
+
+    /// Ids of entries tombstoned (`deleted_at IS NOT NULL`) with
+    /// `id > sinceId`, restricted to `kinds`, ascending, capped at
+    /// `limit`. `cpdbEntryTombstoneChanged` covers deletes that
+    /// originate from `tombstone(id:)` itself, but a tombstone can also
+    /// arrive as a raw SQL write from the CloudKit pull path (a
+    /// sibling device's delete) without going through here — this is
+    /// the reconciliation query a mirror like `SpotlightDonationService`
+    /// polls to catch those too.
+    public func tombstonedIds(sinceId: Int64, kinds: Set<EntryKind>, limit: Int) throws -> [Int64] {
+        guard !kinds.isEmpty else { return [] }
+        return try store.dbQueue.read { db in
+            let placeholders = Array(repeating: "?", count: kinds.count).joined(separator: ",")
+            var args: StatementArguments = [sinceId]
+            for k in kinds { args += [k.rawValue] }
+            args += [limit]
+            return try Int64.fetchAll(
+                db,
+                sql: """
+                    SELECT id FROM entries
+                    WHERE deleted_at IS NOT NULL AND id > ? AND kind IN (\(placeholders))
+                    ORDER BY id ASC LIMIT ?
+                """,
+                arguments: args
+            )
+        }
+    }
+
+    /// Live (non-tombstoned) entries with `id > sinceId`, restricted to
+    /// `kinds`, ascending, capped at `limit`. The paging counterpart to
+    /// `recent` — that one is capped + newest/pinned-first, built for
+    /// "what should the popup show right now"; this one is for a
+    /// caller that needs to walk *all* matching history exactly once,
+    /// oldest-first, such as `SpotlightDonationService`'s catch-up
+    /// pass over a whole imported archive (`recent(limit: 200)` there
+    /// meant a 200-item cap forever, and pinned entries could crowd
+    /// unpinned ones out of that cap entirely).
+    public func liveEntries(sinceId: Int64, kinds: Set<EntryKind>, limit: Int) throws -> [EntryRow] {
+        guard !kinds.isEmpty else { return [] }
+        return try store.dbQueue.read { db in
+            let placeholders = Array(repeating: "?", count: kinds.count).joined(separator: ",")
+            var args: StatementArguments = [sinceId]
+            for k in kinds { args += [k.rawValue] }
+            args += [limit]
+            return try Row.fetchAll(
+                db,
+                sql: """
+                    SELECT * FROM entries
+                    WHERE deleted_at IS NULL AND id > ? AND kind IN (\(placeholders))
+                    ORDER BY id ASC LIMIT ?
+                """,
+                arguments: args
+            ).map { row in EntryRow(entry: try Entry(row: row)) }
         }
     }
 

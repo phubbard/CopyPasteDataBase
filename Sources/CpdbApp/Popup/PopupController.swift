@@ -252,12 +252,18 @@ final class PopupController {
         state?.query = query
     }
 
-    /// Backs `PasteLatestIntent` (n=1) and `PasteNthIntent`. Deliberately
-    /// does NOT show the popup first — an intent-driven paste should be
-    /// invisible when it succeeds, same as a Shortcut running silently.
-    /// `previousApp` is captured here (frontmost app at intent-fire
-    /// time) rather than relying on a stale value from the last popup
-    /// summon, matching `pasteSelected()`'s contract.
+    /// Backs `PasteNthIntent`. Deliberately does NOT show the popup
+    /// first — an intent-driven paste should be invisible when it
+    /// succeeds, same as a Shortcut running silently. `previousApp` is
+    /// captured here (frontmost app at intent-fire time) rather than
+    /// relying on a stale value from the last popup summon, matching
+    /// `pasteSelected()`'s contract.
+    ///
+    /// Uses popup-card ordering (pinned-first) via
+    /// `ClipIntentSupport.recentEntries` — "clip number N" means "the
+    /// Nth card", pins included, matching what `PasteNthIntent`
+    /// documents. For "my *last* clip" regardless of pins, see
+    /// `pasteLatest()`.
     func pasteRecent(atIndex n: Int) {
         guard let state = state else { return }
         let rows = (try? ClipIntentSupport.recentEntries(store: state.store, limit: max(n, 1))) ?? []
@@ -271,29 +277,49 @@ final class PopupController {
         Log.cli.info("pasteRecent(atIndex: \(n, privacy: .public)) entry \(id, privacy: .public)")
     }
 
-    /// Backs `TogglePinLatestIntent`. Toggles the pin on the single
-    /// newest entry (recent index 1) — same ordering
-    /// `ClipIntentSupport.recentEntries` and the popup itself use.
+    /// Backs `PasteLatestIntent`. Pastes the entry with the newest
+    /// `created_at`, ignoring pin status — same no-popup contract as
+    /// `pasteRecent(atIndex:)`, but resolved via `ClipIntentSupport
+    /// .latestEntries` so a pinned entry from last week never shadows
+    /// what was just copied.
+    func pasteLatest() {
+        guard let state = state else { return }
+        let rows = (try? ClipIntentSupport.latestEntries(store: state.store, limit: 1)) ?? []
+        guard let row = rows.first, let id = row.entry.id else {
+            Log.cli.info("pasteLatest(): nothing to paste")
+            return
+        }
+        previousApp = NSWorkspace.shared.frontmostApplication
+        let action = PasteAction(store: state.store, previousApp: previousApp)
+        action.paste(entryId: id)
+        Log.cli.info("pasteLatest() entry \(id, privacy: .public)")
+    }
+
+    /// Backs `TogglePinLatestIntent`. Toggles the pin on the entry with
+    /// the newest `created_at`, ignoring pin status — resolved via
+    /// `ClipIntentSupport.latestEntries` so pinning a fresh copy can't
+    /// instead un-pin whatever was pinned before it.
     func togglePinLatest() {
         guard let state = state else { return }
-        let rows = (try? ClipIntentSupport.recentEntries(store: state.store, limit: 1)) ?? []
+        let rows = (try? ClipIntentSupport.latestEntries(store: state.store, limit: 1)) ?? []
         guard let row = rows.first, let id = row.entry.id else { return }
         state.togglePin(id: id, currentlyPinned: row.entry.pinned)
     }
 
     /// Backs the Spotlight-donation / `cpdb://clip/<id>` click-through:
     /// show the popup and land selection + scroll on one specific
-    /// entry. No-ops (still shows the popup) if the id isn't among the
-    /// current "most recent" rows — the entry may have aged out of the
-    /// unfiltered view or been deleted since it was donated.
+    /// entry. Uses `PopupState.revealAndSelect`, which resets any
+    /// stale kind-filter/search state and falls back to a direct fetch
+    /// for an entry older than the popup's default view — a Spotlight
+    /// target is disproportionately likely to be exactly that. Only
+    /// no-ops (still shows the popup, no selection) if the entry was
+    /// deleted since it was donated.
     func showAndSelect(entryId: Int64) {
         show()
-        guard let state = state,
-              let index = state.rows.firstIndex(where: { $0.entry.id == entryId }) else {
-            Log.cli.info("showAndSelect(entryId: \(entryId, privacy: .public)): not found in current rows")
+        guard let state = state, state.revealAndSelect(entryId: entryId) else {
+            Log.cli.info("showAndSelect(entryId: \(entryId, privacy: .public)): entry no longer exists")
             return
         }
-        state.selectedIndex = index
         state.scrollToken &+= 1
     }
 

@@ -765,13 +765,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// donated Spotlight item's `contentURL` points at (see
     /// `SpotlightDonationService.searchableItem(for:)`). Requires the
     /// `CFBundleURLTypes` scheme registration in Info.plist.
+    ///
+    /// On a cold launch (app not already running), AppKit can deliver
+    /// this open-URL event before `applicationDidFinishLaunching` has
+    /// run `PopupController.configure`/`AppReadiness.markReady` — the
+    /// classic kAEGetURL-before-launch-finishes timing. Hop through
+    /// `AppReadiness.waitForStore()` (same guard every intent's
+    /// `perform()` uses) so the click-through survives that race
+    /// instead of silently no-oping against an unconfigured
+    /// `PopupController`.
     func application(_ application: NSApplication, open urls: [URL]) {
-        for url in urls {
+        let ids = urls.compactMap { url -> Int64? in
             guard let id = ClipDeepLink.entryId(from: url) else {
                 Log.cli.info("ignoring unrecognized URL open: \(url.absoluteString, privacy: .public)")
-                continue
+                return nil
             }
-            PopupController.shared.showAndSelect(entryId: id)
+            return id
+        }
+        guard !ids.isEmpty else { return }
+        Task { @MainActor in
+            guard await AppReadiness.shared.waitForStore() != nil else {
+                Log.cli.error("application(_:open:) timed out waiting for store readiness")
+                return
+            }
+            for id in ids {
+                PopupController.shared.showAndSelect(entryId: id)
+            }
         }
     }
 
@@ -779,7 +798,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// a `CSSearchableItem` result invokes this with an
     /// `NSUserActivity` instead of routing through `contentURL` /
     /// `application(_:open:)`. Handling both means the deep link works
-    /// regardless of which path System Search takes.
+    /// regardless of which path System Search takes. Same cold-launch
+    /// readiness race as `application(_:open:)` above — see its doc
+    /// comment.
     func application(
         _ application: NSApplication,
         continue userActivity: NSUserActivity,
@@ -789,7 +810,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
               let uniqueId = userActivity.userInfo?[CSSearchableItemActivityIdentifier] as? String,
               let id = SpotlightDonationService.entryId(fromUniqueIdentifier: uniqueId)
         else { return false }
-        PopupController.shared.showAndSelect(entryId: id)
+        Task { @MainActor in
+            guard await AppReadiness.shared.waitForStore() != nil else {
+                Log.cli.error("application(_:continue:) timed out waiting for store readiness")
+                return
+            }
+            PopupController.shared.showAndSelect(entryId: id)
+        }
         return true
     }
 

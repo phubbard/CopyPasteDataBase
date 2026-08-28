@@ -164,11 +164,21 @@ struct SpotlightDonationServiceTests {
 
     @Test("SpotlightPrefs defaults to disabled")
     func prefsDefaultOff() {
-        // Fresh UserDefaults key in the test process's domain — asserts
-        // the *default*, not a value some other test left behind.
-        let key = "cpdb.spotlight.enabled.testonly.\(UUID().uuidString)"
-        #expect(UserDefaults.standard.object(forKey: key) == nil)
-        #expect(UserDefaults.standard.bool(forKey: key) == false)
+        // Exercises the actual key/getter this privacy-critical default
+        // gates on — a prior version of this test asserted on an
+        // unrelated freshly-generated UserDefaults key instead, which
+        // could never fail no matter what `SpotlightPrefs.enabled`
+        // defaulted to. Saves and restores whatever was already there
+        // (a prior test run, or a real preference on a dev machine
+        // sharing this UserDefaults domain) so this is non-destructive.
+        let key = SpotlightPrefs.enabledKey
+        let previous = UserDefaults.standard.object(forKey: key)
+        defer {
+            if let previous { UserDefaults.standard.set(previous, forKey: key) }
+            else { UserDefaults.standard.removeObject(forKey: key) }
+        }
+        UserDefaults.standard.removeObject(forKey: key)
+        #expect(SpotlightPrefs.enabled == false)
     }
 }
 
@@ -258,6 +268,39 @@ struct PopupControllerIntentPlumbingTests {
         defer { PopupController.shared.hide() }
         #expect(PopupController.shared.state?.selectedEntry?.id == target)
         #expect((PopupController.shared.state?.scrollToken ?? 0) != tokenBefore)
+    }
+
+    @Test("showAndSelect resets a stale kind filter that would otherwise hide the target")
+    func showAndSelectClearsBlockingKindFilter() throws {
+        let store = try makeStoreWithRows()
+        configureFreshController(store: store)
+        let rows = try EntryRepository(store: store).recent(limit: 10)
+        let target = rows[1].entry.id!
+        // Every row `makeStoreWithRows` inserts is `.text`; filtering
+        // to `.image` only leaves the target unreachable through the
+        // normal "current rows" lookup, same shape as a leftover chip
+        // selection from the popup's last session.
+        PopupController.shared.state?.kindFilter = [.image]
+        defer { PopupController.shared.hide() }
+        PopupController.shared.showAndSelect(entryId: target)
+        #expect(PopupController.shared.state?.selectedEntry?.id == target)
+        #expect(PopupController.shared.state?.kindFilter.isEmpty == true)
+    }
+
+    @Test("showAndSelect splices in an entry older than the popup's default window")
+    func showAndSelectSplicesInAgedOutEntry() throws {
+        // One more than PopupState's default `recentLimit` (200), so
+        // the oldest row can never appear in an unfiltered `recent`
+        // fetch — the donated-corpus-vs-capped-view mismatch a
+        // Spotlight click-through hits after enough clips accumulate.
+        let store = try makeStoreWithRows(count: 201)
+        configureFreshController(store: store)
+        let rows = try EntryRepository(store: store).recent(limit: 201, pinnedFirst: false)
+        let oldest = rows.last!.entry.id!
+        #expect(PopupController.shared.state?.rows.contains { $0.entry.id == oldest } == false)
+        defer { PopupController.shared.hide() }
+        PopupController.shared.showAndSelect(entryId: oldest)
+        #expect(PopupController.shared.state?.selectedEntry?.id == oldest)
     }
 }
 #endif

@@ -28,6 +28,15 @@ enum SpotlightPrefs {
         get { Int64(UserDefaults.standard.integer(forKey: highWaterMarkKey)) }
         set { UserDefaults.standard.set(newValue, forKey: highWaterMarkKey) }
     }
+
+    /// Highest entry id already checked by the tombstone-reconciliation
+    /// sweep (see `SpotlightDonationService.reconcileTombstones`).
+    /// Bounds that query the same way `highWaterMarkId` bounds donation.
+    private static let reconciledTombstoneKey = "cpdb.spotlight.reconciledTombstoneId"
+    static var reconciledTombstoneId: Int64 {
+        get { Int64(UserDefaults.standard.integer(forKey: reconciledTombstoneKey)) }
+        set { UserDefaults.standard.set(newValue, forKey: reconciledTombstoneKey) }
+    }
 }
 
 /// One donated Spotlight item, decoupled from `CSSearchableItem` so
@@ -63,6 +72,7 @@ final class SpotlightDonationService {
 
     private var store: Store?
     private var observer: NSObjectProtocol?
+    private var tombstoneObserver: NSObjectProtocol?
 
     private init() {}
 
@@ -76,9 +86,27 @@ final class SpotlightDonationService {
         observer = NotificationCenter.default.addObserver(
             forName: .cpdbLocalEntryIngested, object: nil, queue: .main
         ) { [weak self] _ in
-            Task { @MainActor [weak self] in await self?.donatePendingIfEnabled() }
+            Task { @MainActor [weak self] in
+                await self?.donatePendingIfEnabled()
+                await self?.reconcileTombstones()
+            }
         }
-        Task { await donatePendingIfEnabled() }
+        // Immediate removal/re-donation for user-initiated deletes,
+        // undo, and redo (all funnel through `EntryRepository.tombstone`/
+        // `.restore`) — don't leave a just-deleted clip searchable until
+        // the next capture-driven pass happens to run.
+        tombstoneObserver = NotificationCenter.default.addObserver(
+            forName: .cpdbEntryTombstoneChanged, object: nil, queue: .main
+        ) { [weak self] note in
+            guard let id = note.userInfo?["entryId"] as? Int64,
+                  let deleted = note.userInfo?["deleted"] as? Bool
+            else { return }
+            Task { @MainActor [weak self] in await self?.handleTombstoneChange(entryId: id, deleted: deleted) }
+        }
+        Task {
+            await donatePendingIfEnabled()
+            await reconcileTombstones()
+        }
     }
 
     /// Preferences toggle handler. Turning on kicks off an immediate
@@ -89,28 +117,98 @@ final class SpotlightDonationService {
     func setEnabled(_ enabled: Bool) {
         SpotlightPrefs.enabled = enabled
         if enabled {
-            Task { await donatePendingIfEnabled() }
+            Task {
+                await donatePendingIfEnabled()
+                await reconcileTombstones()
+            }
         } else {
             Task { await undonateAll() }
         }
     }
 
-    /// Donate any text/link entries newer than the high-water mark.
-    /// No-ops (cheaply) when the preference is off or nothing is new.
+    /// Reacts to `.cpdbEntryTombstoneChanged` — removes a just-deleted
+    /// entry's donated item immediately, or re-donates it if the
+    /// delete was undone (a no-op unless the current text/preview still
+    /// maps to a payload; `donatePendingIfEnabled`'s next pass would
+    /// otherwise skip it forever since its id is already below the
+    /// high-water mark).
+    private func handleTombstoneChange(entryId: Int64, deleted: Bool) async {
+        guard SpotlightPrefs.enabled else { return }
+        let identifier = "\(Self.uniqueIdPrefix)\(entryId)"
+        do {
+            if deleted {
+                try await CSSearchableIndex.default().deleteSearchableItems(withIdentifiers: [identifier])
+            } else if let store, let entry = try? EntryRepository(store: store).fetch(id: entryId),
+                      let payload = Self.payload(for: EntryRepository.EntryRow(entry: entry)) {
+                try await CSSearchableIndex.default().indexSearchableItems([Self.searchableItem(for: payload)])
+            }
+        } catch {
+            Log.cli.error("spotlight tombstone-change sync failed: \(String(describing: error), privacy: .public)")
+        }
+    }
+
+    /// Catches donated items whose entry was tombstoned by a path other
+    /// than `EntryRepository.tombstone(id:)` — chiefly a CloudKit pull
+    /// applying a sibling device's delete via a raw SQL write, which
+    /// `.cpdbEntryTombstoneChanged` never sees. Piggybacks on the same
+    /// triggers as `donatePendingIfEnabled` (capture-wake notification,
+    /// enable toggle, app launch) rather than its own timer.
+    func reconcileTombstones() async {
+        guard SpotlightPrefs.enabled, let store else { return }
+        let repo = EntryRepository(store: store)
+        let since = SpotlightPrefs.reconciledTombstoneId
+        guard let ids = try? repo.tombstonedIds(sinceId: since, kinds: [.text, .link], limit: 500),
+              !ids.isEmpty
+        else { return }
+        let identifiers = ids.map { "\(Self.uniqueIdPrefix)\($0)" }
+        do {
+            try await CSSearchableIndex.default().deleteSearchableItems(withIdentifiers: identifiers)
+            SpotlightPrefs.reconciledTombstoneId = max(since, ids.max() ?? since)
+            Log.cli.info("spotlight: reconciled \(identifiers.count, privacy: .public) tombstoned item(s)")
+        } catch {
+            Log.cli.error("spotlight reconciliation failed: \(String(describing: error), privacy: .public)")
+        }
+    }
+
+    /// Caps how many `-emit-const-values`-sized pages (`pageSize` each)
+    /// a single call walks. A years-old imported archive can be tens
+    /// of thousands of rows; without a cap, the very first
+    /// capture-triggered call after enabling the preference would
+    /// block on indexing the entire thing in one synchronous sweep.
+    /// Capping just means catch-up spans a few more trigger firings
+    /// (captures happen often) rather than fewer, larger ones — the
+    /// high-water mark still advances every page, so no progress is
+    /// lost between calls.
+    private static let maxPagesPerCall = 10
+    private static let pageSize = 200
+
+    /// Donate any live text/link entries newer than the high-water
+    /// mark, oldest-first, paging until caught up (or `maxPagesPerCall`
+    /// is hit). Ascending id order rather than `recent`'s pinned/
+    /// newest-first — pin status has nothing to do with "worth
+    /// finding in Spotlight", and letting it reorder this walk is what
+    /// let pinned entries crowd unpinned ones out of a fixed-size
+    /// window before this paged. No-ops (cheaply) when the preference
+    /// is off or nothing is new.
     func donatePendingIfEnabled() async {
         guard SpotlightPrefs.enabled, let store else { return }
         let repo = EntryRepository(store: store)
-        let highWater = SpotlightPrefs.highWaterMarkId
-        guard let rows = try? repo.recent(limit: 200, kinds: [.text, .link]) else { return }
-        let pending = rows.filter { ($0.entry.id ?? 0) > highWater }
-        guard !pending.isEmpty else { return }
-        let items = pending.compactMap(Self.payload(for:)).map(Self.searchableItem(for:))
+        var highWater = SpotlightPrefs.highWaterMarkId
+        var totalDonated = 0
         do {
-            try await CSSearchableIndex.default().indexSearchableItems(items)
-            if let maxId = pending.compactMap(\.entry.id).max() {
-                SpotlightPrefs.highWaterMarkId = max(highWater, maxId)
+            for _ in 0..<Self.maxPagesPerCall {
+                let pending = try repo.liveEntries(sinceId: highWater, kinds: [.text, .link], limit: Self.pageSize)
+                guard !pending.isEmpty else { break }
+                let items = pending.compactMap(Self.payload(for:)).map(Self.searchableItem(for:))
+                try await CSSearchableIndex.default().indexSearchableItems(items)
+                highWater = pending.compactMap(\.entry.id).max() ?? highWater
+                SpotlightPrefs.highWaterMarkId = highWater
+                totalDonated += items.count
+                guard pending.count == Self.pageSize else { break }
             }
-            Log.cli.info("spotlight: donated \(items.count, privacy: .public) item(s)")
+            if totalDonated > 0 {
+                Log.cli.info("spotlight: donated \(totalDonated, privacy: .public) item(s)")
+            }
         } catch {
             Log.cli.error("spotlight donation failed: \(String(describing: error), privacy: .public)")
         }
@@ -124,6 +222,7 @@ final class SpotlightDonationService {
             try await CSSearchableIndex.default()
                 .deleteSearchableItems(withDomainIdentifiers: [Self.domainIdentifier])
             SpotlightPrefs.highWaterMarkId = 0
+            SpotlightPrefs.reconciledTombstoneId = 0
             Log.cli.info("spotlight: cleared all donated items")
         } catch {
             Log.cli.error("spotlight un-donate failed: \(String(describing: error), privacy: .public)")

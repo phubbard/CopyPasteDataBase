@@ -33,7 +33,19 @@ final class AppReadiness {
         if let store { return store }
         let deadline = Date().addingTimeInterval(timeout)
         while store == nil, Date() < deadline {
-            try? await Task.sleep(nanoseconds: UInt64(pollInterval * 1_000_000_000))
+            // `Task.sleep` throws `CancellationError` immediately
+            // (without suspending) once this task is cancelled — e.g.
+            // Shortcuts/Siri tearing down an intent whose UI the user
+            // dismissed mid-launch. `try?` alone would swallow that and
+            // keep looping, busy-spinning the main actor on
+            // `Date()` + an instantly-throwing sleep for whatever's
+            // left of `timeout`, right as `applicationDidFinishLaunching`
+            // needs the thread. Bail out instead.
+            do {
+                try await Task.sleep(nanoseconds: UInt64(pollInterval * 1_000_000_000))
+            } catch {
+                return nil
+            }
         }
         return store
     }

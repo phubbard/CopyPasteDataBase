@@ -311,6 +311,42 @@ final class PopupState {
         }
     }
 
+    /// Finds `entryId` and selects it, going further than a plain
+    /// lookup in `rows` to make the target reachable even when the
+    /// popup's current view wouldn't normally include it. Backs the
+    /// Spotlight-donation / `cpdb://clip/<id>` click-through, where the
+    /// target is very often an older item — the donated corpus isn't
+    /// capped, but `rows` is (`searchLimit`, "most recent" order), and
+    /// a leftover kind-filter chip or search query from the last time
+    /// the popup was open can hide it regardless of age. Returns false
+    /// only when the entry is gone (deleted locally, or never existed).
+    func revealAndSelect(entryId: Int64) -> Bool {
+        if let i = rows.firstIndex(where: { $0.entry.id == entryId }) {
+            selectedIndex = i
+            return true
+        }
+        // Clear whatever filter/search state might be hiding it and
+        // try again before assuming it simply aged out.
+        if !kindFilter.isEmpty || !query.isEmpty {
+            kindFilter = []
+            query = ""
+            if let i = rows.firstIndex(where: { $0.entry.id == entryId }) {
+                selectedIndex = i
+                return true
+            }
+        }
+        // Filter-clean but still missing: it's older than `searchLimit`
+        // rows' worth of history. Fetch it directly and splice it in
+        // so there's a concrete card to land the selection on rather
+        // than silently opening to an unrelated top-of-list view.
+        guard let entry = try? repository.fetch(id: entryId), entry.deletedAt == nil else {
+            return false
+        }
+        rows.insert(EntryRepository.EntryRow(entry: entry), at: 0)
+        selectedIndex = 0
+        return true
+    }
+
     // MARK: - Live updates while the popup is visible
 
     /// Subscribe to writes on `entries` so new captures (local or
