@@ -2,6 +2,7 @@
 import Foundation
 import AppKit
 import CpdbShared
+import os
 
 /// Polls `NSPasteboard.general.changeCount` and hands new snapshots to an
 /// `Ingestor`.
@@ -18,6 +19,15 @@ public final class PasteboardWatcher {
     private let queue = DispatchQueue(label: "\(Paths.bundleId).watcher", qos: .utility)
     private var timer: DispatchSourceTimer?
     private var lastChangeCount: Int = -1
+    /// Per-tick capture `Task`s currently in flight (classifying and/or
+    /// reading pasteboard content), keyed by a per-spawn id. `stop()`
+    /// cancels and clears every entry so a tick that fired just before a
+    /// privacy pause can't finish a full, alert-eligible read and land an
+    /// ingest afterward — see `stop()` and `tick()`'s `Task.isCancelled`
+    /// checks. A lock rather than confinement to `queue`, since `stop()`/
+    /// `start()` are typically called from `DaemonLifecycle` on the main
+    /// actor while `tick()` runs on `queue`.
+    private let inFlightTasks = OSAllocatedUnfairLock(initialState: [UUID: Task<Void, Never>]())
 
     public init(ingestor: Ingestor, deviceId: Int64, pollInterval: TimeInterval = 0.15) {
         self.ingestor = ingestor
@@ -37,6 +47,19 @@ public final class PasteboardWatcher {
     public func stop() {
         timer?.cancel()
         timer = nil
+        // Quiesce in-flight capture work too — cancelling the timer
+        // alone leaves any Task a just-fired tick already spawned free
+        // to keep running: it would still perform the full alert-
+        // eligible pasteboard read (and ingest the result) after this
+        // pause has been logged/shown, which is exactly what the pause
+        // exists to prevent. `tick()` checks `Task.isCancelled` at each
+        // cooperative checkpoint and bails out.
+        let tasks = inFlightTasks.withLock { state -> [Task<Void, Never>] in
+            let values = Array(state.values)
+            state.removeAll()
+            return values
+        }
+        for task in tasks { task.cancel() }
         Log.daemon.info("watcher stopped")
     }
 
@@ -45,6 +68,15 @@ public final class PasteboardWatcher {
         let change = pb.changeCount
         if change == lastChangeCount { return }
         lastChangeCount = change
+        // Stamped here, synchronously on the watcher's serial queue —
+        // i.e. in copy order — rather than left to `fromPasteboard`'s
+        // `Date()` default, which would otherwise run inside the
+        // unstructured `Task` below and stamp captures in completion
+        // order instead. A big screenshot's byte read can take far
+        // longer than a quick text capture from a later tick, so without
+        // this the slower capture could appear to have happened after
+        // the faster, later one.
+        let detectedAt = Date()
 
         // Cheapest possible gate: a password field is focused somewhere
         // on the system (Carbon's secure-input flag). Skip before
@@ -64,7 +96,10 @@ public final class PasteboardWatcher {
         // would stall UI on every large copy. Only the two calls that
         // actually require it (`FrontmostApp.current()`, `self.handle`)
         // hop to `@MainActor`, each for as long as it takes.
-        Task {
+        let taskId = UUID()
+        let task = Task {
+            defer { self.inFlightTasks.withLock { _ = $0.removeValue(forKey: taskId) } }
+
             // Pre-read classification (macOS 15.4+ only; see
             // PasteboardPreReadClassifier's doc comment). Alert-free, so
             // this runs before the full flavor read below rather than
@@ -73,6 +108,12 @@ public final class PasteboardWatcher {
                 Log.capture.info("skipped secret-shaped content (pre-read, changeCount=\(change, privacy: .public))")
                 return
             }
+
+            // `stop()` may have cancelled this task while the await
+            // above was in flight — bail before the (potentially large,
+            // alert-eligible) content read rather than perform it after
+            // a pause has already been logged/shown.
+            if Task.isCancelled { return }
 
             // TOCTOU guard: the SecureInputGuard/TransientFilter checks
             // above ran against the pasteboard as of `change`, but the
@@ -83,12 +124,31 @@ public final class PasteboardWatcher {
             // is already stale for it, so the very next tick will see
             // the new changeCount, and run every gate against the
             // content that's actually there now.
-            guard pb.changeCount == change else { return }
+            //
+            // Trade-off, not a bug to "fix" away: this does mean that
+            // if a second copy lands while the classifier await above
+            // is in flight, THIS tick's content (already superseded on
+            // the live pasteboard) is dropped rather than captured —
+            // there is no way to safely read it after the fact, since
+            // `looksSecretShaped` classified whatever is live on `pb`
+            // at the time it returned, which may no longer be what
+            // `change` referred to. Logged (unlike the classifier/
+            // transient skips above, this one is rare enough — needs a
+            // second copy inside the classifier's await window — that
+            // a bare silent `return` would make it very hard to
+            // diagnose if it ever matters in practice).
+            guard pb.changeCount == change else {
+                Log.capture.info("dropped stale capture: pasteboard changed during classification (changeCount=\(change, privacy: .public) now=\(pb.changeCount, privacy: .public))")
+                return
+            }
 
-            guard let snapshot = PasteboardSnapshot.fromPasteboard(pb) else { return }
+            guard let snapshot = PasteboardSnapshot.fromPasteboard(pb, capturedAt: detectedAt) else { return }
+            if Task.isCancelled { return }
             let appInfo = await FrontmostApp.current()
+            if Task.isCancelled { return }
             await self.handle(snapshot: snapshot, appInfo: appInfo)
         }
+        inFlightTasks.withLock { $0[taskId] = task }
     }
 
     @MainActor

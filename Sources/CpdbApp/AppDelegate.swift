@@ -79,12 +79,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 ? .privacyPaused(reason: status.displayLabel)
                 : .capturing
             PopupController.shared.updateCaptureMode(mode)
+            // Same signal, same reason: Preferences' "Capture is
+            // paused." line must not run ahead of the process that
+            // actually enacts the pause (see
+            // `PreferencesWindowController.captureMode`'s doc comment).
+            PreferencesWindowController.shared.updateCaptureMode(mode)
         }
 
         if let store = store {
             PopupController.shared.configure(store: store, captureMode: captureMode)
             AboutWindowController.shared.configure(store: store)
-            PreferencesWindowController.shared.configure(store: store)
+            PreferencesWindowController.shared.configure(store: store, captureMode: captureMode)
             // canonical-hash v2: run the identity cutover (if this DB still
             // needs it) off the main actor, then heal any skew rows. Sync
             // stays gated until it completes (CloudKitSyncer checks

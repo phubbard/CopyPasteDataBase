@@ -25,7 +25,15 @@ public extension PasteboardSnapshot {
     /// entries and reference-vs-path copies of the same file converge.
     /// Resolution is only possible while the file exists, which is exactly
     /// the capture moment.
-    static func fromPasteboard(_ pb: NSPasteboard = .general) -> PasteboardSnapshot? {
+    /// `capturedAt` defaults to "now" for callers (tests, importers) that
+    /// don't care about ordering against other captures. `PasteboardWatcher`
+    /// always passes an explicit value stamped at change-detection time —
+    /// see its call site's comment for why: this factory's own flavor-byte
+    /// read can take a while (a screenshot's PNG+TIFF is tens of MB) and
+    /// runs inside an unstructured `Task` that isn't ordered against
+    /// sibling ticks, so defaulting to `Date()` here would stamp captures
+    /// in completion order instead of copy order.
+    static func fromPasteboard(_ pb: NSPasteboard = .general, capturedAt: Date = Date()) -> PasteboardSnapshot? {
         guard let items = pb.pasteboardItems, !items.isEmpty else { return nil }
         let snapshotItems: [Item] = items.map { nsItem in
             var flavors: [CanonicalHash.Flavor] = []
@@ -39,7 +47,7 @@ public extension PasteboardSnapshot {
             }
             return Item(flavors: flavors)
         }
-        return PasteboardSnapshot(items: snapshotItems)
+        return PasteboardSnapshot(items: snapshotItems, capturedAt: capturedAt)
     }
 
     /// Resolve a Finder file-reference URL (`file:///.file/id=…`) to its
