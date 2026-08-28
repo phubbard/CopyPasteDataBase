@@ -10,6 +10,8 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+## [3.3.0] – 2026-08-28
+
 - **Semantic search.** Every text/link clip is embedded on-device
   (`NLContextualEmbedding`, macOS 14+, no Apple Intelligence required)
   and search now fuses keyword (FTS5) and meaning (cosine over an
