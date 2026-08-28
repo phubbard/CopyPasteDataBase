@@ -10,6 +10,46 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+- **Semantic search.** Every text/link clip is embedded on-device
+  (`NLContextualEmbedding`, macOS 14+, no Apple Intelligence required)
+  and search now fuses keyword (FTS5) and meaning (cosine over an
+  in-memory Accelerate index) via reciprocal-rank fusion — "that
+  docker thing" finds the clip that never said docker. New "semantic"
+  scope chip; vectors sync via CloudKit so the iPhone searches by
+  meaning too. A thermal-gated drain loop embeds an existing library
+  in minutes; `model_id`/`revision` columns make future model
+  upgrades a background re-embed.
+- **Action chips.** Clips are scanned at capture (NSDataDetector +
+  the DataDetection framework on 26+) for dates, addresses, phone
+  numbers, URLs, tracking numbers, flights, and money amounts —
+  rendered as tappable chips on cards (Add to Calendar, Maps, call,
+  track package). QR codes in screenshots become chips too, scanned
+  in the same Vision pass as OCR.
+- **Copy as Table.** On macOS 26+, image cards gain "Copy as Table…":
+  Vision's document recognizer extracts real table structure from a
+  screenshot and pastes it as CSV or Markdown, with a preview window.
+- **On-device AI titles & summaries** (macOS 26 + Apple Intelligence,
+  cleanly absent otherwise): long text clips get an auto-title shown
+  as the card headline and a summary in the tooltip, generated
+  entirely on-device by Foundation Models, with retry caps and a
+  Preferences toggle.
+- **Shortcuts, Spotlight & deep links.** Search/paste/pin intents
+  with Shortcuts phrases; opt-in donation of clips to system
+  Spotlight; `cpdb://clip/` deep links summon the popup with the
+  entry selected.
+- **Pasteboard-privacy preparedness.** The capture loop now monitors
+  `NSPasteboard.accessBehavior` (macOS 15.4+), pauses with a banner
+  and a Settings shortcut if access is ever denied, pre-classifies
+  via the alert-free detect APIs, and skips capture while secure
+  input is active — ready for the day Apple flips the pasteboard
+  permission switch.
+- **Perf.** New composite index for the popup's recency ordering
+  (refresh 8–15ms, best ever — the permanent popup-perf line caught
+  the regression the day it appeared).
+- **Schema v12–v14** (embeddings table, chips/AI columns, retry cap,
+  recency index) + seven additive CloudKit record fields (deployed to
+  the production schema alongside this release).
+
 - **Tests: regression coverage for the v3.2.2–v3.2.5 popup layout chain.**
   A new `CpdbAppTests` target (test targets can depend on executable
   targets directly, so the popup's SwiftUI code didn't need to move)
