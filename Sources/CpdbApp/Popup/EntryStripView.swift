@@ -101,6 +101,19 @@ struct EntryStripView: View {
             Label("Quick Look", systemImage: "eye")
         }
 
+        // Vision's table-aware document recognizer (`RecognizeDocumentsRequest`)
+        // only exists on macOS 26+, so this action is both OS- and
+        // kind-gated. See TablePreviewWindow.swift for the recognize →
+        // preview → copy flow.
+        if #available(macOS 26.0, *), row.entry.kind == .image {
+            Button {
+                guard let id = row.entry.id else { return }
+                TablePreviewController.shared.present(entryId: id, store: state.store)
+            } label: {
+                Label("Copy as Table…", systemImage: "tablecells")
+            }
+        }
+
         Button {
             togglePin(row: row)
         } label: {
