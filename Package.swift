@@ -1,5 +1,45 @@
 // swift-tools-version:5.10
+import Foundation
 import PackageDescription
+
+// `make build-app` needs `appintentsmetadataprocessor` (the tool that
+// makes App Intents/App Shortcuts discoverable to Shortcuts/Siri/
+// Spotlight) to run against CpdbApp, but that tool is normally an
+// Xcode build-phase, invisible to plain `swift build`. The flag pair
+// below makes the Swift frontend emit the `.swiftconstvalues` file the
+// processor needs. A single combined output only makes sense for a
+// single frontend job over the whole target, which is exactly what
+// SwiftPM's `-c release` already builds with (whole-module
+// optimization) — this only activates for that build, gated behind an
+// env var so the fast `swift build`/`swift test` dev-iteration loop
+// (incremental, per-file jobs) is untouched.
+// `scripts/build-app-intents-metadata.sh` sets both env vars and runs
+// `appintentsmetadataprocessor` itself afterward.
+let appIntentsConstValuesFlags: [SwiftSetting] = {
+    let env = ProcessInfo.processInfo.environment
+    guard env["CPDB_EXTRACT_APPINTENTS"] == "1",
+          // Must be an absolute path: the frontend job's working
+          // directory isn't guaranteed to be the package root, so a
+          // relative path here silently writes nowhere findable
+          // (verified empirically — no error, no file).
+          let constValuesPath = env["CPDB_APPINTENTS_CONSTVALUES_PATH"],
+          // `-const-gather-protocols-file` wants a bare JSON array of
+          // protocol names — NOT the
+          // `{"version":1,"constValueProtocols":[…]}` envelope Xcode's
+          // own toolchain ships at
+          // `usr/share/swift/SwiftConstantValues/AppIntents.json`;
+          // feeding that file to this swiftc directly fails with
+          // "... is malformed" (also verified empirically). The script
+          // flattens it to this path before setting the env var.
+          let protocolsFile = env["CPDB_APPINTENTS_PROTOCOLS_FILE"]
+    else { return [] }
+    return [.unsafeFlags([
+        "-Xfrontend", "-emit-const-values-path",
+        "-Xfrontend", constValuesPath,
+        "-Xfrontend", "-const-gather-protocols-file",
+        "-Xfrontend", protocolsFile,
+    ])]
+}()
 
 let package = Package(
     name: "cpdb",
@@ -59,7 +99,8 @@ let package = Package(
                 "Resources/cpdb.entitlements",
                 "Resources/cpdb-release.entitlements",
                 "Resources/Assets",
-            ]
+            ],
+            swiftSettings: appIntentsConstValuesFlags
         ),
         // Cross-platform library: pure data, GRDB storage, Vision analysis,
         // FTS5 search, Quick Look item building. iOS + macOS both link this.

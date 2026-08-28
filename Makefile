@@ -154,9 +154,30 @@ build-cli: stamp-build
 
 build-app: verify-version stamp-build
 	swift build -c $(BUILD_CONFIG) $(SWIFT_ARCH_FLAGS) --product CpdbApp
+	# App Intents metadata (makes ClipIntents.swift's intents and
+	# ClipAppShortcuts' phrases discoverable to Shortcuts/Siri/
+	# Spotlight) isn't produced by `swift build` — Xcode normally runs
+	# `appintentsmetadataprocessor` as an invisible build phase, which
+	# plain SwiftPM has no equivalent of. This reproduces it: a
+	# release-config, host-arch-only compile pass (metadata is derived
+	# from Swift declarations, not object code, so it doesn't need to
+	# match $(BUILD_CONFIG)/$(SWIFT_ARCH_FLAGS)) feeding the processor
+	# by hand. See scripts/build-app-intents-metadata.sh for why it
+	# has to be done this way. Release-only: a debug `build-app` (dev
+	# iteration, not something anyone installs) skips it rather than
+	# paying for an extra release build every time.
+	@if [ "$(BUILD_CONFIG)" = "release" ]; then \
+	    scripts/build-app-intents-metadata.sh; \
+	else \
+	    echo "warning: BUILD_CONFIG=$(BUILD_CONFIG) — skipping App Intents metadata extraction (release only); this build's Shortcuts/Siri/Spotlight actions won't be discoverable"; \
+	fi
 	rm -rf $(APP_BUNDLE_DIR)
 	mkdir -p $(APP_BUNDLE_DIR)/Contents/MacOS
 	mkdir -p $(APP_BUNDLE_DIR)/Contents/Resources
+	@if [ -d .build/appintents/output/Metadata.appintents ]; then \
+	    cp -R .build/appintents/output/Metadata.appintents $(APP_BUNDLE_DIR)/Contents/Resources/Metadata.appintents; \
+	    echo "  embedded Metadata.appintents"; \
+	fi
 	cp $(SWIFT_BUILD_OUTPUT)/CpdbApp $(APP_BUNDLE_DIR)/Contents/MacOS/$(APP_NAME)
 	# Embed Sparkle.framework. SPM links it as `@rpath/Sparkle.framework`
 	# but only drops the framework next to the product binary in

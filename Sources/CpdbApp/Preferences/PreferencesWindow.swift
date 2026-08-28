@@ -87,6 +87,9 @@ private struct PreferencesView: View {
     @State private var rememberScrollOnPreview: Bool = UserDefaults.standard
         .bool(forKey: PopupState.rememberScrollKey)
 
+    // Spotlight donation (App Intents stream) — opt-in, default off.
+    @State private var spotlightEnabled: Bool = SpotlightPrefs.enabled
+
     // iCloud / CloudKit sync
     @State private var syncPaused: Bool = CloudKitSyncer.isPaused
     @State private var iCloudAccount: String = "Checking…"
@@ -222,6 +225,16 @@ private struct PreferencesView: View {
                         UserDefaults.standard.set(newValue, forKey: PopupState.rememberScrollKey)
                     }
                 Text("When on, pressing ⌘Y or Space dismisses the popup but keeps your search and scroll position. Re-summon the popup and you'll resume where you were.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Search") {
+                Toggle("Show clips in Spotlight", isOn: $spotlightEnabled)
+                    .onChange(of: spotlightEnabled) { _, newValue in
+                        SpotlightDonationService.shared.setEnabled(newValue)
+                    }
+                Text("Donates your text and link clips to Spotlight so macOS's system-wide search can find them. Turning this off removes everything cpdb has donated.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

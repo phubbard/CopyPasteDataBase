@@ -29,7 +29,11 @@ final class PopupController {
     static let panelHeight: CGFloat = 480
 
     private var panel: PopupPanel?
-    private var state: PopupState?
+    /// `private(set)` (rather than fully private) so the same-module
+    /// App Intents plumbing tests can assert on post-intent state
+    /// (query, selection, scrollToken) without a parallel API surface
+    /// just for testing.
+    private(set) var state: PopupState?
     private var escapeMonitor: Any?
     private var outsideClickMonitor: Any?
     private(set) var previousApp: NSRunningApplication?
@@ -227,6 +231,96 @@ final class PopupController {
         // Routed through PopupState → UndoCoordinator so the delete is
         // recorded for ⌘Z. The single-row tombstone is a sub-ms write.
         state.delete(id: id)
+    }
+
+    // MARK: - App Intents entry points
+    //
+    // Thin glue for `SearchClipsIntent` / `PasteLatestIntent` /
+    // `PasteNthIntent` / `TogglePinLatestIntent` / the Spotlight
+    // click-through deep link (see `Intents/`). Kept here rather than
+    // in the intents themselves so an intent's `perform()` body is
+    // just "wait for readiness, call one of these" — the actual
+    // row-selection logic (`ClipIntentSupport.entry(atRecentIndex:)`)
+    // stays in the AppKit-free, directly-testable file.
+
+    /// Backs `SearchClipsIntent`. Opens the popup exactly like a hotkey
+    /// summon, then pre-fills the search field — same effect as the
+    /// user typing it themselves, so it goes through the normal
+    /// `query` `didSet` → `refresh()` path.
+    func searchAndShow(query: String) {
+        show()
+        state?.query = query
+    }
+
+    /// Backs `PasteNthIntent`. Deliberately does NOT show the popup
+    /// first — an intent-driven paste should be invisible when it
+    /// succeeds, same as a Shortcut running silently. `previousApp` is
+    /// captured here (frontmost app at intent-fire time) rather than
+    /// relying on a stale value from the last popup summon, matching
+    /// `pasteSelected()`'s contract.
+    ///
+    /// Uses popup-card ordering (pinned-first) via
+    /// `ClipIntentSupport.recentEntries` — "clip number N" means "the
+    /// Nth card", pins included, matching what `PasteNthIntent`
+    /// documents. For "my *last* clip" regardless of pins, see
+    /// `pasteLatest()`.
+    func pasteRecent(atIndex n: Int) {
+        guard let state = state else { return }
+        let rows = (try? ClipIntentSupport.recentEntries(store: state.store, limit: max(n, 1))) ?? []
+        guard let row = ClipIntentSupport.entry(atRecentIndex: n, in: rows), let id = row.entry.id else {
+            Log.cli.info("pasteRecent(atIndex: \(n, privacy: .public)): nothing to paste")
+            return
+        }
+        previousApp = NSWorkspace.shared.frontmostApplication
+        let action = PasteAction(store: state.store, previousApp: previousApp)
+        action.paste(entryId: id)
+        Log.cli.info("pasteRecent(atIndex: \(n, privacy: .public)) entry \(id, privacy: .public)")
+    }
+
+    /// Backs `PasteLatestIntent`. Pastes the entry with the newest
+    /// `created_at`, ignoring pin status — same no-popup contract as
+    /// `pasteRecent(atIndex:)`, but resolved via `ClipIntentSupport
+    /// .latestEntries` so a pinned entry from last week never shadows
+    /// what was just copied.
+    func pasteLatest() {
+        guard let state = state else { return }
+        let rows = (try? ClipIntentSupport.latestEntries(store: state.store, limit: 1)) ?? []
+        guard let row = rows.first, let id = row.entry.id else {
+            Log.cli.info("pasteLatest(): nothing to paste")
+            return
+        }
+        previousApp = NSWorkspace.shared.frontmostApplication
+        let action = PasteAction(store: state.store, previousApp: previousApp)
+        action.paste(entryId: id)
+        Log.cli.info("pasteLatest() entry \(id, privacy: .public)")
+    }
+
+    /// Backs `TogglePinLatestIntent`. Toggles the pin on the entry with
+    /// the newest `created_at`, ignoring pin status — resolved via
+    /// `ClipIntentSupport.latestEntries` so pinning a fresh copy can't
+    /// instead un-pin whatever was pinned before it.
+    func togglePinLatest() {
+        guard let state = state else { return }
+        let rows = (try? ClipIntentSupport.latestEntries(store: state.store, limit: 1)) ?? []
+        guard let row = rows.first, let id = row.entry.id else { return }
+        state.togglePin(id: id, currentlyPinned: row.entry.pinned)
+    }
+
+    /// Backs the Spotlight-donation / `cpdb://clip/<id>` click-through:
+    /// show the popup and land selection + scroll on one specific
+    /// entry. Uses `PopupState.revealAndSelect`, which resets any
+    /// stale kind-filter/search state and falls back to a direct fetch
+    /// for an entry older than the popup's default view — a Spotlight
+    /// target is disproportionately likely to be exactly that. Only
+    /// no-ops (still shows the popup, no selection) if the entry was
+    /// deleted since it was donated.
+    func showAndSelect(entryId: Int64) {
+        show()
+        guard let state = state, state.revealAndSelect(entryId: entryId) else {
+            Log.cli.info("showAndSelect(entryId: \(entryId, privacy: .public)): entry no longer exists")
+            return
+        }
+        state.scrollToken &+= 1
     }
 
     // MARK: - Positioning

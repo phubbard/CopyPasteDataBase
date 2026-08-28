@@ -9,6 +9,15 @@ public extension Notification.Name {
     /// to run `pushPendingChanges` right away instead of waiting for
     /// the 5-minute safety-net timer. Object is nil; no userInfo.
     static let cpdbLocalEntryIngested = Notification.Name("cpdb.localEntryIngested")
+
+    /// Posted by `EntryRepository.tombstone(id:)` / `.restore(id:)`
+    /// whenever a row's live/deleted state actually flips (idempotent
+    /// no-ops don't post). userInfo: `["entryId": Int64, "deleted": Bool]`.
+    /// Lets listeners that mirror entries elsewhere — e.g.
+    /// `SpotlightDonationService`, which must stop surfacing a clip the
+    /// user just deleted — react immediately instead of waiting for
+    /// their own next periodic pass.
+    static let cpdbEntryTombstoneChanged = Notification.Name("cpdb.entryTombstoneChanged")
 }
 
 /// Canonical version strings for cpdb.
