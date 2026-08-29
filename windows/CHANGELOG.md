@@ -12,6 +12,41 @@ dated `[1.X.Y]` heading and reset `[Unreleased]` to empty.
 
 ## [Unreleased]
 
+- **Semantic-enrichment schema foundation (v1.40.0).** Groundwork for
+  the semantic-search + action-chips features Mac shipped in cpdb 3.3.0
+  (see [`docs/handoffs/windows-v33-features.md`](../docs/handoffs/windows-v33-features.md)).
+  Schema-only in this cut — no user-visible change until v1.41 wires
+  the embedding pipeline and hybrid search. Splitting release-by-release
+  keeps each migration small enough to verify against your live library.
+
+  - **`v13_semantic_enrichment` migration** — new `entry_embeddings`
+    table (`entry_id` PK, `model_id`, `revision`, `dims`, `vector` BLOB,
+    `embedded_at`) and `chips_json` column on `entries`. Mirrors macOS
+    `v12_semantic_enrichment`; Windows uses fresh identifier per the
+    per-platform migration-numbering convention. `ai_title`/`ai_summary`
+    columns Mac ships in the same migration are skipped — Foundation
+    Models is Copilot+-only, so no Windows AI-enrichment stream is
+    planned.
+  - **`v14_recency_index` migration** — composite partial index
+    `idx_entries_recency ON entries(pinned DESC, created_at DESC)
+    WHERE deleted_at IS NULL`. Mac added this when their v13/v14
+    per-row enrichment writes fattened pages enough that the popup's
+    Recent() sort blew past their perf budget. Windows already meets
+    its summon-perf target (per v1.39's `PopupPerf`) but ships this
+    proactively so v13's `chips_json` + future writes don't regress
+    it. `MigratorTests` includes an `EXPLAIN QUERY PLAN` assertion
+    that the popup's `Recent()` query shape actually uses the index.
+  - **Fresh-install DDL** (`Schema.UnionDdl`) grew the same table +
+    column + index so new installs land at v14 without replaying
+    migrations.
+  - **Cross-platform vector contract** (documented in the table
+    comments): `dims × Float32 little-endian, L2-normalized` so
+    cosine similarity is a plain dot product. `model_id`/`revision`
+    exist so each platform picks its own embedding function without
+    breaking the shared schema — Windows will use ONNX MiniLM when
+    the v1.41 pipeline lands; do NOT compare Windows vectors with
+    Mac vectors.
+
 - **Popup summon perf — instrumentation, measurement, no fixes needed (v1.39.0).**
   Ran the method handoff from macOS
   ([`docs/handoffs/windows-popup-perf.md`](../docs/handoffs/windows-popup-perf.md),

@@ -48,6 +48,8 @@ public static class Migrator
         // independently of execution order).
         if (!applied.Contains("v12_modified_at")) ApplyV12ModifiedAt(conn);
         if (!applied.Contains("v11_semantic_identity")) ApplyV11SemanticIdentity(conn, blobs);
+        if (!applied.Contains("v13_semantic_enrichment")) ApplyV13SemanticEnrichment(conn);
+        if (!applied.Contains("v14_recency_index")) ApplyV14RecencyIndex(conn);
     }
 
     /// <summary>
@@ -434,6 +436,88 @@ public static class Migrator
         }
 
         RecordApplied(conn, tx, "v12_modified_at");
+        tx.Commit();
+    }
+
+    // ─── v13: semantic-enrichment foundation ────────────────────────────
+
+    /// <summary>
+    /// Create the <c>entry_embeddings</c> table and the <c>chips_json</c>
+    /// column that back cpdb-win's semantic-search + action-chips
+    /// features. Schema-only — the pipelines that populate them
+    /// (<c>EmbeddingSweeper</c>, chip detector) land in follow-on
+    /// releases. Mirrors macOS 3.3.0's <c>v12_semantic_enrichment</c>
+    /// per <c>docs/handoffs/windows-v33-features.md</c>. The
+    /// <c>ai_title</c>/<c>ai_summary</c>/<c>ai_retry_count</c> columns
+    /// Mac adds here + at v13 are skipped: Foundation Models is
+    /// Copilot+-only on Windows so the enrichment stream is not
+    /// planned. Columns can be added later if a Windows AI-enrichment
+    /// path ever earns its keep.
+    /// </summary>
+    private static void ApplyV13SemanticEnrichment(SqliteConnection conn)
+    {
+        using var tx = conn.BeginTransaction();
+
+        using (var cmd = conn.CreateCommand())
+        {
+            cmd.Transaction = tx;
+            cmd.CommandText = """
+                CREATE TABLE IF NOT EXISTS entry_embeddings (
+                    entry_id    INTEGER PRIMARY KEY REFERENCES entries(id) ON DELETE CASCADE,
+                    model_id    TEXT NOT NULL,
+                    revision    INTEGER NOT NULL,
+                    dims        INTEGER NOT NULL,
+                    vector      BLOB NOT NULL,
+                    embedded_at REAL NOT NULL
+                )
+                """;
+            cmd.ExecuteNonQuery();
+        }
+
+        if (!HasColumn(conn, "entries", "chips_json"))
+        {
+            using var cmd = conn.CreateCommand();
+            cmd.Transaction = tx;
+            cmd.CommandText = "ALTER TABLE entries ADD COLUMN chips_json TEXT";
+            cmd.ExecuteNonQuery();
+        }
+
+        RecordApplied(conn, tx, "v13_semantic_enrichment");
+        tx.Commit();
+    }
+
+    // ─── v14: recency partial index ─────────────────────────────────────
+
+    /// <summary>
+    /// Composite partial index over <c>(pinned DESC, created_at DESC)
+    /// WHERE deleted_at IS NULL</c>. The popup's <c>Recent()</c> query
+    /// orders by exactly this shape; without the index SQLite
+    /// full-scans + temp-B-tree-sorts every live row on every call.
+    /// v13's <c>chips_json</c> column (plus any future per-row
+    /// enrichment writes) fattens pages, so the scan cost grows —
+    /// this index turns the ORDER BY into an index walk that stops at
+    /// LIMIT. Mirrors macOS 3.3.0's <c>v14_recency_index</c>; Mac
+    /// caught the need on their first v3.3 launch via their
+    /// popup-perf log. Windows already meets its summon-perf target
+    /// (see <c>PopupPerf</c>) but ships this proactively so v13 +
+    /// future writes don't regress it.
+    /// </summary>
+    private static void ApplyV14RecencyIndex(SqliteConnection conn)
+    {
+        using var tx = conn.BeginTransaction();
+
+        using (var cmd = conn.CreateCommand())
+        {
+            cmd.Transaction = tx;
+            cmd.CommandText = """
+                CREATE INDEX IF NOT EXISTS idx_entries_recency
+                    ON entries(pinned DESC, created_at DESC)
+                    WHERE deleted_at IS NULL
+                """;
+            cmd.ExecuteNonQuery();
+        }
+
+        RecordApplied(conn, tx, "v14_recency_index");
         tx.Commit();
     }
 }

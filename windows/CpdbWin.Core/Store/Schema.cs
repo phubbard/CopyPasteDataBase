@@ -34,6 +34,12 @@ public static class Schema
         // consistent. See docs/schema.md §Migration identifiers.
         "v11_semantic_identity",
         "v12_modified_at",
+        // v13/v14 mirror macOS v12_semantic_enrichment + v14_recency_index
+        // (per docs/handoffs/windows-v33-features.md). Identifier numbers
+        // are per-platform local bookkeeping; the contract is column-set +
+        // algorithm equality across platforms.
+        "v13_semantic_enrichment",
+        "v14_recency_index",
     };
 
     public const string UnionDdl = """
@@ -89,7 +95,16 @@ public static class Schema
             -- the column for schema parity + future sync. Defaults to
             -- 0 so the migration backfill from created_at is a single
             -- UPDATE rather than NOT-NULL-violating row-by-row.
-            modified_at        REAL NOT NULL DEFAULT 0
+            modified_at        REAL NOT NULL DEFAULT 0,
+            -- v13 (semantic enrichment, mirrors macOS 3.3.0's
+            -- v12_semantic_enrichment): chips_json holds a JSON array
+            -- of data chips detected in the entry's text (dates,
+            -- phones, tracking numbers, URLs, etc). NULL = not yet
+            -- scanned. Chip detection code lands in a follow-on
+            -- release; the column is here now so the schema is
+            -- forward-compatible with v14 (recency index) and doesn't
+            -- need another migration when chips ship.
+            chips_json         TEXT
         );
         CREATE INDEX idx_entries_created_at ON entries(created_at DESC);
         CREATE INDEX idx_entries_kind ON entries(kind);
@@ -98,6 +113,17 @@ public static class Schema
         CREATE INDEX idx_entries_pinned
             ON entries(created_at DESC)
             WHERE pinned = 1 AND deleted_at IS NULL;
+        -- v14 (recency index, mirrors macOS 3.3.0's v14_recency_index):
+        -- the popup's Recent() query orders by (pinned DESC, created_at
+        -- DESC) over live rows. Without this composite partial index
+        -- SQLite full-scans + temp-B-tree-sorts every live row; v13's
+        -- new chips_json + future enrichment columns fatten pages, so
+        -- the scan cost grows. This index turns the ORDER BY into an
+        -- index walk that stops at LIMIT. Mac caught this on their
+        -- first v3.3 launch via their popup-perf log.
+        CREATE INDEX idx_entries_recency
+            ON entries(pinned DESC, created_at DESC)
+            WHERE deleted_at IS NULL;
 
         CREATE TABLE entry_flavors (
             entry_id  INTEGER NOT NULL REFERENCES entries(id) ON DELETE CASCADE,
@@ -144,6 +170,29 @@ public static class Schema
             entry_id    INTEGER PRIMARY KEY REFERENCES entries(id) ON DELETE CASCADE,
             thumb_small BLOB,
             thumb_large BLOB
+        );
+
+        -- v13 (semantic enrichment): one row per entry with a semantic
+        -- embedding vector. Kept as its own table (not columns on
+        -- entries) because a model upgrade re-embeds by delete+insert,
+        -- not a wide-table ALTER, and most entries (images, files)
+        -- never get a row at all.
+        --   model_id    — identifies the embedding function (e.g.
+        --                 'onnx-minilm-l6-v2'). Cross-platform contract
+        --                 is that vectors are per-device-family; do NOT
+        --                 compare Mac vectors with Windows vectors.
+        --   revision    — bump to trigger a background re-embed sweep
+        --                 without changing model_id (e.g. a preprocessing
+        --                 tweak to the same model).
+        --   vector      — dims × Float32, little-endian, L2-normalized
+        --                 so cosine similarity is a plain dot product.
+        CREATE TABLE entry_embeddings (
+            entry_id    INTEGER PRIMARY KEY REFERENCES entries(id) ON DELETE CASCADE,
+            model_id    TEXT NOT NULL,
+            revision    INTEGER NOT NULL,
+            dims        INTEGER NOT NULL,
+            vector      BLOB NOT NULL,
+            embedded_at REAL NOT NULL
         );
 
         CREATE TABLE cloudkit_push_queue (

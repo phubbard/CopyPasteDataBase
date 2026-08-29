@@ -616,4 +616,88 @@ public class MigratorTests : IDisposable
         cmd.CommandText = sql;
         return Convert.ToDouble(cmd.ExecuteScalar()!);
     }
+
+    private string ScalarString(string sql)
+    {
+        using var cmd = _db.CreateCommand();
+        cmd.CommandText = sql;
+        return (string)cmd.ExecuteScalar()!;
+    }
+
+    // ─── v13_semantic_enrichment + v14_recency_index ────────────────────
+
+    [Fact]
+    public void V13Migration_AddsEntryEmbeddingsTable_AndChipsJsonColumn()
+    {
+        SeedV5Schema();
+        SeedSupplementaryTables();
+        Migrator.Migrate(_db);  // runs through v14
+
+        // entry_embeddings exists with the expected columns.
+        var embedCols = ColumnsOf("entry_embeddings");
+        Assert.Contains("entry_id",    embedCols);
+        Assert.Contains("model_id",    embedCols);
+        Assert.Contains("revision",    embedCols);
+        Assert.Contains("dims",        embedCols);
+        Assert.Contains("vector",      embedCols);
+        Assert.Contains("embedded_at", embedCols);
+
+        // chips_json landed on entries.
+        Assert.Contains("chips_json", ColumnsOf("entries"));
+
+        // Migration ledger records both new identifiers.
+        var applied = AppliedMigrations();
+        Assert.Contains("v13_semantic_enrichment", applied);
+        Assert.Contains("v14_recency_index",       applied);
+    }
+
+    [Fact]
+    public void V13Migration_IdempotentReRunIsNoOp()
+    {
+        SeedV5Schema();
+        SeedSupplementaryTables();
+        Migrator.Migrate(_db);
+
+        // Wipe the ledger entries and re-run — the CREATE TABLE IF NOT
+        // EXISTS + HasColumn guard should keep the run a no-op that
+        // just re-records the identifier.
+        using (var cmd = _db.CreateCommand())
+        {
+            cmd.CommandText = "DELETE FROM grdb_migrations WHERE identifier IN ('v13_semantic_enrichment', 'v14_recency_index')";
+            cmd.ExecuteNonQuery();
+        }
+        Migrator.Migrate(_db);  // must not throw "duplicate column"/table
+
+        Assert.Contains("v13_semantic_enrichment", AppliedMigrations());
+        Assert.Contains("v14_recency_index",       AppliedMigrations());
+    }
+
+    [Fact]
+    public void V14RecencyIndex_MatchesPopupRecentQueryShape()
+    {
+        SeedV5Schema();
+        SeedSupplementaryTables();
+        Migrator.Migrate(_db);
+
+        // EXPLAIN QUERY PLAN of the popup's Recent() shape must hit
+        // idx_entries_recency — the whole point of v14 is turning the
+        // ORDER BY into an index walk. If this stops firing (e.g.
+        // someone changes the ORDER BY), the test fails loudly.
+        using var cmd = _db.CreateCommand();
+        cmd.CommandText = """
+            EXPLAIN QUERY PLAN
+            SELECT id FROM entries
+            WHERE deleted_at IS NULL
+            ORDER BY pinned DESC, created_at DESC
+            LIMIT 100
+            """;
+        using var r = cmd.ExecuteReader();
+        var plans = new List<string>();
+        while (r.Read())
+        {
+            // table_info-shaped: id, parent, notused, detail(TEXT)
+            plans.Add(r.GetString(3));
+        }
+        Assert.Contains(plans, p => p.Contains("idx_entries_recency"));
+    }
 }
