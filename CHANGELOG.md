@@ -10,6 +10,8 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+## [3.3.1] – 2026-08-29
+
 - **Fix: double-click paste could silently do nothing on cards with
   chips.** v3.3.0's tappable chips could win SwiftUI's gesture
   arbitration over the card's double-click, so the paste never ran and
