@@ -13,6 +13,19 @@
       have to carry per arch (~5 MB / arch); the managed wrapper is small.
     -->
     <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.18.1" />
+    <!--
+      BERT WordPiece tokenizer for the MiniLM embedding model. 1.0.2 is
+      the first stable release with `BertTokenizer.Create(stream)`.
+    -->
+    <PackageReference Include="Microsoft.ML.Tokenizers" Version="1.0.2" />
+    <!--
+      SIMD-accelerated tensor primitives (dot product, mean, etc.)
+      used by EmbeddingIndex for cosine similarity across the cached
+      vector buffer. Shipped as a NuGet on top of net8.0 rather than
+      being in the BCL — pinned major-minor to match the target
+      framework.
+    -->
+    <PackageReference Include="System.Numerics.Tensors" Version="8.0.0" />
   </ItemGroup>
   <ItemGroup>
     <!-- Bundled MobileNetV2 ImageNet classifier — loaded by
@@ -22,5 +35,11 @@
          per-host config. -->
     <None Update="Models\mobilenetv2-12.onnx" CopyToOutputDirectory="PreserveNewest" />
     <None Update="Models\imagenet1k_labels.txt" CopyToOutputDirectory="PreserveNewest" />
+    <!-- Bundled all-MiniLM-L6-v2 (INT8 quantized, 22 MB) + BERT WordPiece
+         vocab. Loaded by CpdbWin.Core.Analysis.EmbeddingService for
+         semantic search. Xenova's HuggingFace port is the source of
+         both files — same repo the smoke test verified against. -->
+    <None Update="Models\all-minilm-l6-v2-quantized.onnx" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="Models\all-minilm-l6-v2-vocab.txt" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

@@ -25,6 +25,8 @@ public sealed class AppHost : IDisposable
     public LinkMetadataFetcher LinkFetcher { get; }
     public LinkBackfillService LinkBackfill { get; }
     public ImageAnalysisService ImageAnalysis { get; }
+    public EmbeddingSweeper Embeddings { get; }
+    public EmbeddingIndex EmbeddingIndex { get; }
     public AppPaths.Resolved Paths { get; }
 
     /// <summary>
@@ -46,6 +48,8 @@ public sealed class AppHost : IDisposable
         LinkMetadataFetcher linkFetcher,
         LinkBackfillService linkBackfill,
         ImageAnalysisService imageAnalysis,
+        EmbeddingSweeper embeddings,
+        EmbeddingIndex embeddingIndex,
         bool suspectedDataLoss)
     {
         Paths = paths;
@@ -57,6 +61,8 @@ public sealed class AppHost : IDisposable
         LinkFetcher = linkFetcher;
         LinkBackfill = linkBackfill;
         ImageAnalysis = imageAnalysis;
+        Embeddings = embeddings;
+        EmbeddingIndex = embeddingIndex;
         SuspectedDataLoss = suspectedDataLoss;
     }
 
@@ -119,15 +125,25 @@ public sealed class AppHost : IDisposable
         // timer. Reentry-guarded inside WakeForCapture, so a flurry of
         // pastes coalesces.
         var imageAnalysis = new ImageAnalysisService(entries);
+        var embeddings    = new EmbeddingSweeper(entries);
+        var embeddingIndex = new EmbeddingIndex(entries);
+        // Sweep-settle invalidates the search-time vector cache so the
+        // next hybrid query sees the freshly-embedded row. Cheap: just
+        // bumps a generation counter; the cache reloads lazily on the
+        // next SearchAsync call.
+        embeddings.RowSettled += (_, _) => embeddingIndex.Invalidate();
         capture.Ingested += (_, outcome) =>
         {
             if (outcome.Kind is not (IngestKind.Inserted or IngestKind.Bumped))
                 return;
-            // Capture-wake: a fresh URL gets its title and a fresh
-            // screenshot gets OCR'd within a couple seconds instead of
-            // waiting on the periodic timer. Both are reentry-guarded.
+            // Capture-wake: a fresh URL gets its title, a fresh
+            // screenshot gets OCR'd, and a fresh text/link gets
+            // embedded within a couple seconds instead of waiting on
+            // the periodic timer. All three are reentry-guarded.
             if (outcome.EntryKind == "link")  linkBackfill.WakeForCapture();
             if (outcome.EntryKind == "image") imageAnalysis.WakeForCapture();
+            if (outcome.EntryKind == "text" || outcome.EntryKind == "link")
+                embeddings.WakeForCapture();
         };
         // The guard: refuse to start capture (or the backfill loops) when
         // we suspect data loss, so the frozen DB is preserved exactly as
@@ -137,14 +153,16 @@ public sealed class AppHost : IDisposable
             capture.Start();
             linkBackfill.Start();
             imageAnalysis.Start();
+            embeddings.Start();
         }
 
         return new AppHost(paths, db, blobs, ingestor, entries, capture,
-            linkFetcher, linkBackfill, imageAnalysis, suspectedDataLoss);
+            linkFetcher, linkBackfill, imageAnalysis, embeddings, embeddingIndex, suspectedDataLoss);
     }
 
     public void Dispose()
     {
+        Embeddings.Dispose();
         ImageAnalysis.Dispose();
         LinkBackfill.Dispose();
         LinkFetcher.Dispose();

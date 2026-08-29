@@ -554,6 +554,133 @@ public sealed class EntryRepository
         tx.Commit();
     }
 
+    // ─── Semantic-search embedding storage (v13_semantic_enrichment) ────
+
+    /// <summary>
+    /// Rows the embedding sweeper should encode next: text / link
+    /// entries with no <c>entry_embeddings</c> row, or one that a
+    /// model or revision bump has left stale. Ordered newest-first so
+    /// a freshly-copied clip becomes semantically searchable as
+    /// quickly as the sweeper can drain the queue. Mirrors macOS
+    /// <c>EntryRepository.entriesNeedingEmbedding</c>.
+    /// </summary>
+    public IReadOnlyList<long> EntriesNeedingEmbedding(string modelId, int revision, int limit)
+    {
+        const string sql = """
+            SELECT e.id
+            FROM entries e
+            LEFT JOIN entry_embeddings v ON v.entry_id = e.id
+            WHERE e.kind IN ('text', 'link')
+              AND e.deleted_at IS NULL
+              AND (v.entry_id IS NULL OR v.model_id != $mid OR v.revision != $rev)
+            ORDER BY e.created_at DESC
+            LIMIT $lim
+            """;
+        var ids = new List<long>();
+        using var cmd = _db.CreateCommand();
+        cmd.CommandText = sql;
+        cmd.Parameters.AddWithValue("$mid", modelId);
+        cmd.Parameters.AddWithValue("$rev", revision);
+        cmd.Parameters.AddWithValue("$lim", limit);
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read()) ids.Add(reader.GetInt64(0));
+        return ids;
+    }
+
+    /// <summary>
+    /// Read the text an entry should be embedded from. Returns the
+    /// non-empty of <c>link_title</c> + <c>text_preview</c> for links,
+    /// or <c>text_preview</c> for text entries. Never returns bytes
+    /// bigger than the full text_preview column — chunking is the
+    /// service's responsibility.
+    /// </summary>
+    public string? GetEmbeddableText(long entryId)
+    {
+        using var cmd = _db.CreateCommand();
+        cmd.CommandText = "SELECT text_preview, link_title FROM entries WHERE id = $id AND deleted_at IS NULL";
+        cmd.Parameters.AddWithValue("$id", entryId);
+        using var r = cmd.ExecuteReader();
+        if (!r.Read()) return null;
+        var textPreview = r.IsDBNull(0) ? null : r.GetString(0);
+        var linkTitle   = r.IsDBNull(1) ? null : r.GetString(1);
+        // Concatenate title + preview for links so semantic search finds
+        // the row by page title as well as URL/text. text-only rows
+        // just embed their preview.
+        if (!string.IsNullOrWhiteSpace(linkTitle) && !string.IsNullOrWhiteSpace(textPreview))
+            return linkTitle + "\n\n" + textPreview;
+        return textPreview ?? linkTitle;
+    }
+
+    /// <summary>
+    /// Upsert one <c>entry_embeddings</c> row. Serialization to
+    /// <c>Float32 little-endian</c> is caller's responsibility (via
+    /// <see cref="Analysis.EmbeddingService.SerializeLittleEndian"/>);
+    /// this method just persists what it's given. Mirrors macOS
+    /// <c>saveEmbedding</c>: overwrites on the PK so a re-embed
+    /// (model or revision bump) replaces the vector in place rather
+    /// than accumulating stale rows.
+    /// </summary>
+    public void SaveEmbedding(long entryId, string modelId, int revision, int dims, byte[] vector, DateTimeOffset? at = null)
+    {
+        var ts = (at ?? DateTimeOffset.UtcNow).ToUnixTimeMilliseconds() / 1000.0;
+        using var cmd = _db.CreateCommand();
+        cmd.CommandText = """
+            INSERT INTO entry_embeddings (entry_id, model_id, revision, dims, vector, embedded_at)
+            VALUES ($id, $mid, $rev, $dims, $vec, $ts)
+            ON CONFLICT(entry_id) DO UPDATE SET
+                model_id    = excluded.model_id,
+                revision    = excluded.revision,
+                dims        = excluded.dims,
+                vector      = excluded.vector,
+                embedded_at = excluded.embedded_at
+            """;
+        cmd.Parameters.AddWithValue("$id",   entryId);
+        cmd.Parameters.AddWithValue("$mid",  modelId);
+        cmd.Parameters.AddWithValue("$rev",  revision);
+        cmd.Parameters.AddWithValue("$dims", dims);
+        cmd.Parameters.AddWithValue("$vec",  vector);
+        cmd.Parameters.AddWithValue("$ts",   ts);
+        cmd.ExecuteNonQuery();
+    }
+
+    /// <summary>Row shape returned by <see cref="LoadAllEmbeddings"/>:
+    /// (entry_id, model_id, revision, dims, vector-bytes).</summary>
+    public readonly record struct EmbeddingRow(long EntryId, string ModelId, int Revision, int Dims, byte[] Vector);
+
+    /// <summary>
+    /// Load every <c>entry_embeddings</c> row (only for live entries)
+    /// so the in-memory search index can build a contiguous float
+    /// buffer. Cheap enough for a 10k-entry library
+    /// (10k × 384 × 4 B ≈ 15 MB); the index caches the result and
+    /// invalidates on write. Mirrors macOS <c>EmbeddingIndex</c>'s
+    /// paged reload — Windows loads in one pass because SQLite ADO
+    /// doesn't yield the way GRDB does.
+    /// </summary>
+    public IReadOnlyList<EmbeddingRow> LoadAllEmbeddings()
+    {
+        const string sql = """
+            SELECT v.entry_id, v.model_id, v.revision, v.dims, v.vector
+            FROM entry_embeddings v
+            INNER JOIN entries e ON e.id = v.entry_id
+            WHERE e.deleted_at IS NULL
+            ORDER BY v.entry_id
+            """;
+        var rows = new List<EmbeddingRow>();
+        using var cmd = _db.CreateCommand();
+        cmd.CommandText = sql;
+        using var r = cmd.ExecuteReader();
+        while (r.Read())
+        {
+            rows.Add(new EmbeddingRow(
+                EntryId:  r.GetInt64(0),
+                ModelId:  r.GetString(1),
+                Revision: (int)r.GetInt64(2),
+                Dims:     (int)r.GetInt64(3),
+                Vector:   (byte[])r.GetValue(4)));
+        }
+        return rows;
+    }
+
     /// <summary>
     /// Mark <paramref name="entryId"/> deleted (sets <c>deleted_at</c>) and
     /// remove the FTS5 row so the entry stops surfacing in searches. The
