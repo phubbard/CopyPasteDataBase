@@ -12,6 +12,60 @@ dated `[1.X.Y]` heading and reset `[Unreleased]` to empty.
 
 ## [Unreleased]
 
+- **Hybrid search UI wire-up (v1.42.0).** Third of the staged
+  semantic-search rollout: FTS5 as before + an async semantic
+  re-rank after the FTS query returns, merged via RRF, re-assigns
+  `EntryList.ItemsSource` in the fused order. **First user-visible
+  behaviour change** — the search bar now surfaces entries the
+  literal words don't match but the meaning does.
+
+  Flow:
+  - `MainWindow.Refresh` runs FTS5 as it always did — the popup
+    renders immediately with the exact-match results.
+  - After the sync path completes, `SpawnSemanticRerankAsync` fires
+    fire-and-forget: embeds the query text via `EmbeddingService`
+    on a worker thread, hits `EmbeddingIndex.SearchAsync` for the
+    top-K=50 nearest neighbours above `similarityFloor = 0.35`,
+    fuses FTS + semantic ids via `HybridRank.Fuse` (Cormack RRF
+    k=60), hydrates any semantic-only ids via
+    `EntryRepository.RowsByIds` (new), and marshals back to the UI
+    to reassign `ItemsSource` in the fused order.
+  - **Generation-counter guard** at every await boundary: every
+    `Refresh` increments a monotonic counter; the async re-rank
+    captures its value at spawn time and bails if the counter has
+    moved on (user typed more, cleared the box, changed the kind
+    filter). Prevents a slow embed from overwriting a fresher
+    search's results. Same shape as macOS's
+    `spawnSemanticRerank` guard.
+  - **No-op unless a query is present** — empty search bar shows
+    `Recent()` and there's nothing to re-rank.
+  - **No-op when the embedding model is unavailable** — sticky
+    `EmbeddingService.IsAvailable = false` bails out silently, so a
+    missing model bundle doesn't break the search bar.
+  - **No-op when the fused order matches the current one** —
+    reassigning `ItemsSource` triggers ListView layout + selection
+    churn, so we `SequenceEqualsById` first and skip the assignment
+    when nothing changed.
+  - **Selection preserved across re-rank** — the currently-highlighted
+    entry stays highlighted if it's still in the fused result set.
+
+  Constants pinned to the same values Mac's 3.3.0 shipped
+  (`DefaultRrfK = 60`, `DefaultSemanticFloor = 0.35`,
+  `DefaultSemanticTopK = 50`); tie-break identical. Given the same
+  input FTS + semantic id lists, both platforms produce the same
+  order.
+
+  New `EntryRepository.RowsByIds(ids, kind?)` hydrator — takes
+  arbitrary entry ids (from an RRF result), returns their
+  `EntryRow`s filtered on `deleted_at IS NULL` + optional kind.
+  Order is unspecified; callers re-sort by looking up each id in
+  the result. `long`-typed input so the inlined `IN (...)` list is
+  injection-safe.
+
+  No behaviour change when the embedding table is empty (fresh
+  install, sweeper still draining) — the semantic branch just
+  returns `[]` and the FTS result stands.
+
 - **Semantic-search pipeline (v1.41.0).** Second of the staged
   rollout for the Mac 3.3.0 semantic-search feature (v1.40 laid the
   schema; this ships the pipeline that fills it). Zero user-visible

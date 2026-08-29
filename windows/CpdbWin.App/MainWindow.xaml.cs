@@ -2,6 +2,7 @@ using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text;
 using CpdbWin.Core;
+using CpdbWin.Core.Analysis;
 using CpdbWin.Core.Capture;
 using CpdbWin.Core.Ingest;
 using CpdbWin.Core.Store;
@@ -168,6 +169,14 @@ public sealed partial class MainWindow : Window
     /// </summary>
     public void RequestRefresh() => DispatcherQueue.TryEnqueue(Refresh);
 
+    /// <summary>Monotonic search-generation counter. Every
+    /// <see cref="Refresh"/> increments it; async semantic re-rank
+    /// tasks captured a value at spawn time and bail if it no longer
+    /// matches — protects against a slow embedding query overwriting
+    /// a fresher search's results. Mirrors macOS's
+    /// <c>spawnSemanticRerank</c> generation guard.</summary>
+    private long _searchGeneration;
+
     private void Refresh()
     {
         // Guard against the InitializeComponent firing path: when XAML
@@ -177,6 +186,7 @@ public sealed partial class MainWindow : Window
         // _host and bubble a NullReferenceException out through XAML
         // parsing as a XamlParseException 0x802B000A.
         if (_host is null) return;
+        var thisGeneration = Interlocked.Increment(ref _searchGeneration);
 
         // Standalone refresh-cost measurement, always on (Refresh() runs
         // on ingest, filter change, search typing, and post-mutation — not
@@ -251,6 +261,132 @@ public sealed partial class MainWindow : Window
         _cursorIndex = vms.Count == 0 ? -1 : EntryList.SelectedIndex;
 
         UpdateFooter(shown: vms.Count);
+
+        // Fire the semantic re-rank after FTS has settled. Non-empty
+        // query only — an empty search bar shows Recent() and there's
+        // nothing to add. Fire-and-forget; the async body marshals
+        // back to the UI dispatcher and re-checks the generation
+        // counter before touching ItemsSource so a slow embed can't
+        // overwrite a fresher search's results. Per
+        // docs/handoffs/windows-v33-features.md.
+        if (!string.IsNullOrWhiteSpace(query))
+        {
+            var ftsIds = rows.Select(r => r.Id).ToList();
+            _ = SpawnSemanticRerankAsync(query, ftsIds, kind, thisGeneration);
+        }
+    }
+
+    /// <summary>
+    /// Async partner to <see cref="Refresh"/>: embed the query text,
+    /// pull the top-K semantic neighbours from
+    /// <c>_host.EmbeddingIndex</c>, fuse with the FTS result via
+    /// <see cref="HybridRank.Fuse"/>, hydrate any semantic-only
+    /// hits, and re-assign <c>ItemsSource</c> in the fused order.
+    /// Bails at every await boundary if the generation counter has
+    /// moved on (user typed more, cleared the box, changed kind).
+    /// </summary>
+    private async Task SpawnSemanticRerankAsync(
+        string query, List<long> ftsIds, string? kind, long generation)
+    {
+        if (_host is null) return;
+        if (!EmbeddingService.IsAvailable) return;
+
+        // Embed the query on a worker — MiniLM inference isn't fast
+        // enough to run on the UI thread and we don't want to jank
+        // the SearchBox on every keystroke.
+        var queryVector = await Task.Run(() => EmbeddingService.Compute(query)).ConfigureAwait(false);
+        if (queryVector is null) return;
+        if (Interlocked.Read(ref _searchGeneration) != generation) return;
+
+        var semResults = await _host.EmbeddingIndex.SearchAsync(
+            queryVector,
+            topK: HybridRank.DefaultSemanticTopK,
+            scoreFloor: HybridRank.DefaultSemanticFloor).ConfigureAwait(false);
+        if (Interlocked.Read(ref _searchGeneration) != generation) return;
+
+        var semanticIds = semResults.Select(r => r.EntryId).ToList();
+        if (semanticIds.Count == 0) return;  // nothing worth adding
+
+        // Identify ids present ONLY on the semantic side — those need
+        // hydration to appear in the list.
+        var ftsSet = ftsIds.ToHashSet();
+        var missingIds = semanticIds.Where(id => !ftsSet.Contains(id)).ToList();
+
+        IReadOnlyList<EntryRow> newRows;
+        if (missingIds.Count > 0)
+        {
+            newRows = await Task.Run(() =>
+                _host.Entries.RowsByIds(missingIds, kind)).ConfigureAwait(false);
+            if (Interlocked.Read(ref _searchGeneration) != generation) return;
+        }
+        else
+        {
+            newRows = Array.Empty<EntryRow>();
+        }
+
+        // Fuse via RRF, cap at the popup page size, re-assemble.
+        var fusedOrder = HybridRank.Fuse(ftsIds, semanticIds);
+
+        // Marshal back to the UI thread to touch ItemsSource. Final
+        // generation check on the UI side — the search box could have
+        // moved between the Task.Run above and the dispatcher
+        // callback landing.
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            if (_host is null) return;
+            if (Interlocked.Read(ref _searchGeneration) != generation) return;
+
+            // Rebuild an id→VM map from the current ItemsSource plus
+            // the newly-hydrated semantic-only rows. Reading
+            // ItemsSource here (rather than the local `vms`) means we
+            // pick up any late clip-ingest that raced with the
+            // semantic query — cheap consistency win.
+            var currentVms = (EntryList.ItemsSource as IEnumerable<EntryViewModel>)
+                             ?? Array.Empty<EntryViewModel>();
+            var byId = new Dictionary<long, EntryViewModel>();
+            foreach (var vm in currentVms) byId[vm.EntryId] = vm;
+            foreach (var row in newRows)
+            {
+                if (!byId.ContainsKey(row.Id))
+                    byId[row.Id] = EntryViewModel.From(row);
+            }
+
+            // Preserve current selection so re-ranking doesn't drop the
+            // user's highlighted entry.
+            var prevSelectedIds = EntryList.SelectedItems
+                .OfType<EntryViewModel>()
+                .Select(v => v.EntryId)
+                .ToHashSet();
+
+            var reordered = fusedOrder
+                .Where(id => byId.ContainsKey(id))
+                .Select(id => byId[id])
+                .Take(100)  // popup page cap — matches Recent()'s default limit
+                .ToList();
+
+            // Only reassign when the order actually changed —
+            // ItemsSource=... triggers ListView layout + selection
+            // churn even when the content is the same.
+            if (!SequenceEqualsById(reordered, currentVms))
+            {
+                EntryList.ItemsSource = reordered;
+                if (prevSelectedIds.Count > 0)
+                {
+                    foreach (var vm in reordered)
+                        if (prevSelectedIds.Contains(vm.EntryId))
+                            EntryList.SelectedItems.Add(vm);
+                }
+            }
+        });
+    }
+
+    private static bool SequenceEqualsById(IReadOnlyList<EntryViewModel> a, IEnumerable<EntryViewModel> b)
+    {
+        var bList = b as IReadOnlyList<EntryViewModel> ?? b.ToList();
+        if (a.Count != bList.Count) return false;
+        for (int i = 0; i < a.Count; i++)
+            if (a[i].EntryId != bList[i].EntryId) return false;
+        return true;
     }
 
     private void UpdateFooter(int shown)
