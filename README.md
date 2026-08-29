@@ -199,9 +199,12 @@ through Apple's notary service.
 
 ## Building from source
 
-Requires Xcode (for `swift-testing`'s runtime framework and the `#Preview`
-macro plugin that `KeyboardShortcuts` uses). macOS 14+. Apple Silicon for
-fast dev iteration; release artefacts are universal (arm64 + x86_64).
+Requires Xcode 26+ as of v3.3.0 — the macOS 26 SDK is needed to *compile*
+(`FoundationModels`, Vision document OCR), while *running* still works on
+macOS 14+ via availability gates. Xcode also supplies `swift-testing`'s
+runtime framework and the `#Preview` macro plugin that `KeyboardShortcuts`
+uses. Apple Silicon for fast dev iteration; release artefacts are universal
+(arm64 + x86_64). CI builds on `macos-26` runners for the same reason.
 
 ```sh
 git clone git@github.com:phubbard/CopyPasteDataBase.git cpdb

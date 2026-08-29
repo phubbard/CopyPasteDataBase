@@ -10,14 +10,19 @@ on:
 jobs:
   test:
     name: swift test
-    runs-on: macos-15
+    # macos-26: v3.3.0 needs the macOS 26 SDK to compile (FoundationModels
+    # import in AIService, RecognizeDocumentsRequest in DocumentTableService).
+    # macos-15's default Xcode has neither — "no such module 'FoundationModels'".
+    # Runtime support for older macOS stays via @available gates; this is a
+    # build-SDK requirement only.
+    runs-on: macos-26
 
     steps:
       - name: Check out
         uses: actions/checkout@v4
 
       - name: Show toolchain
-        # GitHub's macos-15 runners ship with Xcode preinstalled and
+        # GitHub's macOS runners ship with Xcode preinstalled and
         # xcode-select already pointing at it — that gives us swift-testing
         # (Testing.framework) and the #Preview macro plugin that
         # KeyboardShortcuts needs. No custom xcode-select required.
@@ -42,7 +47,8 @@ jobs:
       # workflow handles the full bundled artefact.
       #
       # Note: `swift build --arch arm64 --arch x86_64` exits non-zero
-      # on success on some macos-15 runner toolchains (driver bug;
+      # on success on some runner toolchains (driver bug, first seen
+      # on macos-15 images;
       # build itself completes and the universal binary lands at the
       # expected path). We capture the exit code, then derive
       # success from "binary exists with both slices" instead. The
