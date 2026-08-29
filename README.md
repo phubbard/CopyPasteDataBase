@@ -187,6 +187,10 @@ joins the same library — see the relay-protocol docs above.
 The fastest path is the signed, notarized DMG on the [latest GitHub
 release](https://github.com/phubbard/CopyPasteDataBase/releases/latest).
 Universal (arm64 + x86_64), so Apple Silicon and Intel Macs both work.
+(macOS and Windows releases interleave on that page — the newest one
+may be a Windows `Setup.exe`; grab the newest `v3.x` for a Mac. Sparkle
+auto-update reads a tag-pinned feed, `releases/download/appcast/appcast.xml`,
+precisely because `latest` flips between the two platforms.)
 
 ```sh
 # Pick the version you want from the releases page, e.g. v2.5.8:

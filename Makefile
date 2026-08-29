@@ -473,8 +473,11 @@ notarize-dmg: dmg
 # Info.plist). generate_appcast signs the archive + emits an
 # appcast whose <enclosure> points at the GitHub release asset URL
 # for THIS version. SUFeedURL in Info.plist is the stable
-# `releases/latest/download/appcast.xml`, so each release just
-# needs to upload its own appcast.xml (done by publish-github).
+# `releases/download/appcast/appcast.xml` — a rolling `appcast`
+# prerelease whose asset publish-github clobber-uploads each Mac
+# release. NOT releases/latest: Windows (Velopack) releases share
+# this repo's release namespace, and whenever one is the most
+# recent release, latest/download 404s the Sparkle feed.
 #
 # We stage only the .dmg into a temp dir — generate_appcast scans
 # a directory and we don't want it to also enclose the .app.zip
@@ -606,6 +609,14 @@ publish-github: verify-version
 	        $(RELEASE_DIR)/cpdb-v$(VERSION).app.zip \
 	        $(RELEASE_DIR)/cpdb \
 	        $(RELEASE_DIR)/SHA256SUMS \
+	        $(RELEASE_DIR)/appcast.xml; \
+	fi
+	@echo "Updating rolling appcast feed (releases/download/appcast/appcast.xml)…"
+	@if gh release view appcast >/dev/null 2>&1; then \
+	    gh release upload appcast $(RELEASE_DIR)/appcast.xml --clobber; \
+	else \
+	    gh release create appcast --prerelease --title "Sparkle appcast (rolling)" \
+	        --notes "Rolling home for the macOS Sparkle feed; asset replaced every macOS release. Exists because releases/latest 404s the feed whenever a Windows (Velopack) release is newest." \
 	        $(RELEASE_DIR)/appcast.xml; \
 	fi
 	@echo

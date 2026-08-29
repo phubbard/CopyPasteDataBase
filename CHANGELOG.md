@@ -10,6 +10,17 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+- **Fix: Sparkle feed no longer breaks when a Windows release is
+  newest.** `SUFeedURL` pointed at `releases/latest/download/appcast.xml`,
+  but macOS and Windows releases share one GitHub namespace — whenever a
+  Velopack release was the most recent, the Mac feed 404'd (auto-update
+  was silently dead most of 2026-08-29). The feed now lives on a rolling
+  tag-pinned prerelease (`releases/download/appcast/appcast.xml`) that
+  `make publish-github` clobber-updates on every Mac release. Takes
+  effect for updates *from* this version onward; 3.3.1-and-earlier
+  binaries still query the old URL (fleet Macs get pushed builds via
+  `deploy.sh`, so nothing is stranded).
+
 ## [3.3.1] – 2026-08-29
 
 - **Fix: double-click paste could silently do nothing on cards with

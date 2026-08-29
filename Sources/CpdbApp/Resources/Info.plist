@@ -56,7 +56,13 @@
 	<key>SUEnableAutomaticChecks</key>
 	<true/>
 	<key>SUFeedURL</key>
-	<string>https://github.com/phubbard/CopyPasteDataBase/releases/latest/download/appcast.xml</string>
+	<!-- Pinned to the rolling `appcast` prerelease, NOT releases/latest:
+	     Windows (Velopack) releases share this repo's release namespace,
+	     and whenever one of them is the most recent release,
+	     releases/latest/download/appcast.xml 404s — Mac auto-update was
+	     silently broken all day on 2026-08-29 this way. publish-github
+	     clobber-uploads each new appcast.xml to the fixed `appcast` tag. -->
+	<string>https://github.com/phubbard/CopyPasteDataBase/releases/download/appcast/appcast.xml</string>
 	<key>SUPublicEDKey</key>
 	<string>rOS7OWBPkZQu2jr7GJTM4BdA90ctqG0ffQeFDOaIa1g=</string>
 	<key>SUScheduledCheckInterval</key>
