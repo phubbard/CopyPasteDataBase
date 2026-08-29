@@ -53,6 +53,33 @@ public sealed class EntryRepository
     }
 
     /// <summary>
+    /// Hydrate specific entry ids into <see cref="EntryRow"/>s. Order
+    /// of the returned list is unspecified — callers that need a
+    /// particular order (e.g. hybrid-search RRF result) re-sort by
+    /// looking up each id in the returned dictionary. Filters out
+    /// tombstoned rows and (optionally) rows whose <c>kind</c>
+    /// doesn't match. Small-set query: SQLite's parameter binder
+    /// doesn't take a variadic <c>IN (...)</c>, so ids are inlined
+    /// as a literal comma-joined int list — safe because they came
+    /// from us (<c>long</c>-typed).
+    /// </summary>
+    public IReadOnlyList<EntryRow> RowsByIds(IReadOnlyList<long> ids, string? kind = null)
+    {
+        if (ids.Count == 0) return Array.Empty<EntryRow>();
+        var idList = string.Join(",", ids);  // long-typed, so no injection risk
+        var sql = SelectEntryColumns + $"""
+
+            WHERE e.id IN ({idList})
+              AND e.deleted_at IS NULL
+              AND ($kind IS NULL OR e.kind = $kind)
+            """;
+        return Query(sql, cmd =>
+        {
+            cmd.Parameters.AddWithValue("$kind", (object?)kind ?? DBNull.Value);
+        });
+    }
+
+    /// <summary>
     /// FTS5 MATCH against the <c>entries_fts</c> shadow table, optionally
     /// narrowed to a single <c>entries.kind</c>. Pinned rows float to the
     /// top of the matching set.
