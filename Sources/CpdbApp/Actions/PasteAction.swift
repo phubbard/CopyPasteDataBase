@@ -24,43 +24,57 @@ struct PasteAction {
     /// before `CGEvent.post(tap:)` is routed to it.
     static let reactivationDelay: TimeInterval = 0.04
 
-    func paste(entryId: Int64) {
+    /// `pasteboard` defaults to `.general` for real use; tests pass a
+    /// scratch pasteboard so they can assert on written content without
+    /// touching the developer's actual clipboard.
+    func paste(entryId: Int64, pasteboard: NSPasteboard = .general) {
         let writer = PasteboardWriter(store: store)
         do {
-            try writer.write(entryId: entryId, to: .general)
+            try writer.write(entryId: entryId, to: pasteboard)
         } catch {
-            Log.cli.error("PasteAction writer failed: \(String(describing: error), privacy: .public)")
+            Log.paste.error("paste: PasteAction writer failed entry=\(entryId, privacy: .public): \(String(describing: error), privacy: .public)")
             return
         }
 
         // Re-activate the previous app. Without this, the frontmost app at
         // the moment of the keystroke is still `cpdb` (or whichever app we
         // handed focus to during the popup), and ⌘V would be routed there.
-        previousApp?.activate()
+        if let previousApp, !previousApp.activate() {
+            Log.paste.error("paste: activate(previousApp:) failed entry=\(entryId, privacy: .public) app=\(previousApp.bundleIdentifier ?? "nil", privacy: .public)")
+        }
 
         guard Accessibility.isTrusted() else {
-            Log.cli.warning("Accessibility not granted; skipping ⌘V synthesis")
+            Log.paste.warning("paste: Accessibility not granted, skipping \u{2318}V synthesis entry=\(entryId, privacy: .public)")
             NotificationCenter.default.post(name: .cpdbNeedsAccessibility, object: nil)
             return
         }
 
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.reactivationDelay) {
-            Self.synthesizeCmdV()
+            Self.synthesizeCmdV(entryId: entryId)
         }
     }
 
     /// Post a Cmd+V keystroke to the frontmost application. Uses the
     /// combined session event source so Dead Keys, key repeat, etc. don't
     /// leak into our synthesised events.
-    private static func synthesizeCmdV() {
+    private static func synthesizeCmdV(entryId: Int64) {
         let src = CGEventSource(stateID: .combinedSessionState)
         // kVK_ANSI_V = 0x09
         let keyDown = CGEvent(keyboardEventSource: src, virtualKey: 0x09, keyDown: true)
         let keyUp   = CGEvent(keyboardEventSource: src, virtualKey: 0x09, keyDown: false)
-        keyDown?.flags = .maskCommand
-        keyUp?.flags   = .maskCommand
-        keyDown?.post(tap: .cgAnnotatedSessionEventTap)
-        keyUp?.post(tap: .cgAnnotatedSessionEventTap)
+        guard let keyDown, let keyUp else {
+            // CGEventSource/CGEvent init returns nil when the event
+            // source can't be created (e.g. no window server session,
+            // the state this always hit under `swift test`) — silently
+            // no-op'd before, leaving the pasteboard written but no
+            // keystroke ever posted with no trace of why.
+            Log.paste.error("paste: synthesizeCmdV failed to construct CGEvent entry=\(entryId, privacy: .public)")
+            return
+        }
+        keyDown.flags = .maskCommand
+        keyUp.flags   = .maskCommand
+        keyDown.post(tap: .cgAnnotatedSessionEventTap)
+        keyUp.post(tap: .cgAnnotatedSessionEventTap)
     }
 }
 

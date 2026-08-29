@@ -5,7 +5,10 @@ import CpdbShared
 /// Top-level SwiftUI view hosted inside `PopupPanel`.
 struct PopupRootView: View {
     @Bindable var state: PopupState
-    let onPaste: () -> Void
+    /// Threaded straight down to `EntryStripView`'s double-click gesture —
+    /// see that type's doc comment for why it takes an id rather than
+    /// just re-pasting the current selection.
+    let onPaste: (Int64) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {

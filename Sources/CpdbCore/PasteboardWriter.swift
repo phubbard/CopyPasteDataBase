@@ -98,7 +98,21 @@ public struct PasteboardWriter {
     public func write(entryId: Int64, to pasteboard: NSPasteboard = .general) throws {
         let items = try loadItems(entryId: entryId)
         pasteboard.clearContents()
-        pasteboard.writeObjects(items)
+        // `writeObjects` returns false if the pasteboard's ownership
+        // changed out from under us (another app grabbed it between
+        // `clearContents()` and here) or an item declared no
+        // representable types — previously discarded, so a failed
+        // write looked identical to a successful one everywhere
+        // downstream. Log the id either way: a bare success line is
+        // what lets "the pasteboard was never touched" (this entry's
+        // id never appears at all) be diagnosed from a "the write
+        // failed" case (id appears, wrote=false) after the fact.
+        let wrote = pasteboard.writeObjects(items)
+        if wrote {
+            Log.paste.log("paste: PasteboardWriter.write entry=\(entryId, privacy: .public) wrote=true")
+        } else {
+            Log.paste.error("paste: PasteboardWriter.write entry=\(entryId, privacy: .public) wrote=false")
+        }
     }
 }
 #endif
