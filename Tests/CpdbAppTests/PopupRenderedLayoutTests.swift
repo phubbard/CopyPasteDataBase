@@ -84,7 +84,7 @@ struct PopupRenderedLayoutTests {
         state.selectedIndex = -1
 
         let hosting = NSHostingView(
-            rootView: PopupRootView(state: state, onPaste: {})
+            rootView: PopupRootView(state: state, onPaste: { _ in })
                 .environment(\.cpdbStore, store)
         )
         hosting.frame = NSRect(x: 0, y: 0, width: Self.renderWidth, height: PopupController.panelHeight)

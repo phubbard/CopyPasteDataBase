@@ -51,8 +51,8 @@ final class PopupController {
         // ImageCard/LinkCard so they read thumbnails via the shared
         // DatabaseQueue instead of each opening their own with
         // Store.open() per render (see PopupEnvironment.swift).
-        let hosting = NSHostingController(rootView: PopupRootView(state: state, onPaste: { [weak self] in
-            self?.pasteSelected()
+        let hosting = NSHostingController(rootView: PopupRootView(state: state, onPaste: { [weak self] id in
+            self?.paste(entryId: id)
         }).environment(\.cpdbStore, store))
         // The panel's frame is authoritative (repositionOnActiveScreen sets
         // it explicitly on every summon) — SwiftUI must never drive the
@@ -219,14 +219,43 @@ final class PopupController {
 
     /// Called when the user hits Return on a selected entry. Runs the full
     /// paste-into-previous-app flow.
+    ///
+    /// Reads `state.selectedIndex` — legitimate here because a key press
+    /// has no click target of its own, so the current selection genuinely
+    /// *is* the user's intent. A mouse gesture is different: see
+    /// `paste(entryId:)` below, which is what the popup's double-click
+    /// actually calls.
     func pasteSelected() {
         guard let state = state, let entry = state.selectedEntry, let id = entry.id else { return }
+        Log.paste.log("paste: pasteSelected entry=\(id, privacy: .public) previous=\(self.previousApp?.bundleIdentifier ?? "nil", privacy: .public)")
         let action = PasteAction(store: state.store, previousApp: previousApp)
         // Hide before pasting so our panel isn't the key window when the
         // synthesised ⌘V flies through.
         hide()
         action.paste(entryId: id)
-        Log.cli.info("pasteSelected entry \(id, privacy: .public) (previous=\(self.previousApp?.bundleIdentifier ?? "nil", privacy: .public))")
+    }
+
+    /// Called when the user double-clicks a card in `EntryStripView` —
+    /// pastes the entry that was actually clicked, never resolved through
+    /// `state.selectedIndex`. A mouse gesture already names its target
+    /// directly; laundering it through the selection index is what let a
+    /// double-click silently paste nothing (or the wrong entry) whenever
+    /// the click landed ahead of the selection highlight catching up
+    /// (v3.3.1). `pasteboard` defaults to `.general` for real use; tests
+    /// inject a scratch pasteboard so they don't clobber the developer's
+    /// actual clipboard. `performsSystemPasteEffects` defaults to `true`
+    /// for real use; tests pass `false` so they only exercise the
+    /// entry-id routing this method claims to fix, without also
+    /// re-activating whatever app is actually frontmost on the test
+    /// machine or synthesizing a keystroke — see
+    /// `PasteAction.performsSystemPasteEffects`.
+    func paste(entryId: Int64, pasteboard: NSPasteboard = .general, performsSystemPasteEffects: Bool = true) {
+        guard let state = state else { return }
+        Log.paste.log("paste: paste(entryId:) entry=\(entryId, privacy: .public) previous=\(self.previousApp?.bundleIdentifier ?? "nil", privacy: .public)")
+        var action = PasteAction(store: state.store, previousApp: previousApp)
+        action.performsSystemPasteEffects = performsSystemPasteEffects
+        hide()
+        action.paste(entryId: entryId, pasteboard: pasteboard)
     }
 
     /// Delete (tombstone) the selected entry. Mirrors
@@ -280,9 +309,9 @@ final class PopupController {
             return
         }
         previousApp = NSWorkspace.shared.frontmostApplication
+        Log.paste.log("paste: pasteRecent(atIndex: \(n, privacy: .public)) entry=\(id, privacy: .public) previous=\(self.previousApp?.bundleIdentifier ?? "nil", privacy: .public)")
         let action = PasteAction(store: state.store, previousApp: previousApp)
         action.paste(entryId: id)
-        Log.cli.info("pasteRecent(atIndex: \(n, privacy: .public)) entry \(id, privacy: .public)")
     }
 
     /// Backs `PasteLatestIntent`. Pastes the entry with the newest
@@ -298,9 +327,9 @@ final class PopupController {
             return
         }
         previousApp = NSWorkspace.shared.frontmostApplication
+        Log.paste.log("paste: pasteLatest() entry=\(id, privacy: .public) previous=\(self.previousApp?.bundleIdentifier ?? "nil", privacy: .public)")
         let action = PasteAction(store: state.store, previousApp: previousApp)
         action.paste(entryId: id)
-        Log.cli.info("pasteLatest() entry \(id, privacy: .public)")
     }
 
     /// Backs `TogglePinLatestIntent`. Toggles the pin on the entry with

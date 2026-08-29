@@ -14,6 +14,16 @@ public enum Log {
     public static let store   = Logger(subsystem: subsystem, category: "store")
     public static let importer = Logger(subsystem: subsystem, category: "importer")
     public static let cli     = Logger(subsystem: subsystem, category: "cli")
+    /// Popup-to-pasteboard flow: gesture → PopupController → PasteAction →
+    /// PasteboardWriter → synthesized ⌘V. Deliberately logged at `.log`
+    /// (the default level) or above (`.error`/`.warning`) rather than
+    /// `.info` — `.info`/`.debug` are memory-buffered only and don't
+    /// survive to `log show`, which is exactly how a real paste failure
+    /// left zero trace across 3 days of logs. Messages carry a stable
+    /// "paste:" prefix so `log show --predicate 'eventMessage contains
+    /// "paste:"'` finds the whole flow. Never log entry content/titles —
+    /// numeric entry ids only.
+    public static let paste   = Logger(subsystem: subsystem, category: "paste")
 
     /// Print a line to stderr. Use for user-facing progress in CLI commands.
     public static func stderr(_ message: @autoclosure () -> String) {

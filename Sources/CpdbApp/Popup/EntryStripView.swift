@@ -11,7 +11,9 @@ import CpdbShared
 /// via the keyboard monitor in `PopupController`.
 struct EntryStripView: View {
     @Bindable var state: PopupState
-    let onPaste: () -> Void
+    /// Takes the clicked entry's id, not just "paste the selection" —
+    /// see the `.highPriorityGesture` below for why.
+    let onPaste: (Int64) -> Void
 
     /// Vertical padding applied above and below the LazyHStack of cards.
     /// Exposed so `PopupController.panelHeight`'s geometry-contract test
@@ -34,10 +36,40 @@ struct EntryStripView: View {
                             isTimePivotAnchor: state.timePivot?.anchorEntryId == row.entry.id
                         )
                         .id(row.entry.id!)
-                        .onTapGesture(count: 2) {
-                            state.selectedIndex = index
-                            onPaste()
-                        }
+                        // .highPriorityGesture, not .onTapGesture(count: 2):
+                        // ChipRow attaches its own tap to a *descendant*
+                        // view (the chip capsule) via .simultaneousGesture,
+                        // which is exempt from arbitration and always
+                        // fires — but a plain .onTapGesture(count: 2) here
+                        // left this ancestor gesture's own recognition up
+                        // to SwiftUI's ordinary cross-view arbitration,
+                        // which could and did lose to the chip's gesture
+                        // (a double-click landing on a link chip pasted
+                        // nothing at all — v3.3.1). .highPriorityGesture
+                        // makes this card's double-tap win outright
+                        // regardless of what descendant gestures exist;
+                        // the chip's .simultaneousGesture is untouched by
+                        // that and still recognizes alongside it, and
+                        // ChipAction.tap's own schedule/cancel debounce
+                        // (see its doc comment) is what keeps the chip's
+                        // action from *also* firing on the same
+                        // double-click.
+                        .highPriorityGesture(
+                            TapGesture(count: 2).onEnded {
+                                let id = row.entry.id!
+                                Log.paste.log("paste: gesture fired entry=\(id, privacy: .public)")
+                                state.selectedIndex = index
+                                // Paste the card that was actually
+                                // double-clicked, not whatever
+                                // selectedIndex resolves to — the two
+                                // are set on the same line above, but a
+                                // second double-click landing while a
+                                // prior paste's `hide()`/refresh is
+                                // still settling could otherwise resolve
+                                // against a stale selection.
+                                onPaste(id)
+                            }
+                        )
                         .onTapGesture {
                             state.selectedIndex = index
                         }
