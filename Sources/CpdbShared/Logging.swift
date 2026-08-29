@@ -14,6 +14,7 @@ public enum Log {
     public static let store   = Logger(subsystem: subsystem, category: "store")
     public static let importer = Logger(subsystem: subsystem, category: "importer")
     public static let cli     = Logger(subsystem: subsystem, category: "cli")
+    public static let sync    = Logger(subsystem: subsystem, category: "sync")
 
     /// Print a line to stderr. Use for user-facing progress in CLI commands.
     public static func stderr(_ message: @autoclosure () -> String) {

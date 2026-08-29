@@ -43,6 +43,15 @@ public actor CloudKitSyncer {
         /// Additive field, defaults false, so existing call sites and
         /// literal constructions keep compiling.
         public var gated: Bool = false
+        /// True when this call did no work (or stopped mid-drain)
+        /// because a prior CloudKit retryable error — op-level or
+        /// per-record, any error carrying a `retryAfterSeconds` hint or
+        /// matching `isRetryable` — opened the in-memory throttle gate.
+        /// Distinct from `gated`: that's a local policy pause (cutover
+        /// in progress); this is CloudKit itself asking us to back off.
+        /// See `CloudKitSyncer.throttledUntil`. Additive, defaults
+        /// false.
+        public var throttled: Bool = false
     }
 
     /// Outcome of a single `pullRemoteChanges()` call.
@@ -57,6 +66,10 @@ public actor CloudKitSyncer {
         /// genuinely nothing to pull. Callers (the iOS UI in particular)
         /// must not treat a gated report as a successful empty pull.
         public var gated: Bool = false
+        /// True when this call did no work because a prior CloudKit
+        /// retryable error opened the in-memory throttle gate — see
+        /// `PushReport.throttled` for the gated/throttled distinction.
+        public var throttled: Bool = false
 
         public init(
             inserted: Int,
@@ -64,7 +77,8 @@ public actor CloudKitSyncer {
             tombstoned: Int,
             skipped: Int,
             moreComing: Bool,
-            gated: Bool = false
+            gated: Bool = false,
+            throttled: Bool = false
         ) {
             self.inserted = inserted
             self.updated = updated
@@ -72,6 +86,7 @@ public actor CloudKitSyncer {
             self.skipped = skipped
             self.moreComing = moreComing
             self.gated = gated
+            self.throttled = throttled
         }
     }
 
@@ -147,6 +162,25 @@ public actor CloudKitSyncer {
     private var zoneEnsured = false
     private var pushing = false
 
+    /// Per-process, in-memory throttle gate. Set by any retryable
+    /// CloudKit error (op-level or per-record) that asks us to back off
+    /// — see `openThrottleGate`. `pushPendingChanges`/`pullRemoteChanges`
+    /// early-return while it's in the future rather than sleeping
+    /// inline, which matters because the server has been observed
+    /// asking for waits over 1700s (`Retry after 1711.2 seconds`) —
+    /// sleeping that long inline would wedge the caller instead of
+    /// letting its normal periodic-tick cadence retry later. Not
+    /// persisted: a relaunch clears it, which is fine — the next real
+    /// throttled response re-arms it immediately.
+    private var throttledUntil: Date?
+
+    /// The `throttledUntil` value we last logged an "early-returned,
+    /// still gated" line for. Lets `isThrottled` log once per gate
+    /// window instead of once per call — a tick loop can hit the gate
+    /// every few seconds for the duration of a long CloudKit-mandated
+    /// wait.
+    private var loggedThrottleUntil: Date?
+
     public init(
         store: Store,
         client: CloudKitClient,
@@ -205,13 +239,21 @@ public actor CloudKitSyncer {
         zoneEnsured = true
     }
 
-    /// Drain one batch from the push queue. Returns a report for
-    /// logging. Re-entrancy guard: if a push is already running, returns
-    /// an empty report rather than running two in parallel.
+    /// Drain the push queue. Returns an aggregate report for logging.
+    /// Re-entrancy guard: if a push is already running, returns an
+    /// empty report rather than running two in parallel.
+    ///
+    /// Internally loops across multiple `batchSize`-sized batches within
+    /// a bounded time budget (`drainPushBatches`) so a large backlog
+    /// drains in one call instead of one tick per ~`batchSize` rows —
+    /// see that method's doc comment.
     @discardableResult
     public func pushPendingChanges() async throws -> PushReport {
         if Self.isPaused {
             return PushReport(attempted: 0, saved: 0, failed: 0, remaining: try await remainingCount())
+        }
+        if isThrottled(context: "push") {
+            return PushReport(attempted: 0, saved: 0, failed: 0, remaining: try await remainingCount(), throttled: true)
         }
         // Identity cutover in progress: sync is fully disabled until the
         // local rehash + reseed completes (docs/canonical-hash-v2.md §4.1)
@@ -244,6 +286,62 @@ public actor CloudKitSyncer {
         pushing = true
         defer { pushing = false }
 
+        return try await drainPushBatches()
+    }
+
+    /// Push budget per `pushPendingChanges()` call. A fresh backlog of
+    /// thousands of rows (e.g. one built up behind the queue-starvation
+    /// bug this budget loop fixes) previously took one tick per
+    /// `batchSize` rows to clear — days for a multi-thousand-row queue.
+    private static let pushDrainTimeBudget: Duration = .seconds(30)
+
+    /// Run `pushOneBatch()` repeatedly, mirroring
+    /// `EmbeddingSweeper.drainBacklog`'s multi-batch-per-tick pattern.
+    /// Only continues past a batch that was FULLY successful — every
+    /// row this batch attempted actually saved (`saved == attempted`).
+    /// Deliberately stricter than "no explicit failure": a per-record
+    /// code-22 rotation (see `pushOneBatch`) leaves `failed` at 0 but
+    /// `saved` below `attempted`, and if the SAME record keeps losing
+    /// that race, treating that as "clean" would hot-loop rotating it
+    /// to the back and re-peeking it every iteration until the time
+    /// budget ran out. Any other imperfection — a real per-record
+    /// failure, a throttle gate opening, a whole-batch cascade — also
+    /// fails this check the same way, since none of them save
+    /// everything either. Stops on: empty queue, a batch that wasn't
+    /// fully successful, the time budget, or the throttle gate being
+    /// open going into the next iteration.
+    ///
+    /// The returned report sums attempted/saved/failed across every
+    /// batch run this call, but `remaining`/`gated`/`throttled` reflect
+    /// only the LAST batch — callers care about current queue depth and
+    /// gate status, not a historical sum of a value that only makes
+    /// sense as a snapshot.
+    private func drainPushBatches() async throws -> PushReport {
+        let start = ContinuousClock.now
+        var totals = PushReport(attempted: 0, saved: 0, failed: 0, remaining: 0)
+        while true {
+            let batch = try await pushOneBatch()
+            totals.attempted += batch.attempted
+            totals.saved += batch.saved
+            totals.failed += batch.failed
+            totals.remaining = batch.remaining
+            totals.gated = batch.gated
+            totals.throttled = batch.throttled
+
+            let batchFullySucceeded = batch.attempted > 0 && batch.saved == batch.attempted
+            guard batchFullySucceeded, batch.remaining > 0 else { break }
+            guard ContinuousClock.now - start < Self.pushDrainTimeBudget else { break }
+            if isThrottled(context: "push") {
+                totals.throttled = true
+                break
+            }
+        }
+        return totals
+    }
+
+    /// Push one `batchSize`-sized batch from the queue. Returns a report
+    /// for that batch alone — `drainPushBatches` sums across calls.
+    private func pushOneBatch() async throws -> PushReport {
         try await ensureZoneIfNeeded()
 
         // 1. Snapshot the next batch from the queue.
@@ -399,22 +497,27 @@ public actor CloudKitSyncer {
         do {
             result = try await client.modifyRecords(saving: entryRecords, deleting: [])
         } catch let ckError as CKError where Self.isRetryable(ckError) {
-            // Any CloudKit error that supplies a retryAfterSeconds
-            // hint (or is a well-known transient like zoneBusy, rate
-            // limit, service unavailable, network issue) → sleep and
-            // retry next tick. Don't mark failures; the queue rows
-            // stay untouched.
-            let retry = ckError.retryAfterSeconds ?? 2.0
-            Log.cli.info(
-                "cloudkit push: transient (\(ckError.code.rawValue, privacy: .public)), waiting \(retry, privacy: .public)s before next try"
+            // Any CloudKit error that supplies a retryAfterSeconds hint
+            // (or is a well-known transient like zoneBusy, rate limit,
+            // service unavailable, network issue) opens the throttle
+            // gate instead of sleeping inline. CloudKit has been
+            // observed escalating to op-level throttling with hints
+            // over 1700s ("Retry after 1711.2 seconds") — sleeping that
+            // long here would wedge this call (and this tick's drain
+            // loop) for half an hour instead of letting the normal
+            // periodic-tick cadence pick it back up once the gate
+            // lifts. Don't mark failures; the queue rows stay
+            // untouched.
+            openThrottleGate(retryAfterSeconds: ckError.retryAfterSeconds)
+            Log.sync.log(
+                "cloudkit push: transient (\(ckError.code.rawValue, privacy: .public)), throttle gate opened"
             )
-            let ns = UInt64(max(retry, 0.5) * 1_000_000_000)
-            try? await Task.sleep(nanoseconds: ns)
             return PushReport(
                 attempted: 0,
                 saved: 0,
                 failed: 0,
-                remaining: try await remainingCount()
+                remaining: try await remainingCount(),
+                throttled: true
             )
         } catch {
             // Other whole-batch failure (network down, auth error, …).
@@ -493,12 +596,26 @@ public actor CloudKitSyncer {
             var failed: Int
             var successfulRecordIDs: Set<CKRecord.ID>
             var errorKindCounts: [String: Int]
+            /// entry_ids whose queue row got rotated to the back for a
+            /// per-record code-22 (batchRequestFailed) failure. Logged
+            /// once per drain after the write closure returns.
+            var code22RotatedEntryIds: [Int64] = []
+            /// Count of per-record failures that matched `isRetryable`
+            /// (excluding code 22, handled separately above). Used to
+            /// open the throttle gate after the write closure returns —
+            /// opening it mid-transaction would be pointless, since
+            /// nothing reads the gate until the write completes anyway.
+            var retryableFailureCount = 0
+            /// Largest `retryAfterSeconds` hint seen among this batch's
+            /// per-record retryable failures, if any carried one.
+            var retryableHintSeconds: Double?
         }
         // enqueued_at observed at peek time, per entry — so the
         // post-success removal can't drop a re-enqueue that landed during
         // the (seconds-to-minutes) CloudKit round-trip.
         let enqueuedAtByEntryId = Dictionary(pending.map { ($0.entryId, $0.enqueuedAt) },
                                              uniquingKeysWith: { a, _ in a })
+        let now = Date().timeIntervalSince1970
         let entryOutcome = try await store.dbQueue.write { db -> EntryWriteOutcome in
             var out = EntryWriteOutcome(
                 saved: 0, failed: 0,
@@ -522,23 +639,55 @@ public actor CloudKitSyncer {
                 case .failure(let error):
                     let kind = "entry:\(Self.describe(error))"
                     out.errorKindCounts[kind, default: 0] += 1
-                    // CKErrorDomain:22 (batchRequestFailed) means this
-                    // record was fine — another record in our cluster
-                    // hit a server-side conflict and cascade-failed us
-                    // along with it. Don't bump attempt_count; let the
-                    // next tick retry. This is the common case with
-                    // multiple devices concurrently pushing the same
-                    // content-addressed recordIDs.
-                    if let ck = error as? CKError, ck.code == .batchRequestFailed {
+                    let ck = error as? CKError
+                    if ck?.code == .batchRequestFailed {
+                        // CKErrorDomain:22 means this record was fine —
+                        // another record in our cluster hit a
+                        // server-side conflict and cascade-failed us
+                        // along with it. Unlike a whole-batch cascade
+                        // (every record failed this way — a zone-level
+                        // CAS collision, handled above before this
+                        // closure runs), a single code-22 record here
+                        // can keep losing this race indefinitely while
+                        // its siblings save fine. Left alone it pins
+                        // the ASC queue head forever and starves every
+                        // row behind it — this starved 6,600+ rows in
+                        // production. Rotate it to the back, the same
+                        // courtesy the whole-batch cascade path
+                        // extends, so it cycles through instead of
+                        // blocking. Don't bump attempt_count: the
+                        // record itself isn't at fault.
+                        if let entryId = idMap[recordID] {
+                            try db.execute(
+                                sql: "UPDATE cloudkit_push_queue SET enqueued_at = ? WHERE entry_id = ?",
+                                arguments: [now, entryId]
+                            )
+                            out.code22RotatedEntryIds.append(entryId)
+                        }
                         continue
                     }
                     if let entryId = idMap[recordID] {
+                        // Recorded even for a retryable error (429,
+                        // serviceUnavailable, …): attempt_count only
+                        // feeds `cpdb sync status`'s "worst error" query
+                        // and resets to 0 on re-enqueue — nothing caps,
+                        // prunes, or drops a row based on its value
+                        // (checked via grep across Sources/ and
+                        // Schema.swift), so bumping it here costs
+                        // nothing and keeps last_error/last_attempted_at
+                        // current for forensics.
                         try PushQueue.markFailure(
                             entryId: entryId,
                             error: Self.describe(error),
                             in: db
                         )
                         out.failed += 1
+                    }
+                    if let ck, Self.isRetryable(ck) {
+                        out.retryableFailureCount += 1
+                        if let hint = ck.retryAfterSeconds {
+                            out.retryableHintSeconds = max(out.retryableHintSeconds ?? 0, hint)
+                        }
                     }
                 }
             }
@@ -549,6 +698,19 @@ public actor CloudKitSyncer {
         successfulEntryRecordIDs.formUnion(entryOutcome.successfulRecordIDs)
         for (k, v) in entryOutcome.errorKindCounts {
             errorKindCounts[k, default: 0] += v
+        }
+        if !entryOutcome.code22RotatedEntryIds.isEmpty {
+            Log.sync.log(
+                "cloudkit push: rotated \(entryOutcome.code22RotatedEntryIds.count, privacy: .public) code-22 (batchRequestFailed) record(s) to back of queue: entryIds=\(entryOutcome.code22RotatedEntryIds.map(String.init).joined(separator: ","), privacy: .public)"
+            )
+        }
+        var throttledThisBatch = false
+        if entryOutcome.retryableFailureCount > 0 {
+            throttledThisBatch = true
+            openThrottleGate(retryAfterSeconds: entryOutcome.retryableHintSeconds)
+            Log.sync.log(
+                "cloudkit push: \(entryOutcome.retryableFailureCount, privacy: .public) per-record retryable failure(s), throttle gate opened"
+            )
         }
 
         // 5. Push flavors for entries that successfully landed. Entries
@@ -602,14 +764,17 @@ public actor CloudKitSyncer {
                     )
                 }
             } catch let ckError as CKError where Self.isRetryable(ckError) {
-                let retry = ckError.retryAfterSeconds ?? 2.0
-                Log.cli.info(
-                    "cloudkit push (flavors): transient (\(ckError.code.rawValue, privacy: .public)), waiting \(retry, privacy: .public)s"
+                // Entries already landed (they're a separate
+                // modifyRecords call from flavors); only the flavor
+                // upload hit a transient. Open the gate instead of
+                // sleeping inline — same rationale as the entries catch
+                // above. Don't mark anything — flavors rebuild from
+                // local state on the next attempt.
+                openThrottleGate(retryAfterSeconds: ckError.retryAfterSeconds)
+                throttledThisBatch = true
+                Log.sync.log(
+                    "cloudkit push (flavors): transient (\(ckError.code.rawValue, privacy: .public)), throttle gate opened"
                 )
-                let ns = UInt64(max(retry, 0.5) * 1_000_000_000)
-                try? await Task.sleep(nanoseconds: ns)
-                // Don't mark anything — entries already landed, flavors
-                // will be re-built from local state on the next tick.
             } catch {
                 errorKindCounts["flavor-batch:\(Self.describe(error))", default: 0] += 1
             }
@@ -623,7 +788,7 @@ public actor CloudKitSyncer {
         }
 
         let remaining = try await remainingCount()
-        return PushReport(attempted: attempted, saved: saved, failed: failed, remaining: remaining)
+        return PushReport(attempted: attempted, saved: saved, failed: failed, remaining: remaining, throttled: throttledThisBatch)
     }
 
     // MARK: - Internals
@@ -775,11 +940,11 @@ public actor CloudKitSyncer {
             .appendingPathComponent("cpdb-ck-thumbs", isDirectory: true)
     }
 
-    /// CloudKit errors we treat as "sleep and retry next tick"
-    /// rather than real failures. Any error with a retryAfterSeconds
-    /// hint qualifies — CloudKit explicitly signals "I'll accept this
-    /// later, just not now." We also include well-known transient
-    /// codes that sometimes omit the hint.
+    /// CloudKit errors we treat as "gate and retry later" rather than
+    /// real failures. Any error with a retryAfterSeconds hint qualifies
+    /// — CloudKit explicitly signals "I'll accept this later, just not
+    /// now." We also include well-known transient codes that sometimes
+    /// omit the hint.
     static func isRetryable(_ error: CKError) -> Bool {
         if error.retryAfterSeconds != nil { return true }
         switch error.code {
@@ -792,6 +957,46 @@ public actor CloudKitSyncer {
         default:
             return false
         }
+    }
+
+    // MARK: - Throttle gate
+
+    /// Open (or extend) the in-memory throttle gate. `retryAfterSeconds`
+    /// is the hint from the triggering `CKError`, if it carried one;
+    /// nil falls back to 60s (a well-known transient code — e.g.
+    /// `.zoneBusy` — without an explicit hint still deserves a real
+    /// pause). Floored at 5s so a near-zero hint isn't effectively a
+    /// no-op. Never SHORTENS an already-open gate: a second retryable
+    /// error arriving while we're already waiting out a longer one
+    /// (e.g. a per-record 429 following an op-level 1711s throttle)
+    /// must not cut that wait short.
+    private func openThrottleGate(retryAfterSeconds: Double?) {
+        let seconds = max(retryAfterSeconds ?? 60, 5)
+        let candidate = Date().addingTimeInterval(seconds)
+        if let current = throttledUntil, current >= candidate { return }
+        throttledUntil = candidate
+    }
+
+    /// True while a previously-opened throttle gate is still in effect.
+    /// Clears the gate (and its log dedup marker) once it has expired.
+    /// Logs once per gate window rather than once per call — see
+    /// `loggedThrottleUntil`.
+    private func isThrottled(context: String) -> Bool {
+        guard let until = throttledUntil else { return false }
+        let now = Date()
+        guard now < until else {
+            throttledUntil = nil
+            loggedThrottleUntil = nil
+            return false
+        }
+        if loggedThrottleUntil != until {
+            loggedThrottleUntil = until
+            let remaining = until.timeIntervalSince(now)
+            Log.sync.log(
+                "cloudkit \(context, privacy: .public): throttle gate open, \(remaining, privacy: .public)s remaining"
+            )
+        }
+        return true
     }
 
     static func describe(_ error: any Error) -> String {
@@ -848,6 +1053,9 @@ public actor CloudKitSyncer {
     ) async throws -> PullReport {
         if Self.isPaused {
             return PullReport(inserted: 0, updated: 0, tombstoned: 0, skipped: 0, moreComing: false)
+        }
+        if isThrottled(context: "pull") {
+            return PullReport(inserted: 0, updated: 0, tombstoned: 0, skipped: 0, moreComing: false, throttled: true)
         }
         // Identity cutover in progress — see pushPendingChanges. Pulls
         // are equally unsafe: the pull upsert keys by content_hash, which
