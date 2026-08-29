@@ -12,6 +12,80 @@ dated `[1.X.Y]` heading and reset `[Unreleased]` to empty.
 
 ## [Unreleased]
 
+- **Semantic-search pipeline (v1.41.0).** Second of the staged
+  rollout for the Mac 3.3.0 semantic-search feature (v1.40 laid the
+  schema; this ships the pipeline that fills it). Zero user-visible
+  behaviour change — the search bar still runs FTS5 as before; the
+  hybrid RRF search over FTS5 + cosine will land in v1.42 as its own
+  isolated UI PR. Splitting keeps each release verifiable in a
+  single reading.
+
+  - **Bundled MiniLM-L6-v2 (INT8 quantized, ~22 MB, 384-dim)** at
+    `Models/all-minilm-l6-v2-quantized.onnx` + the matching BERT
+    WordPiece vocab. Xenova's HuggingFace port was the source (same
+    tokenizer + model format the Windows smoke test verified
+    end-to-end). INT8 was chosen over FP32 (~90 MB) — quality is
+    essentially imperceptible for semantic similarity, and it keeps
+    the installer bump proportional to what MobileNetV2 already
+    committed us to.
+  - **`Microsoft.ML.Tokenizers` 1.0.2** added for `BertTokenizer.Create`
+    (first stable release with the stream-based factory).
+  - **`System.Numerics.Tensors` 8.0.0** added for
+    `TensorPrimitives.Dot` — SIMD-accelerated dot product used by
+    `EmbeddingIndex` (dot = cosine because both sides of the
+    similarity are L2-normalized).
+  - **`CpdbWin.Core.Analysis.EmbeddingService`** — lazy-loaded ONNX
+    inference + tokenization + attention-masked mean-pool +
+    L2-normalize. Mirrors macOS `EmbeddingService.swift` (Mac uses
+    NLContextualEmbedding at 512-dim; Windows uses MiniLM at 384-dim
+    — per-platform models by design, `model_id`/`revision` columns
+    encode which produced which vector). Sticky-unavailable on
+    load failure so a missing bundle can't spam retries. Inference
+    serialised through a `SemaphoreSlim` because ONNX
+    `InferenceSession` isn't documented as thread-safe. Chunks
+    long text at paragraph → sentence boundaries at 256 tokens per
+    chunk; final vector is the L2-normalised mean of the chunks
+    (matches Mac's `maxTokensPerChunk = 256`).
+  - **`EmbeddingSweeper`** — periodic + capture-wake sweep, mirrors
+    `ImageAnalysisService`'s shape (reentry gate, 5-min interval,
+    15-entry batch, `WakeForCapture` hook wired from `AppHost` on
+    text/link ingest events). `DrainBacklogAsync` for CLI callers.
+    Idempotence + resumability come from
+    `EntryRepository.EntriesNeedingEmbedding` — a `model_id` or
+    `revision` bump auto-triggers a re-embed sweep.
+  - **`EntryRepository` extensions**: `EntriesNeedingEmbedding`,
+    `GetEmbeddableText` (concatenates `link_title` + `text_preview`
+    for links), `SaveEmbedding` (UPSERT on `entry_id` PK),
+    `LoadAllEmbeddings` (feeds the in-memory index).
+  - **`EmbeddingIndex`** — in-memory row-major `float[N × 384]`
+    cache with generation-counter invalidation. `SearchAsync`
+    returns top-K by cosine similarity with an optional score floor.
+    A brief re-embed after a model bump can span two `(model_id,
+    revision)` groups on disk — the index picks the biggest group so
+    search always runs against a homogeneous space.
+  - **`HybridRank.Fuse`** — pure Reciprocal Rank Fusion,
+    `score = sum over sources of 1 / (k + rank_1based)`, k=60 default
+    (Cormack et al.), tiebreak by id DESC. Constants pinned to Mac's
+    3.3.0 values (`DefaultRrfK = 60`, `DefaultSemanticFloor = 0.35`,
+    `DefaultSemanticTopK = 50`).
+  - **`AppHost` wiring**: `EmbeddingSweeper.RowSettled` invalidates
+    `EmbeddingIndex`, so a hybrid query fired seconds after a paste
+    sees the freshly-embedded vector. Data-loss circuit-breaker
+    (`SuspectedDataLoss`) suppresses `Start()` alongside the other
+    background loops.
+
+  **Tests:**
+  - 8 `EmbeddingServiceTests`: model loads, L2-unit invariant,
+    semantic-ordering assertion (dog↔puppy > dog↔SQL by ≥ 0.15,
+    proves the model produces meaningful embeddings, not noise),
+    serialization round-trip, chunk planner + `approxTokens`
+    heuristic pinned to Mac's `words × 1.4`.
+  - 8 `HybridRankTests`: single-source order preservation,
+    disjoint-list interleave, intersecting-list contribution
+    doubling, deterministic id-DESC tiebreak, constant contract
+    pinned to Mac's shipped values.
+  - 526/526 non-flaky tests pass.
+
 - **Semantic-enrichment schema foundation (v1.40.0).** Groundwork for
   the semantic-search + action-chips features Mac shipped in cpdb 3.3.0
   (see [`docs/handoffs/windows-v33-features.md`](../docs/handoffs/windows-v33-features.md)).
