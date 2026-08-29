@@ -12,6 +12,27 @@ import UniformTypeIdentifiers
 /// end-to-end recognition pass against a synthetically rendered table
 /// image (Vision-model-dependent, so gated to macOS 26 and kept
 /// tolerant of imperfect recognition).
+/// True unless running on a CI runner (GitHub Actions sets `CI=true`
+/// automatically). CI runners are virtualized macOS VMs with no ANE and
+/// no resident Vision model assets. `DocumentTableService.isAvailable`
+/// only checks the macOS version (26+) — true on this repo's macOS-26 CI
+/// runner too — so it does NOT by itself keep `recognizesSyntheticTable`
+/// off CI. That test's `extractTables` does race
+/// `RecognizeDocumentsRequest().perform(on:)` against its own
+/// `recognitionTimeout` sleep task, but both live as child tasks on the
+/// same small fixed-size cooperative thread pool swift-testing runs the
+/// whole suite on: once the real recognition call blocks its worker
+/// thread waiting on a model that can never load, and enough concurrent
+/// tests do the same, every pool thread wedges — including the ones the
+/// timeout tasks (here and elsewhere) need in order to ever run their
+/// `Task.sleep` and fire. The 10-second internal timeout never gets a
+/// chance to fire; the whole run times out instead. Not a member of the
+/// suite below — see `EmbeddingServiceLiveTests.swift`'s comment on why
+/// gating helpers are free functions, not static members.
+private func notRunningInCI() -> Bool {
+    ProcessInfo.processInfo.environment["CI"] == nil
+}
+
 @Suite("Document table service")
 struct DocumentTableServiceTests {
 
@@ -207,7 +228,8 @@ struct DocumentTableServiceTests {
     // tests above cover the deterministic logic either way.
     @Test(
         "extractTables recognizes a synthetically rendered 3x3 table",
-        .enabled(if: DocumentTableService.isAvailable)
+        .enabled(if: DocumentTableService.isAvailable),
+        .enabled(if: notRunningInCI())
     )
     func recognizesSyntheticTable() async throws {
         let png = try renderTableImage()

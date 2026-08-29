@@ -16,6 +16,10 @@ jobs:
     # Runtime support for older macOS stays via @available gates; this is a
     # build-SDK requirement only.
     runs-on: macos-26
+    # Suite normally takes ~2-3 min; a wedged run (e.g. a live-ML test
+    # that slipped past the CI gates in Tests/) should fail fast rather
+    # than burn the full 6h default job timeout.
+    timeout-minutes: 30
 
     steps:
       - name: Check out

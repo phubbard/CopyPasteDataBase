@@ -10,6 +10,28 @@ import GRDB
 /// candidate-selection queries, `ImageAnalysisSweeper.runOnce`, the
 /// giant-image downscale guard in `ImageIndexer`, and the push-queue
 /// enqueue that makes analysis results reach other devices.
+/// True unless running on a CI runner (GitHub Actions sets `CI=true`
+/// automatically). CI runners are virtualized macOS VMs with no ANE and
+/// no resident Vision model assets, so any test path that actually
+/// reaches `ImageAnalyzer.analyze` (via `ImageIndexer.analyzeAndStore`
+/// or `ImageAnalysisSweeper.runOnce`) makes a synchronous
+/// `VNImageRequestHandler.perform(...)` call that never returns there —
+/// on a real Mac it's near-instant against already-downloaded models,
+/// but a fresh CI VM waits forever on a model fetch with no path to
+/// complete. Because swift-testing runs the suite concurrently on a
+/// small fixed-size cooperative thread pool, that one wedged thread
+/// starves every other concurrently scheduled test in the process — the
+/// whole run times out instead of just this test failing. Tests that
+/// never actually reach Vision (candidate-selection queries, the
+/// missing-flavor skip path, the can't-even-downscale-it failure path,
+/// pure `downscaledOrNil` ImageIO resizing) are pure logic and stay
+/// unconditional. Not a member of the suite below — see
+/// `EmbeddingServiceLiveTests.swift`'s comment on why gating helpers are
+/// free functions, not static members.
+private func notRunningInCI() -> Bool {
+    ProcessInfo.processInfo.environment["CI"] == nil
+}
+
 @Suite("Image analysis sweep")
 struct ImageAnalysisSweeperTests {
 
@@ -151,7 +173,7 @@ struct ImageAnalysisSweeperTests {
 
     // MARK: - ImageAnalysisSweeper.runOnce
 
-    @Test("runOnce analyzes candidates and stamps analyzed_at")
+    @Test("runOnce analyzes candidates and stamps analyzed_at", .enabled(if: notRunningInCI()))
     func runOnceAnalyzesCandidates() throws {
         let store = try Store.inMemory()
         let png = try renderSolidPNG()
@@ -193,7 +215,7 @@ struct ImageAnalysisSweeperTests {
 
     // MARK: - ImageIndexer: push enqueue
 
-    @Test("analyzeAndStore enqueues a push row in the same write as the analysis")
+    @Test("analyzeAndStore enqueues a push row in the same write as the analysis", .enabled(if: notRunningInCI()))
     func analyzeAndStoreEnqueuesPush() throws {
         let store = try Store.inMemory()
         let png = try renderSolidPNG()
@@ -205,12 +227,18 @@ struct ImageAnalysisSweeperTests {
         #expect(pending.first?.entryId == id)
     }
 
-    @Test("analyzeAndStore enqueues a push row even on a Vision failure (empty-result path)")
+    @Test(
+        "analyzeAndStore enqueues a push row even on a Vision failure (empty-result path)",
+        .enabled(if: notRunningInCI())
+    )
     func analyzeAndStoreEnqueuesPushOnFailure() throws {
         let store = try Store.inMemory()
         let id = try insertImageEntry(store)
         // Empty Data can't be decoded by Vision — exercises the
-        // "tried and got nothing" catch path.
+        // "tried and got nothing" catch path. Still routes through the
+        // same synchronous `handler.perform(...)` call as every other
+        // live-ML test here (the decode failure surfaces from inside
+        // that call, not before it), so it's gated the same way.
         ImageIndexer.analyzeAndStore(entryId: id, imageData: Data(), store: store)
         #expect(try analyzedAt(store, id) != nil)
         let queued = try store.dbQueue.read { db in try PushQueue.count(in: db) }
@@ -219,7 +247,7 @@ struct ImageAnalysisSweeperTests {
 
     // MARK: - Giant-image guard
 
-    @Test("Giant image over threshold is downscaled and still analyzed")
+    @Test("Giant image over threshold is downscaled and still analyzed", .enabled(if: notRunningInCI()))
     func giantImageDownscalesSuccessfully() throws {
         let store = try Store.inMemory()
         let png = try renderSolidPNG(width: 512, height: 512)

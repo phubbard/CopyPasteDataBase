@@ -7,6 +7,24 @@ import UniformTypeIdentifiers
 @testable import CpdbCore
 @testable import CpdbShared
 
+/// True unless running on a CI runner (GitHub Actions sets `CI=true`
+/// automatically). CI runners are virtualized macOS VMs with no ANE and
+/// no resident Vision model assets, so `ImageAnalyzer.analyze`'s
+/// synchronous `VNImageRequestHandler.perform(...)` call — and
+/// `supportedLanguages()`'s `VNRecognizeTextRequest` query, which also
+/// touches Vision's model registry — never return: on a real Mac
+/// they're near-instant against already-downloaded models, but on a
+/// fresh CI VM they wait forever on a model fetch with no path to
+/// complete. Because swift-testing runs the suite concurrently on a
+/// small fixed-size cooperative thread pool, that one wedged thread
+/// starves every other concurrently scheduled test in the process — the
+/// whole run times out instead of just this test failing. Not a member
+/// of the suite below — see `EmbeddingServiceLiveTests.swift`'s comment
+/// on why gating helpers are free functions, not static members.
+private func notRunningInCI() -> Bool {
+    ProcessInfo.processInfo.environment["CI"] == nil
+}
+
 @Suite("Image analyzer")
 struct ImageAnalyzerTests {
 
@@ -66,7 +84,7 @@ struct ImageAnalyzerTests {
         return output as Data
     }
 
-    @Test("OCR extracts text from a rendered image")
+    @Test("OCR extracts text from a rendered image", .enabled(if: notRunningInCI()))
     func ocrExtractsKnownText() throws {
         let phrase = "Hello cpdb OCR"
         let png = try renderTextImage(phrase)
@@ -81,7 +99,7 @@ struct ImageAnalyzerTests {
         }
     }
 
-    @Test("Classifier returns at least one high-confidence tag for a text image")
+    @Test("Classifier returns at least one high-confidence tag for a text image", .enabled(if: notRunningInCI()))
     func classifierReturnsTags() throws {
         // A text image classifies as something in Vision's vocabulary
         // (`text`, `document`, etc.) reliably.
@@ -103,7 +121,7 @@ struct ImageAnalyzerTests {
         #expect(analysis.tagsCSV == "laptop, keyboard")
     }
 
-    @Test("Supported languages list is non-empty and contains en-US")
+    @Test("Supported languages list is non-empty and contains en-US", .enabled(if: notRunningInCI()))
     func supportedLanguagesContainsEnglish() {
         let langs = ImageAnalyzer.supportedLanguages()
         #expect(!langs.isEmpty)

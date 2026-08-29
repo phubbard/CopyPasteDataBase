@@ -732,6 +732,15 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
 A handful of tests depend on a real `Paste.db` fixture and skip cleanly if
 it isn't present (CI skips them).
 
+CI also skips live-ML coverage — Vision OCR/classification/QR detection,
+document-table recognition, and on-device embeddings/Foundation Models —
+because runner VMs have no ANE and can't download the model assets those
+calls need; a synchronous Vision call blocking on an undownloadable model
+wedges swift-testing's cooperative thread pool and starves every other
+concurrently running test. The full 433-test suite (all of the above
+included) is only exercised locally, on real Apple Silicon hardware with
+the models already resident.
+
 ## Dependencies
 
 - [GRDB.swift](https://github.com/groue/GRDB.swift) — SQLite + FTS5 + migrator
