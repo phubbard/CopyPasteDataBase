@@ -16,6 +16,11 @@ actor FakeCloudKitClient: CloudKitClient {
         var modifyFailure: (any Error)? = nil
         /// Record IDs to fail individually (all others succeed).
         var failingRecordIDs: Set<CKRecord.ID> = []
+        /// Record IDs to fail individually with a SPECIFIC error (rather
+        /// than the generic `TestError.injected` `failingRecordIDs`
+        /// produces) — for exercising the per-record CKError branches
+        /// (retryable transients, code-22 cascade).
+        var perRecordErrors: [CKRecord.ID: any Error] = [:]
         /// Simulates a `deleteZone` call that reports success but doesn't
         /// actually remove the zone — for the gc-zone re-verify test.
         var zoneDeleteIsNoOp: Bool = false
@@ -66,7 +71,9 @@ actor FakeCloudKitClient: CloudKitClient {
         }
         var saveResults: [CKRecord.ID: Result<CKRecord, any Error>] = [:]
         for record in recordsToSave {
-            if injected.failingRecordIDs.contains(record.recordID) {
+            if let err = injected.perRecordErrors[record.recordID] {
+                saveResults[record.recordID] = .failure(err)
+            } else if injected.failingRecordIDs.contains(record.recordID) {
                 saveResults[record.recordID] = .failure(TestError.injected)
             } else {
                 savedRecords[record.recordID] = record
@@ -117,6 +124,18 @@ actor FakeCloudKitClient: CloudKitClient {
     }
 
     enum TestError: Error { case injected }
+}
+
+/// Build a `CKError` with the given code and (optionally) a
+/// `retryAfterSeconds` hint, for exercising `isRetryable`/throttle-gate
+/// branches without a real CloudKit round trip.
+func makeCKError(_ code: CKError.Code, retryAfterSeconds: Double? = nil) -> CKError {
+    var userInfo: [String: Any] = [:]
+    if let retryAfterSeconds {
+        userInfo[CKErrorRetryAfterKey] = retryAfterSeconds
+    }
+    let ns = NSError(domain: CKErrorDomain, code: code.rawValue, userInfo: userInfo)
+    return CKError(_nsError: ns)
 }
 
 /// Small actor that collects counts across async boundaries, used
@@ -820,6 +839,157 @@ struct CloudKitSyncerTests {
         #expect(report.saved == 1)
         let modifyCalls = await client.modifyCallCount
         #expect(modifyCalls == 1)
+    }
+
+    // MARK: - Throttle gate (queue-starvation fix)
+
+    @Test("a per-record retryable failure opens the throttle gate; the next push call is gated with no server call")
+    func perRecordRetryableFailureOpensGate() async throws {
+        let (store, ids) = try seed(entryCount: 2)
+        let client = FakeCloudKitClient()
+        let failingHash = try await store.dbQueue.read { db in
+            try Entry.fetchOne(db, key: ids[0])!.contentHash
+        }
+        let failingID = EntryRecordMapper.recordID(forContentHash: failingHash, in: Self.zone)
+        await client.setInjected(.init(perRecordErrors: [
+            failingID: makeCKError(.requestRateLimited, retryAfterSeconds: 30)
+        ]))
+        let syncer = makeSyncer(store: store, client: client)
+
+        let first = try await syncer.pushPendingChanges()
+        #expect(first.throttled == true)
+        #expect(first.saved == 1, "the sibling entry in the same batch should still have pushed")
+        #expect(first.failed == 1, "last_error/last_attempted_at are still recorded for forensics")
+        let callsAfterFirst = await client.modifyCallCount
+        #expect(callsAfterFirst == 1)
+
+        // Clear the injected failure so a SECOND, un-gated call would
+        // succeed — isolating that it's the gate (not a coincidental
+        // re-failure) blocking the next call.
+        await client.setInjected(.init())
+        let second = try await syncer.pushPendingChanges()
+        #expect(second.throttled == true)
+        #expect(second.attempted == 0)
+        let callsAfterSecond = await client.modifyCallCount
+        #expect(callsAfterSecond == callsAfterFirst, "a gated push must not reach the server")
+    }
+
+    @Test("a per-record code-22 failure rotates its queue row so a later-enqueued row is attempted next")
+    func perRecordCode22RotatesToBackOfQueue() async throws {
+        // Three rows, batchSize=2: `poisoned` and `sibling` are the two
+        // oldest so they share the FIRST batch together — this is what
+        // makes it a per-record (not whole-batch) code-22, since
+        // `sibling` succeeds while `poisoned` doesn't. `fresh` is
+        // enqueued later still and, pre-fix, would never be reached
+        // because `poisoned` (never rotated) would keep occupying a
+        // batch slot on every subsequent call forever.
+        let (store, _) = try seed(entryCount: 0)
+        let (poisonedId, freshId) = try await store.dbQueue.write { db -> (Int64, Int64) in
+            let dev = try Device.filter(Column("identifier") == Self.device.identifier).fetchOne(db)!
+            func makeEntry(seed: UInt8, enqueuedAt: Double) throws -> Int64 {
+                var e = Entry(
+                    uuid: Data(repeating: seed, count: 16), createdAt: 1, capturedAt: 1,
+                    kind: .text, sourceDeviceId: dev.id!, textPreview: "row \(seed)",
+                    contentHash: Data(repeating: seed, count: 32), totalSize: 1
+                )
+                try e.insert(db)
+                try PushQueue.enqueue(entryId: e.id!, in: db, now: enqueuedAt)
+                return e.id!
+            }
+            let poisoned = try makeEntry(seed: 1, enqueuedAt: 1000)
+            _ = try makeEntry(seed: 2, enqueuedAt: 1001) // "sibling"
+            let fresh = try makeEntry(seed: 3, enqueuedAt: 2000)
+            return (poisoned, fresh)
+        }
+        let poisonedHash = Data(repeating: 1, count: 32)
+        let poisonedRecordID = EntryRecordMapper.recordID(forContentHash: poisonedHash, in: Self.zone)
+
+        let client = FakeCloudKitClient()
+        await client.setInjected(.init(perRecordErrors: [
+            poisonedRecordID: makeCKError(.batchRequestFailed)
+        ]))
+        let syncer = makeSyncer(store: store, client: client, batchSize: 2)
+
+        let first = try await syncer.pushPendingChanges()
+        #expect(first.attempted == 2, "poisoned + sibling, the two oldest rows")
+        #expect(first.saved == 1, "sibling saves; poisoned doesn't — a PER-RECORD failure, not a whole-batch cascade")
+        #expect(first.failed == 0, "code-22 doesn't bump attempt_count — the record itself isn't at fault")
+        let idsAfterFirst = try await store.dbQueue.read { db in
+            try Int64.fetchAll(db, sql: "SELECT entry_id FROM cloudkit_push_queue")
+        }
+        #expect(Set(idsAfterFirst) == [poisonedId, freshId], "sibling left the queue; poisoned (rotated, not removed) and fresh remain")
+
+        // Second call (the "next batch"): poisoned's enqueued_at was
+        // rotated to real now (>> 2000), so `fresh` — previously
+        // unreachable behind the poisoned+sibling pair — is now the
+        // older of the two remaining rows and shares this batch with
+        // poisoned instead of being starved indefinitely.
+        let second = try await syncer.pushPendingChanges()
+        #expect(second.attempted == 2, "fresh + poisoned, the only two rows left")
+        #expect(second.saved == 1, "fresh gets attempted and saved")
+
+        let idsAfterSecond = try await store.dbQueue.read { db in
+            try Int64.fetchAll(db, sql: "SELECT entry_id FROM cloudkit_push_queue")
+        }
+        #expect(idsAfterSecond == [poisonedId], "fresh saved and left the queue; only the still-rotating poisoned row remains")
+    }
+
+    @Test("the throttle gate expires and a subsequent push behaves normally again")
+    func throttleGateExpiryRestoresNormalPushes() async throws {
+        let (store, ids) = try seed(entryCount: 1)
+        let client = FakeCloudKitClient()
+        let hash = try await store.dbQueue.read { db in
+            try Entry.fetchOne(db, key: ids[0])!.contentHash
+        }
+        let recordID = EntryRecordMapper.recordID(forContentHash: hash, in: Self.zone)
+        // openThrottleGate floors at 5s regardless of hint, so a tiny
+        // hint here keeps the test's real-time wait as short as the
+        // implementation allows.
+        await client.setInjected(.init(perRecordErrors: [
+            recordID: makeCKError(.requestRateLimited, retryAfterSeconds: 0.1)
+        ]))
+        let syncer = makeSyncer(store: store, client: client)
+
+        let first = try await syncer.pushPendingChanges()
+        #expect(first.throttled == true)
+
+        let stillGated = try await syncer.pushPendingChanges()
+        #expect(stillGated.throttled == true)
+        #expect(stillGated.attempted == 0, "still within the gate window — no server call")
+
+        // Wait out the 5s floor plus headroom for scheduler jitter, then
+        // clear the injected failure so success is unambiguous.
+        try await Task.sleep(nanoseconds: 5_300_000_000)
+        await client.setInjected(.init())
+
+        let afterExpiry = try await syncer.pushPendingChanges()
+        #expect(afterExpiry.throttled == false)
+        #expect(afterExpiry.saved == 1)
+        #expect(afterExpiry.remaining == 0)
+    }
+
+    @Test("a fully-successful multi-batch backlog drains within a single pushPendingChanges call")
+    func multiBatchDrainWithinOneCall() async throws {
+        // 5 entries, batchSize 2 → batches of 2, 2, 1. Nothing fails, so
+        // each batch is fully successful and the drain loop should keep
+        // going without the caller needing to call pushPendingChanges
+        // again.
+        let (store, _) = try seed(entryCount: 5)
+        let client = FakeCloudKitClient()
+        let syncer = makeSyncer(store: store, client: client, batchSize: 2)
+
+        let report = try await syncer.pushPendingChanges()
+        #expect(report.attempted == 5)
+        #expect(report.saved == 5)
+        #expect(report.failed == 0)
+        #expect(report.remaining == 0)
+        #expect(report.throttled == false)
+
+        let modifyCalls = await client.modifyCallCount
+        #expect(modifyCalls == 3, "three batches of size 2, 2, 1 — all within the one call")
+
+        let queueCount = try await store.dbQueue.read { db in try PushQueue.count(in: db) }
+        #expect(queueCount == 0)
     }
 
 }

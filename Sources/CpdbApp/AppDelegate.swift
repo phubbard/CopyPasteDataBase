@@ -185,11 +185,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 do {
                     let pull = try await syncer.pullRemoteChanges()
                     Log.cli.info(
-                        "sync now pull: inserted=\(pull.inserted) updated=\(pull.updated) tombstoned=\(pull.tombstoned) skipped=\(pull.skipped) gated=\(pull.gated, privacy: .public)"
+                        "sync now pull: inserted=\(pull.inserted) updated=\(pull.updated) tombstoned=\(pull.tombstoned) skipped=\(pull.skipped) gated=\(pull.gated, privacy: .public) throttled=\(pull.throttled, privacy: .public)"
                     )
                     let push = try await syncer.pushPendingChanges()
                     Log.cli.info(
-                        "sync now push: attempted=\(push.attempted) saved=\(push.saved) failed=\(push.failed) remaining=\(push.remaining) gated=\(push.gated, privacy: .public)"
+                        "sync now push: attempted=\(push.attempted) saved=\(push.saved) failed=\(push.failed) remaining=\(push.remaining) gated=\(push.gated, privacy: .public) throttled=\(push.throttled, privacy: .public)"
                     )
                 } catch {
                     Log.cli.error("sync now failed: \(String(describing: error), privacy: .public)")
@@ -208,7 +208,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 do {
                     let pull = try await syncer.pullRemoteChanges()
                     Log.cli.info(
-                        "pull now: inserted=\(pull.inserted) updated=\(pull.updated) tombstoned=\(pull.tombstoned) skipped=\(pull.skipped) gated=\(pull.gated, privacy: .public)"
+                        "pull now: inserted=\(pull.inserted) updated=\(pull.updated) tombstoned=\(pull.tombstoned) skipped=\(pull.skipped) gated=\(pull.gated, privacy: .public) throttled=\(pull.throttled, privacy: .public)"
                     )
                 } catch {
                     Log.cli.error("pull now failed: \(String(describing: error), privacy: .public)")
@@ -490,18 +490,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             "cloudkit push: attempted=\(push.attempted) saved=\(push.saved) failed=\(push.failed) remaining=\(push.remaining)"
                         )
                     }
-                    // Keep draining while work remains. A batch failure is
-                    // almost always a transient CloudKit 429 (rate limit) —
-                    // common during a bulk push like the canonical-hash v2
-                    // reseed (thousands of records). Backing off the FULL
-                    // safety-net interval (5–15 min) on every 429 would
-                    // stretch a one-time reseed into hours. Instead: loop
-                    // immediately when clean, back off briefly (respecting
-                    // the server's CKRetryAfter, ~1s, with headroom) when
-                    // throttled — never the full idle interval while there's
-                    // work to push.
+                    // Keep draining while work remains. `pushPendingChanges`
+                    // already loops internally across many batches within
+                    // its own time budget, so reaching here with
+                    // `remaining > 0` means it stopped early for a reason:
+                    //
+                    // - `throttled`: a retryable CloudKit error (op-level or
+                    //   per-record) opened the syncer's throttle gate.
+                    //   CloudKit has been observed asking for waits over
+                    //   1700s, and the gate check inside `pushPendingChanges`
+                    //   is what now honors that (it used to block this whole
+                    //   tick inline for the full hint — the bug this
+                    //   distinction exists to avoid repeating). Keep the
+                    //   full safety-net interval so we don't busy-loop
+                    //   re-ticking against a gate that's still open; any
+                    //   earlier wake (a local capture, a pull) still gets a
+                    //   fast no-op push until it lifts.
+                    // - a genuine per-record failure (`failed > 0`): short
+                    //   backoff, since it's usually transient noise (a
+                    //   concurrent multi-device push race) that clears on
+                    //   its own.
+                    // - otherwise (a whole-batch cascade, or the bundle
+                    //   vanished mid-batch): loop again immediately.
                     if push.remaining > 0 {
-                        backoffSeconds = push.failed > 0 ? 8 : 0
+                        if push.throttled {
+                            // Leave backoffSeconds at the full safety-net
+                            // interval set above.
+                        } else {
+                            backoffSeconds = push.failed > 0 ? 8 : 0
+                        }
                     }
                 } catch {
                     Log.cli.error("cloudkit push failed: \(String(describing: error), privacy: .public)")

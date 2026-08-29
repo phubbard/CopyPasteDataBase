@@ -78,7 +78,8 @@ struct SyncPushOnce: ParsableCommand {
         let syncer = try makeSyncer(store: store, batchSize: batch)
         let report = runBlocking { try await syncer.pushPendingChanges() }
         let gatedSuffix = report.gated ? " [GATED — sync paused for identity cutover, not idle]" : ""
-        print("push: attempted=\(report.attempted) saved=\(report.saved) failed=\(report.failed) remaining=\(report.remaining)\(gatedSuffix)")
+        let throttledSuffix = report.throttled ? " [THROTTLED — CloudKit asked us to back off, not idle]" : ""
+        print("push: attempted=\(report.attempted) saved=\(report.saved) failed=\(report.failed) remaining=\(report.remaining)\(gatedSuffix)\(throttledSuffix)")
     }
 }
 
@@ -111,7 +112,8 @@ struct SyncPullOnce: ParsableCommand {
         let syncer = try makeSyncer(store: store)
         let report = runBlocking { try await syncer.pullRemoteChanges() }
         let gatedSuffix = report.gated ? " [GATED — sync paused for identity cutover, not idle]" : ""
-        print("pull: inserted=\(report.inserted) updated=\(report.updated) tombstoned=\(report.tombstoned) skipped=\(report.skipped)\(gatedSuffix)")
+        let throttledSuffix = report.throttled ? " [THROTTLED — CloudKit asked us to back off, not idle]" : ""
+        print("pull: inserted=\(report.inserted) updated=\(report.updated) tombstoned=\(report.tombstoned) skipped=\(report.skipped)\(gatedSuffix)\(throttledSuffix)")
     }
 }
 

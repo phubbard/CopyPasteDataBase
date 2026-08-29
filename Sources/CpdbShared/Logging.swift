@@ -24,6 +24,10 @@ public enum Log {
     /// "paste:"'` finds the whole flow. Never log entry content/titles —
     /// numeric entry ids only.
     public static let paste   = Logger(subsystem: subsystem, category: "paste")
+    /// CloudKit sync throttle/rotation events — same persistence rationale
+    /// as `paste`: gate openings and queue rotations must survive to
+    /// `log show` for post-hoc forensics.
+    public static let sync    = Logger(subsystem: subsystem, category: "sync")
 
     /// Print a line to stderr. Use for user-facing progress in CLI commands.
     public static func stderr(_ message: @autoclosure () -> String) {
