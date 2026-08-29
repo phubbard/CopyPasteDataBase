@@ -20,9 +20,24 @@ import GRDB
 /// the `PopupController` seam without needing to drive SwiftUI's actual
 /// gesture recognizer (not headlessly testable — see the task notes).
 ///
-/// Serialized with `PopupControllerIntentPlumbingTests`
-/// (`AppIntentsTests.swift`): both suites reconfigure and drive the
-/// `PopupController.shared` singleton.
+/// Shares `PopupController.shared` with `PopupControllerIntentPlumbingTests`
+/// (`AppIntentsTests.swift`) — both suites reconfigure and drive that
+/// singleton. `.serialized` below only orders the tests *within* this
+/// suite; Swift Testing gives no way to serialize two independently
+/// declared `@Suite` types against each other, so the two suites' tests
+/// can and do run concurrently with each other (verified: their console
+/// output interleaves). That's safe today only because every test body
+/// in both suites is `@MainActor` and fully synchronous with no internal
+/// `await` — MainActor's serial executor means only one test's body
+/// actually executes at a time, so a mutate-then-assert sequence always
+/// completes as one uninterrupted unit even though the two suites were
+/// scheduled in parallel. That safety is incidental to the current test
+/// bodies, not a guarantee: if a future test in either suite adds an
+/// `await` between mutating and reading `PopupController.shared`'s
+/// state, the two suites' tests could genuinely interleave mid-body.
+/// Don't add such an `await` without first giving the two suites real
+/// mutual exclusion (e.g. nesting them under one `@Suite(.serialized)`
+/// parent, which Swift Testing does serialize transitively).
 @Suite("PopupController — paste(entryId:) routing", .serialized)
 @MainActor
 struct PopupPasteRoutingTests {
@@ -96,7 +111,14 @@ struct PopupPasteRoutingTests {
 
         let pasteboard = scratchPasteboard()
         pasteboard.clearContents()
-        PopupController.shared.paste(entryId: secondId, pasteboard: pasteboard)
+        // performsSystemPasteEffects: false — this suite only proves
+        // entry-id routing into the pasteboard write. Leaving system
+        // paste effects on would call `.activate()` on whatever app is
+        // actually frontmost on the machine running this test, and —
+        // on a machine where the test binary already holds Accessibility
+        // trust — synthesize a real, unrelated system-wide ⌘V. See
+        // `PasteAction.performsSystemPasteEffects`.
+        PopupController.shared.paste(entryId: secondId, pasteboard: pasteboard, performsSystemPasteEffects: false)
 
         // If this ever regresses back to resolving through
         // selectedIndex, this reads back "first entry" instead.
@@ -124,7 +146,9 @@ struct PopupPasteRoutingTests {
 
         let pasteboard = scratchPasteboard()
         pasteboard.clearContents()
-        PopupController.shared.paste(entryId: firstId, pasteboard: pasteboard)
+        // See the sibling test above for why performsSystemPasteEffects
+        // must stay false in this suite.
+        PopupController.shared.paste(entryId: firstId, pasteboard: pasteboard, performsSystemPasteEffects: false)
 
         #expect(pasteboard.string(forType: .init("public.utf8-plain-text")) == "first entry")
     }

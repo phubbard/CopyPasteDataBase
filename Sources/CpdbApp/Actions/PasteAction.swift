@@ -19,6 +19,18 @@ struct PasteAction {
     let store: Store
     let previousApp: NSRunningApplication?
 
+    /// Test-only seam: when `false`, `paste(entryId:)` performs only step 1
+    /// (write to the pasteboard) and returns immediately — it never touches
+    /// `previousApp.activate()` and never consults Accessibility/CGEvent.
+    /// Production call sites always leave this at its default `true`.
+    /// Without it, any test that calls the real `paste(entryId:)` (rather
+    /// than stubbing it out) would unconditionally call `.activate()` on
+    /// whatever app is actually frontmost on the machine running the test
+    /// — and, on a machine where the test binary happens to already hold
+    /// Accessibility trust, would go on to synthesize a real system-wide
+    /// ⌘V. See `PopupPasteRoutingTests`.
+    var performsSystemPasteEffects: Bool = true
+
     /// Delay between re-activating the previous app and posting the
     /// keystroke. macOS needs a moment to actually switch the key window
     /// before `CGEvent.post(tap:)` is routed to it.
@@ -35,6 +47,8 @@ struct PasteAction {
             Log.paste.error("paste: PasteAction writer failed entry=\(entryId, privacy: .public): \(String(describing: error), privacy: .public)")
             return
         }
+
+        guard performsSystemPasteEffects else { return }
 
         // Re-activate the previous app. Without this, the frontmost app at
         // the moment of the keystroke is still `cpdb` (or whichever app we

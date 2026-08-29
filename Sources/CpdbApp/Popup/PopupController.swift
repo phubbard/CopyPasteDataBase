@@ -243,11 +243,17 @@ final class PopupController {
     /// the click landed ahead of the selection highlight catching up
     /// (v3.3.1). `pasteboard` defaults to `.general` for real use; tests
     /// inject a scratch pasteboard so they don't clobber the developer's
-    /// actual clipboard.
-    func paste(entryId: Int64, pasteboard: NSPasteboard = .general) {
+    /// actual clipboard. `performsSystemPasteEffects` defaults to `true`
+    /// for real use; tests pass `false` so they only exercise the
+    /// entry-id routing this method claims to fix, without also
+    /// re-activating whatever app is actually frontmost on the test
+    /// machine or synthesizing a keystroke — see
+    /// `PasteAction.performsSystemPasteEffects`.
+    func paste(entryId: Int64, pasteboard: NSPasteboard = .general, performsSystemPasteEffects: Bool = true) {
         guard let state = state else { return }
         Log.paste.log("paste: paste(entryId:) entry=\(entryId, privacy: .public) previous=\(self.previousApp?.bundleIdentifier ?? "nil", privacy: .public)")
-        let action = PasteAction(store: state.store, previousApp: previousApp)
+        var action = PasteAction(store: state.store, previousApp: previousApp)
+        action.performsSystemPasteEffects = performsSystemPasteEffects
         hide()
         action.paste(entryId: entryId, pasteboard: pasteboard)
     }
@@ -303,9 +309,9 @@ final class PopupController {
             return
         }
         previousApp = NSWorkspace.shared.frontmostApplication
+        Log.paste.log("paste: pasteRecent(atIndex: \(n, privacy: .public)) entry=\(id, privacy: .public) previous=\(self.previousApp?.bundleIdentifier ?? "nil", privacy: .public)")
         let action = PasteAction(store: state.store, previousApp: previousApp)
         action.paste(entryId: id)
-        Log.cli.info("pasteRecent(atIndex: \(n, privacy: .public)) entry \(id, privacy: .public)")
     }
 
     /// Backs `PasteLatestIntent`. Pastes the entry with the newest
@@ -321,9 +327,9 @@ final class PopupController {
             return
         }
         previousApp = NSWorkspace.shared.frontmostApplication
+        Log.paste.log("paste: pasteLatest() entry=\(id, privacy: .public) previous=\(self.previousApp?.bundleIdentifier ?? "nil", privacy: .public)")
         let action = PasteAction(store: state.store, previousApp: previousApp)
         action.paste(entryId: id)
-        Log.cli.info("pasteLatest() entry \(id, privacy: .public)")
     }
 
     /// Backs `TogglePinLatestIntent`. Toggles the pin on the entry with
