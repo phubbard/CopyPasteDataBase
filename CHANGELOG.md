@@ -10,6 +10,35 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+- **Fix: double-click paste could silently do nothing on cards with
+  chips.** v3.3.0's tappable chips could win SwiftUI's gesture
+  arbitration over the card's double-click, so the paste never ran and
+  a manual ⌘V delivered the *previous* clipboard content — pasting a
+  URL card into Claude Desktop produced a file link to an old Finder
+  copy instead. The card's double-click is now a high-priority gesture
+  (chips still work, and still self-cancel on double-click), the
+  clicked card's id is pasted directly instead of resolving through
+  the selection index, and the whole paste path now logs persistently
+  (`log show`-visible, category `paste`) — a silent paste failure can
+  never again leave zero forensic trace.
+- **Fix: CloudKit push starvation under server throttling.** A
+  throttled batch at the head of the push queue could starve everything
+  behind it indefinitely (observed: 6,600+ rows stuck for 25 h) while
+  retries ignored the server's Retry-After hints — long hints even
+  wedged a sync tick inline for up to half an hour. Retryable errors
+  now open a throttle gate that push *and* pull honor (new `throttled`
+  report field, logged under category `sync`); per-record atomic-failure
+  casualties rotate to the back of the queue instead of pinning its
+  head; and a fully-successful batch now drains straight into the next
+  one within a 30 s budget, so large backlogs clear in minutes instead
+  of days.
+- **CI: repaired and hardened.** Tests moved to `macos-26` runners
+  (v3.3.0 needs the macOS 26 SDK to compile), live-ML tests (Vision
+  OCR/classify/QR, document tables) are gated off CI where model
+  assets can't load — a sync Vision call on an asset-less runner VM
+  blocked cooperative-pool threads and deadlocked the whole concurrent
+  suite — and a 30-minute job timeout replaces the 6-hour default.
+
 ## [3.3.0] – 2026-08-28
 
 - **Semantic search.** Every text/link clip is embedded on-device
