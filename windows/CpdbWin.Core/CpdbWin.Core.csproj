@@ -4,6 +4,9 @@
     <AssemblyName>CpdbWin.Core</AssemblyName>
   </PropertyGroup>
   <ItemGroup>
+    <InternalsVisibleTo Include="CpdbWin.Core.Tests" />
+  </ItemGroup>
+  <ItemGroup>
     <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.10" />
     <!--
       Image classification — local on-device, no service / no network.
@@ -26,6 +29,13 @@
       framework.
     -->
     <PackageReference Include="System.Numerics.Tensors" Version="8.0.0" />
+    <!--
+      QR-code decoding for the image-analysis sweeper — turns QR
+      payloads in captured screenshots into chips. Pure managed
+      code; we feed it BGRA8 pixel buffers extracted by WinRT
+      BitmapDecoder, so no System.Drawing dependency.
+    -->
+    <PackageReference Include="ZXing.Net" Version="0.16.9" />
   </ItemGroup>
   <ItemGroup>
     <!-- Bundled MobileNetV2 ImageNet classifier — loaded by

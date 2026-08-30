@@ -12,6 +12,69 @@ dated `[1.X.Y]` heading and reset `[Unreleased]` to empty.
 
 ## [Unreleased]
 
+- **QR / barcode chips on captured images (v1.45.0).** Sixth of the
+  staged Mac-3.3.0 rollout — the last of the semantic-search-and-chips
+  arc. The image sweeper already runs OCR + ImageNet-1k classification
+  on every screenshot; this pass adds a QR / 1D-barcode read on the
+  same decoded pixels, and the recognized payloads land in the row's
+  `chips_json` alongside anything text-side detection produced. Same
+  pill affordance the v1.44 UI already renders — click a QR-derived
+  URL chip and it opens; click a QR-derived `tel:` chip and it dials.
+
+  - **`QrDecoder`** — PNG/JPEG bytes → WinRT `BitmapDecoder` → BGRA8
+    → ZXing.Net `MultiFormatReader` on a `HybridBinarizer`. Hints
+    scope the reader to `QR_CODE, DATA_MATRIX, EAN_13, EAN_8, UPC_A,
+    CODE_128` + `TRY_HARDER` — narrower than Mac's "everything
+    Vision supports" but covers the realistic screenshot cases (QR
+    poster, retail UPC/EAN barcode, Code 128 shipment label). Pure
+    managed after the WinRT decode, so `CpdbWin.Core` still builds
+    without a `System.Drawing` dependency. Fail-soft on every step:
+    unsupported codec / corrupt image / no-code-found all return an
+    empty list — QR is opportunistic and must never break the
+    sweeper's hot loop.
+  - **`QrChipMapper`** — payload → `Chip`, verbatim port of Mac's
+    `QRChipMapper.swift`:
+    - **scheme allowlist** (`http, https, mailto, sms, smsto, geo,
+      wifi, ftp`) — `Uri.TryCreate` is lenient enough to parse plain
+      labeled text like `NOTE:call mom` or `SN:12345-ABC` as a URI,
+      so any parseable-but-unknown scheme falls through to text
+      rather than becoming a URL chip whose tap silently no-ops on
+      Windows Launcher.
+    - **`tel:` → phone chip** (scheme stripped, hands the raw number
+      to the OS dialer).
+    - **phone heuristic**: 7-15 digits + at least one
+      `+-().space` character. The punctuation requirement disqualifies
+      a bare digit run (EAN-13 / UPC-A / 12-digit tracking number)
+      from misclassifying as a phone chip — a plain digit payload
+      lands as a text chip, which at least copies.
+    - **long text** → display truncated to 60 chars + ellipsis so a
+      Wi-Fi / vCard / JSON QR doesn't blow up the row.
+    - **dedup** on the trimmed raw payload.
+  - **`ImageAnalysisService`** wire-in: piggybacks the QR pass on the
+    existing `NeedsOcr` branch — whenever OCR is re-run (fresh
+    capture or Preferences → Re-OCR images), QR runs on the same
+    bytes and writes to `chips_json`. Deliberately no new sentinel
+    column (a v15 schema migration for one small opportunistic pass
+    isn't worth it); `ocr_at` doubles as "we've scanned this image
+    for chips too". Existing OCR'd rows only pick up QR chips after a
+    Re-OCR reset — acceptable trade-off.
+  - **`EntryRepository.SetChips`** (new) — unconditional UPDATE
+    counterpart to `SetChipsIfUnset`. Image chips need to overwrite
+    (re-scan should re-derive); text chips keep first-writer-wins.
+
+  **Tests:**
+  - 12 `QrChipMapperTests` — scheme allowlist (http/https/mailto in,
+    unrecognized-scheme out), `tel:` extraction, mailto keeping full
+    payload as display, bare-phone-with-punctuation vs bare-digit-run
+    disambiguation, 60-char truncation, whitespace-only skip,
+    duplicate dedup, phone-heuristic boundary conditions.
+
+- Parity: `docs/parity.md` **Action chips (data detectors + QR)** row
+  flips to ✅ for Windows — chip detection (v1.43) + UI (v1.44) +
+  QR (v1.45) closes the row.
+
+## [1.44.0] — 2026-08-29
+
 - **Action-chip UI in row template (v1.44.0).** Fifth of the staged
   Mac-3.3.0 rollout: renders the chips v1.43 populates as clickable
   pills in each row of the popup. **First user-visible chip UI** —

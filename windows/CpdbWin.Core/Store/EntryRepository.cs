@@ -652,6 +652,24 @@ public sealed class EntryRepository
         cmd.ExecuteNonQuery();
     }
 
+    /// <summary>
+    /// Unconditional <c>chips_json</c> write. Distinguished from
+    /// <see cref="SetChipsIfUnset"/>: the QR pass on image entries
+    /// (v1.45) re-runs whenever a "Re-OCR images" reset re-arms the
+    /// OCR sentinel, and its output should update the stored chips
+    /// rather than being suppressed by the first-writer guard.
+    /// Callers pair with <see cref="Chip.Merge"/> when preserving
+    /// prior chip payloads matters.
+    /// </summary>
+    public void SetChips(long entryId, string json)
+    {
+        using var cmd = _db.CreateCommand();
+        cmd.CommandText = "UPDATE entries SET chips_json = $j WHERE id = $id AND deleted_at IS NULL";
+        cmd.Parameters.AddWithValue("$id", entryId);
+        cmd.Parameters.AddWithValue("$j",  json);
+        cmd.ExecuteNonQuery();
+    }
+
     // ─── Semantic-search embedding storage (v13_semantic_enrichment) ────
 
     /// <summary>
