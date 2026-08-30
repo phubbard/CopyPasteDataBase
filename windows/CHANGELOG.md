@@ -12,6 +12,72 @@ dated `[1.X.Y]` heading and reset `[Unreleased]` to empty.
 
 ## [Unreleased]
 
+- **Match-source badges in row template (v1.47.0).** Small pill on
+  each search-result row indicating which non-text FTS5 column
+  produced the hit — "OCR" (accent) for hits in recognised image
+  text, "TAG" (green) for hits in the ImageNet classifier labels,
+  "•••" (purple) when both fired at once. Plain-text hits (title,
+  visible text, link title, app name) show no badge — badging the
+  modal case would be pure noise. Closes the last of the search-
+  attribution work Mac has shipped since v1.2.
+
+  - **`MatchSource`** enum (new, `CpdbWin.Core.Store`) — `Text`,
+    `Ocr`, `Tag`, `Multiple`. Naming preserved byte-for-byte from
+    `Sources/CpdbShared/Search/FtsIndex.MatchSource` so parity
+    fixtures port straight across. Mac's `.semantic` case isn't
+    ported yet — the Windows RRF hybrid ranker (`HybridRank.Fuse`)
+    drops per-hit source when it hydrates via
+    `EntryRepository.RowsByIds`, so a semantic-only hit currently
+    surfaces as `Text`. Enum is left with room to grow when the
+    RRF plumbing is extended.
+  - **`EntryRepository.Search`** — three new `highlight(entries_fts,
+    N, char(1), char(2))` columns spliced into the SELECT list (text
+    col 1, ocr_text col 3, image_tags col 4, matching
+    `Store/Schema.cs`). The FTS5 SOH/STX sentinels tell us which
+    columns contained a term without re-implementing the tokenizer
+    or the prefix-search rules — same trick Mac uses
+    (`FtsIndex.swift:132-170`). Refactored `SelectEntryColumns` into
+    a list+from split so the extras can sit inside the SELECT list
+    where SQL requires them; `Recent` / `RowsByIds` keep their
+    exact existing SQL.
+  - **`EntryRepository.ClassifyMatchSource`** — pure-function
+    classifier extracted so tests can drive it without a live DB.
+    Bucket rules mirror Mac: OCR+tag → Multiple; OCR-only → Ocr;
+    tag-only → Tag; else → Text (catch-all for title / plain text
+    / link_title / app_name matches).
+  - **`EntryRow.MatchSource`** — new optional field, defaulted to
+    `null` so `Recent` / `RowsByIds` positional callers stay valid.
+    Null means "not from a search", so the UI knows the initial
+    query-less popup should render no badges.
+  - **`MainWindow.xaml`** — column 2 rewrapped as a horizontal
+    `StackPanel` holding the new match-source pill + the existing
+    OCR-availability pill as peers. Same border/padding/font
+    template as the v1.44 chip UI; palette per-source (accent /
+    green / purple) so a scanning eye reads the type before the
+    label.
+  - **`EntryViewModel.MatchBadge*`** — `Visibility`, `Label`,
+    `Tooltip`, `Background` computed properties keyed off the
+    `MatchSource` field. Tooltip spells out the abbreviation so
+    the pill is legible for someone who hasn't memorised our
+    single-token vocabulary.
+
+  **Tests:**
+  - 7 `MatchSourceClassifierTests` — every bucket + fall-through +
+    empty-columns edge case + SOH/STX sentinel-byte pinning
+    (drift-catcher for the cross-platform column contract).
+  - 6 `MatchSourceSearchTests` — end-to-end via `SettleImageOcr` +
+    `SettleImageTags`: OCR-only hit → `Ocr`, tag-only → `Tag`,
+    both → `Multiple`, plain-text → `Text`, `Recent` leaves the
+    field null (so no stray pill on the query-less popup), prefix-
+    query attribution still works.
+  - Full suite: 603/604 (the ClipboardWriterTests parallelism race
+    against the OS clipboard is still there, passes in isolation).
+
+- Parity: `docs/parity.md` **Match-source badges** row flips to ✅
+  for Windows.
+
+## [1.46.0] — 2026-08-30
+
 - **Transient / concealed-marker skip at ingest (v1.46.0).** Windows
   port of Mac's `TransientGuard` — whole-clip skip when the source
   app tagged its clipboard write with a "don't store" marker, so

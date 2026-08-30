@@ -86,19 +86,41 @@
                                     </ItemsControl.ItemTemplate>
                                 </ItemsControl>
                             </StackPanel>
-                            <Border Grid.Column="2"
-                                    Background="{ThemeResource AccentFillColorDefaultBrush}"
-                                    CornerRadius="3"
-                                    Padding="4,1"
-                                    VerticalAlignment="Center"
-                                    Margin="0,0,4,0"
-                                    ToolTipService.ToolTip="OCR text recognised — preview pane has a button to view + copy it"
-                                    Visibility="{x:Bind OcrBadgeVisibility}">
-                                <TextBlock Text="OCR"
-                                           FontSize="10"
-                                           FontWeight="SemiBold"
-                                           Foreground="{ThemeResource TextOnAccentFillColorPrimaryBrush}"/>
-                            </Border>
+                            <!-- Column 2 stack: match-source badge (v1.47,
+                                 search-only) + OCR-availability badge (v1.22).
+                                 Both are Auto-width pills with the same
+                                 visual weight so they read as peers. -->
+                            <StackPanel Grid.Column="2"
+                                        Orientation="Horizontal"
+                                        Spacing="4"
+                                        VerticalAlignment="Center"
+                                        Margin="0,0,4,0">
+                                <!-- Match-source badge: pill tinted per column
+                                     hit (accent=OCR, green=TAG, purple=multiple).
+                                     Collapsed when the row wasn't from a search
+                                     or the match came from a plain text
+                                     column — no need to badge the modal case. -->
+                                <Border Background="{x:Bind MatchBadgeBackground}"
+                                        CornerRadius="3"
+                                        Padding="4,1"
+                                        ToolTipService.ToolTip="{x:Bind MatchBadgeTooltip}"
+                                        Visibility="{x:Bind MatchBadgeVisibility}">
+                                    <TextBlock Text="{x:Bind MatchBadgeLabel}"
+                                               FontSize="10"
+                                               FontWeight="SemiBold"
+                                               Foreground="{ThemeResource TextOnAccentFillColorPrimaryBrush}"/>
+                                </Border>
+                                <Border Background="{ThemeResource AccentFillColorDefaultBrush}"
+                                        CornerRadius="3"
+                                        Padding="4,1"
+                                        ToolTipService.ToolTip="OCR text recognised — preview pane has a button to view + copy it"
+                                        Visibility="{x:Bind OcrBadgeVisibility}">
+                                    <TextBlock Text="OCR"
+                                               FontSize="10"
+                                               FontWeight="SemiBold"
+                                               Foreground="{ThemeResource TextOnAccentFillColorPrimaryBrush}"/>
+                                </Border>
+                            </StackPanel>
                             <SymbolIcon Grid.Column="3"
                                         Symbol="Pin"
                                         Width="16"
