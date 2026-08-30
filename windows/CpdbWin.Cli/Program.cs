@@ -70,8 +70,80 @@ public static class Program
             "dedupe"             => RunDedupe(db, args[1..]),
             "import-urls"        => RunImportUrls(db, paths, args[1..]),
             "export"             => RunExport(db, args[1..]),
+            "evict"              => RunEvict(db, paths, args[1..]),
             _                    => UnknownCommand(args[0]),
         };
+    }
+
+    /// <summary>
+    /// <c>cpdb-win evict --before-days N [--dry-run]</c> — body-evict
+    /// entries older than N days. See
+    /// <see cref="CpdbWin.Core.Store.EntryEvictor"/> for the contract
+    /// (pinned skip, body-only vs tombstone, blob two-phase cleanup).
+    /// Dry-run prints the candidate count and exits without writing.
+    /// </summary>
+    private static int RunEvict(SqliteConnection db, AppPaths.Resolved paths, string[] rest)
+    {
+        int days = EntryEvictor.DefaultDays;
+        var daysIdx = Array.IndexOf(rest, "--before-days");
+        if (daysIdx >= 0)
+        {
+            if (daysIdx + 1 >= rest.Length || !int.TryParse(rest[daysIdx + 1], out days))
+            {
+                Console.Error.WriteLine("cpdb-win evict: --before-days requires an integer argument");
+                Console.Error.WriteLine("  usage: cpdb-win evict [--before-days N] [--dry-run]");
+                return 2;
+            }
+        }
+        var dryRun = rest.Contains("--dry-run");
+
+        var blobs = new BlobStore(paths.Blobs);
+        var evictor = new EntryEvictor(db, blobs);
+
+        IReadOnlyList<long> candidates;
+        try
+        {
+            candidates = evictor.CandidatesOlderThan(days);
+        }
+        catch (ArgumentOutOfRangeException ex)
+        {
+            // Bounds checks live in EntryEvictor — surface the reason
+            // to the user so they know min/max rather than a bare
+            // "invalid argument".
+            Console.Error.WriteLine($"cpdb-win evict: {ex.Message}");
+            return 2;
+        }
+
+        if (dryRun)
+        {
+            Console.WriteLine($"found {candidates.Count} entries older than {days} days with bodies present");
+            Console.WriteLine("dry run — no changes written");
+            return 0;
+        }
+
+        if (candidates.Count == 0)
+        {
+            Console.WriteLine($"nothing to evict (no entries older than {days} days with bodies present)");
+            return 0;
+        }
+
+        var report = evictor.Evict(candidates);
+        Console.WriteLine($"evicted {report.EntryCount} entries");
+        Console.WriteLine($"  inline bytes freed: {FormatBytes(report.InlineFlavorBytesFreed)}");
+        Console.WriteLine($"  blob bytes freed:   {FormatBytes(report.BlobBytesFreed)}  ({report.BlobsRemoved} blobs)");
+        Console.WriteLine($"  total:              {FormatBytes(report.InlineFlavorBytesFreed + report.BlobBytesFreed)}");
+        return 0;
+    }
+
+    /// <summary>Compact byte formatter for CLI output. Not culture-
+    /// aware on purpose (matches the rest of the CLI's invariant
+    /// output shape).</summary>
+    private static string FormatBytes(long bytes)
+    {
+        if (bytes < 1024)         return $"{bytes} B";
+        if (bytes < 1024 * 1024)  return $"{bytes / 1024.0:F1} KB";
+        if (bytes < 1024L * 1024 * 1024) return $"{bytes / (1024.0 * 1024):F1} MB";
+        return $"{bytes / (1024.0 * 1024 * 1024):F2} GB";
     }
 
     private static int RunImportUrls(SqliteConnection db, AppPaths.Resolved paths, string[] rest)
@@ -316,6 +388,15 @@ public static class Program
                   clipboard capture so links enrich via the normal
                   backfill. --spread-seconds backdates captured_at
                   so the import doesn't collapse to one timestamp.
+
+              cpdb-win evict [--before-days N] [--dry-run]
+                  Body-evict entries older than N days (default 90):
+                  drops flavor bytes + stamps body_evicted_at, but
+                  the row survives with its metadata (title, preview,
+                  chips, thumbnails, FTS index). --dry-run prints the
+                  candidate count without writing. Pinned entries are
+                  always skipped. N must be in [7, 3650]. Missed
+                  blob files are cleaned up by the periodic Gc sweep.
 
               cpdb-win export --format md|csv|html [--output FILE]
                               [--limit N] [--include-evicted]

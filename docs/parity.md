@@ -97,7 +97,7 @@ Legend:
 |---|---|---|---|---|
 | Pinning (`entries.pinned`) | ✅ v2.6.0 | ✅ v2.6.0 | ✅ v1.1.0 | contract: `docs/schema.md` § Pinning. Schema column already exists; sort order + eviction-skip semantics are mandatory; UI is per-platform |
 | Storage usage diagnostic | ✅ v2.6.1 | — | ✅ v1.21.0 | Windows: Preferences → Storage shows DB path, db/wal/shm + blob sizes, and live/pinned/total entry counts (read-only). iOS storage is small + caches itself; doesn't need the diagnostic |
-| Time-window eviction | ✅ v2.6.2 | — | ⏳ | contract: `docs/schema.md` § Eviction. `body_evicted_at` column + sync round-trip + pull-side cooperation are mandatory |
+| Time-window eviction | ✅ v2.6.2 | — | ✅ v1.50.0 | Contract: `docs/schema.md` § Eviction. **Windows**: `EntryEvictor` (`CpdbWin.Core.Store`) — body-only eviction (row survives with metadata / thumbnails / FTS index; `body_evicted_at` gets stamped, `entry_flavors` deleted). Anchor = `created_at` (matches Mac; dedup bumps let re-copies refresh the age). Pinned always skipped, no override. Two-phase blob cleanup (SQL txn → post-commit per-key re-check + `BlobStore.Delete`), with `Gc.CleanOrphanBlobs` as the mop-up safety net. Bounds: `days ∈ [7, 3650]`. `cpdb-win evict --before-days N [--dry-run]` is the CLI entry point (see below); no automatic daemon-driven eviction yet — Mac's `AppDelegate.swift:1006-1019` daily-once pattern is a follow-up. |
 | Test-fixture scaffolding | ✅ v2.6.3 | — | ⏳ | contract: env-var-overridable data dir; ditto-equivalent snapshot |
 | Size-budget eviction (LRU + size-weighted) | ⏳ planned | — | ⏳ | not yet implemented anywhere |
 | Per-kind quotas | ⏳ planned | — | ⏳ | optional advanced feature |
@@ -139,7 +139,7 @@ maintenance surface without a separate download.
 | `cpdb copy <id>` | ✅ | — | GUI covers this |
 | `cpdb stats` | ✅ | — | GUI covers this |
 | `cpdb storage` | ✅ v2.6.1 | ⏳ | tier-by-tier breakdown |
-| `cpdb evict --before-days N` | ✅ v2.6.2 | ⏳ | manual eviction trigger |
+| `cpdb evict --before-days N` | ✅ v2.6.2 | ✅ v1.50.0 (`cpdb-win evict`) | manual eviction trigger — Mac defaults to 90d, Windows same. `--dry-run` prints candidate count; live run prints `evicted N entries` + inline / blob / total bytes freed. Days validated in `[7, 3650]` before the DB is touched. |
 | `cpdb fixture {snapshot, list, env, path, delete}` | ✅ v2.6.3 | ⏳ | test-data scaffolding |
 | `cpdb dedupe --links-all-time` | ✅ v2.7.9 | ✅ v1.7.0 | Windows: `cpdb-win dedupe --links-all-time`. Mac v2.5.2 also had a Universal-Clipboard-echo dedup; that variant is Apple-specific |
 | `cpdb backfill-titles --retry-empty` | ✅ v2.7.8 | ✅ v1.7.0 | Windows: `cpdb-win backfill-titles --retry-empty` |
