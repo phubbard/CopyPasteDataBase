@@ -18,7 +18,11 @@ public sealed class EntryRepository
         _blobs = blobs;
     }
 
-    private const string SelectEntryColumns = """
+    // Split into SELECT-list and FROM-clause halves so Search() can
+    // splice extra highlight() columns in between them (the columns
+    // have to sit in the SELECT list, not appended after the JOINs).
+    // Recent/RowsByIds glue the two halves back with SelectEntryColumns.
+    private const string SelectEntryColumnsList = """
         SELECT e.id, e.kind, e.title, e.text_preview,
                e.created_at, e.captured_at, e.total_size,
                a.bundle_id, a.name, p.thumb_small, e.pinned,
@@ -27,10 +31,15 @@ public sealed class EntryRepository
                     THEN 1 ELSE 0 END AS has_ocr,
                e.image_tags,
                e.chips_json
+        """;
+
+    private const string SelectEntryFrom = """
         FROM entries e
         LEFT JOIN apps a ON a.id = e.source_app_id
         LEFT JOIN previews p ON p.entry_id = e.id
         """;
+
+    private const string SelectEntryColumns = SelectEntryColumnsList + "\n" + SelectEntryFrom;
 
     /// <summary>
     /// Newest live entries first, with pinned rows floated to the top per
@@ -84,10 +93,37 @@ public sealed class EntryRepository
     /// FTS5 MATCH against the <c>entries_fts</c> shadow table, optionally
     /// narrowed to a single <c>entries.kind</c>. Pinned rows float to the
     /// top of the matching set.
+    ///
+    /// <para>
+    /// Populates <see cref="EntryRow.MatchSource"/> on each returned row.
+    /// Attribution mirrors Mac's <c>Sources/CpdbShared/Search/FtsIndex.swift</c>:
+    /// <see cref="HighlightSentinelStart"/>/<see cref="HighlightSentinelEnd"/>
+    /// (U+0001/U+0002 — bytes that never appear in clipboard text) wrap each
+    /// FTS5 <c>highlight()</c> return, then a plain <c>Contains</c> on the
+    /// output tells us which searchable column produced the hit. Column
+    /// indices match <c>docs/schema.md</c> § FTS5: text=1, ocr_text=3,
+    /// image_tags=4. See <see cref="MatchSource"/> for the classification
+    /// buckets and <see cref="ClassifyMatchSource"/> for the fall-through
+    /// rules.
+    /// </para>
     /// </summary>
     public IReadOnlyList<EntryRow> Search(string ftsQuery, int limit = 100, string? kind = null)
     {
-        var sql = SelectEntryColumns + """
+        // 3 extra columns per Mac's usage — column indices are hard-coded
+        // to the FTS5 schema in Store/Schema.cs (title=0, text=1,
+        // app_name=2, ocr_text=3, image_tags=4, link_title=5). If the
+        // FTS5 column order ever changes, MatchSourceTests will fail
+        // before UI regressions can ship.
+        // Extras live in the SELECT list (between the column list and
+        // the FROM clause) — SQL forbids trailing columns after JOINs.
+        // Column indices tied to Store/Schema.cs FTS5 definition:
+        // 1=text, 3=ocr_text, 4=image_tags.
+        var sql = SelectEntryColumnsList + """
+            ,
+                   highlight(entries_fts, 1, char(1), char(2)) AS hl_text,
+                   highlight(entries_fts, 3, char(1), char(2)) AS hl_ocr,
+                   highlight(entries_fts, 4, char(1), char(2)) AS hl_tags
+            """ + "\n" + SelectEntryFrom + """
 
             JOIN entries_fts f ON f.rowid = e.id
             WHERE entries_fts MATCH $q AND e.deleted_at IS NULL
@@ -95,13 +131,79 @@ public sealed class EntryRepository
             ORDER BY e.pinned DESC, e.created_at DESC
             LIMIT $limit
             """;
-        return Query(sql, cmd =>
+        var rows = new List<EntryRow>();
+        using var cmd = _db.CreateCommand();
+        cmd.CommandText = sql;
+        cmd.Parameters.AddWithValue("$q", ftsQuery);
+        cmd.Parameters.AddWithValue("$limit", limit);
+        cmd.Parameters.AddWithValue("$kind", (object?)kind ?? DBNull.Value);
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read())
         {
-            cmd.Parameters.AddWithValue("$q", ftsQuery);
-            cmd.Parameters.AddWithValue("$limit", limit);
-            cmd.Parameters.AddWithValue("$kind", (object?)kind ?? DBNull.Value);
-        });
+            var source = ClassifyMatchSource(
+                hlText: reader.IsDBNull(15) ? "" : reader.GetString(15),
+                hlOcr:  reader.IsDBNull(16) ? "" : reader.GetString(16),
+                hlTags: reader.IsDBNull(17) ? "" : reader.GetString(17));
+
+            rows.Add(new EntryRow(
+                Id: reader.GetInt64(0),
+                Kind: reader.GetString(1),
+                Title: reader.IsDBNull(2) ? null : reader.GetString(2),
+                TextPreview: reader.IsDBNull(3) ? null : reader.GetString(3),
+                CreatedAt: reader.GetDouble(4),
+                CapturedAt: reader.GetDouble(5),
+                TotalSize: reader.GetInt64(6),
+                AppBundleId: reader.IsDBNull(7) ? null : reader.GetString(7),
+                AppName: reader.IsDBNull(8) ? null : reader.GetString(8),
+                ThumbSmall: reader.IsDBNull(9) ? null : (byte[])reader.GetValue(9),
+                Pinned: reader.GetInt64(10) != 0,
+                LinkTitle: reader.IsDBNull(11) ? null : reader.GetString(11),
+                HasOcr: reader.GetInt64(12) != 0,
+                ImageTags: reader.IsDBNull(13) ? null : reader.GetString(13),
+                ChipsJson: reader.IsDBNull(14) ? null : reader.GetString(14),
+                MatchSource: source
+            ));
+        }
+        return rows;
     }
+
+    /// <summary>
+    /// Classify a search hit into a match-source bucket from the FTS5
+    /// <c>highlight()</c> sentinels. Public+static so the parity tests
+    /// can drive it directly without a live DB — the SQL layer is just
+    /// a marker producer, the semantics live here.
+    /// </summary>
+    /// <remarks>
+    /// Bucket rules, mirroring <c>Sources/CpdbShared/Search/FtsIndex.swift</c>:
+    /// <list type="bullet">
+    ///   <item><description>OCR hit + tag hit ⇒ <see cref="MatchSource.Multiple"/></description></item>
+    ///   <item><description>OCR hit only ⇒ <see cref="MatchSource.Ocr"/></description></item>
+    ///   <item><description>tag hit only ⇒ <see cref="MatchSource.Tag"/></description></item>
+    ///   <item><description>otherwise ⇒ <see cref="MatchSource.Text"/> — the
+    ///   fall-through catches plain text matches, title matches,
+    ///   link_title matches, and app_name matches. Mac collapses all four
+    ///   into one bucket because the badge would be noise for the
+    ///   overwhelmingly common "matched the visible text" case.</description></item>
+    /// </list>
+    /// </remarks>
+    public static MatchSource ClassifyMatchSource(string hlText, string hlOcr, string hlTags)
+    {
+        bool ocrHit  = hlOcr.IndexOf(HighlightSentinelStart) >= 0;
+        bool tagHit  = hlTags.IndexOf(HighlightSentinelStart) >= 0;
+        if (ocrHit && tagHit) return MatchSource.Multiple;
+        if (ocrHit)           return MatchSource.Ocr;
+        if (tagHit)           return MatchSource.Tag;
+        return MatchSource.Text;
+    }
+
+    /// <summary>
+    /// Marker chars wrapping each <c>highlight()</c> return. U+0001 (SOH)
+    /// and U+0002 (STX) are C0 control characters that can't legally
+    /// appear in JSON-safe clipboard text; both platforms use the exact
+    /// same pair so cross-platform test vectors stay portable.
+    /// </summary>
+    public const char HighlightSentinelStart = '';
+    public const char HighlightSentinelEnd   = '';
 
     /// <summary>
     /// Toggle the <c>entries.pinned</c> bit for a single row. Per
@@ -886,7 +988,44 @@ public readonly record struct EntryRow(
     string? LinkTitle,
     bool HasOcr,
     string? ImageTags,
-    string? ChipsJson);
+    string? ChipsJson,
+    // v1.47: search-only attribution. NULL on Recent() / RowsByIds()
+    // paths; populated only by Search() so the UI can render a
+    // "OCR" / "tag" / "•••" badge on rows that matched a non-text
+    // column. Defaulted so existing positional callers stay valid.
+    MatchSource? MatchSource = null);
+
+/// <summary>
+/// Which FTS5 column produced a search hit — surfaces as a small badge
+/// on the row so users can tell "this matched the OCR text on a
+/// screenshot" from "this matched the visible clipboard text". Ports
+/// <c>Sources/CpdbShared/Search/FtsIndex.MatchSource</c>; naming
+/// preserved byte-for-byte so parity fixtures port straight across.
+/// </summary>
+/// <remarks>
+/// Mac also has a <c>.semantic</c> case set by the popup's embedding
+/// re-ranker. Windows' <c>HybridRank</c> currently returns fused IDs
+/// through <see cref="EntryRepository.RowsByIds"/>, which drops the
+/// per-hit source — plumbing <c>.semantic</c> through requires the RRF
+/// pipeline to preserve which rank each id got its slot from, which
+/// isn't in this cut. When that lands, add the enum value here and
+/// wire the badge label + color in the UI.
+/// </remarks>
+public enum MatchSource
+{
+    /// <summary>Matched a "plain text" column (text, title, app_name,
+    /// link_title) — the common case; no badge is rendered.</summary>
+    Text,
+    /// <summary>Matched the <c>ocr_text</c> column — the row is an
+    /// image whose OCR pass turned up the search terms.</summary>
+    Ocr,
+    /// <summary>Matched the <c>image_tags</c> column — the row is an
+    /// image whose ImageNet classifier turned up the search terms.</summary>
+    Tag,
+    /// <summary>Matched more than one non-text column at once (both
+    /// OCR and tags fired). Rare in practice but honest to the data.</summary>
+    Multiple,
+}
 
 public readonly record struct FlavorRow(
     long EntryId,

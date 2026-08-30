@@ -1312,6 +1312,60 @@ public sealed class EntryViewModel
     /// <summary>Visible when there's selectable OCR text to view.</summary>
     public Visibility OcrBadgeVisibility => HasOcr ? Visibility.Visible : Visibility.Collapsed;
 
+    /// <summary>
+    /// Which FTS5 column produced the search hit (v1.47). Null on the
+    /// non-search path (<see cref="EntryRepository.Recent"/>), so the
+    /// initial popup with no query has no badges. Set only by the
+    /// search path; drives the small pill next to the OCR badge.
+    /// </summary>
+    public MatchSource? MatchSource { get; init; }
+
+    /// <summary>Whether to render a match-source badge on this row.
+    /// Text (or null) is the modal case; rendering "TEXT" everywhere
+    /// would be noise, so we collapse those.</summary>
+    public Visibility MatchBadgeVisibility =>
+        (MatchSource is CpdbWin.Core.Store.MatchSource s && s != CpdbWin.Core.Store.MatchSource.Text)
+            ? Visibility.Visible : Visibility.Collapsed;
+
+    /// <summary>Short pill label per source. Kept single-token so the
+    /// pill stays compact next to the OCR badge in the row.</summary>
+    public string MatchBadgeLabel => MatchSource switch
+    {
+        CpdbWin.Core.Store.MatchSource.Ocr      => "OCR",
+        CpdbWin.Core.Store.MatchSource.Tag      => "TAG",
+        CpdbWin.Core.Store.MatchSource.Multiple => "•••",
+        _                          => "",
+    };
+
+    /// <summary>Tooltip explaining which column matched, so the badge
+    /// is legible without needing to memorise the OCR/TAG/•••
+    /// alphabet.</summary>
+    public string MatchBadgeTooltip => MatchSource switch
+    {
+        CpdbWin.Core.Store.MatchSource.Ocr      => "Matched text recognised from an image",
+        CpdbWin.Core.Store.MatchSource.Tag      => "Matched an image classifier tag",
+        CpdbWin.Core.Store.MatchSource.Multiple => "Matched more than one non-text column",
+        _                          => "",
+    };
+
+    /// <summary>Background brush for the pill. Distinct per source
+    /// so a scanning eye can tell OCR (accent) from TAG (green)
+    /// from Multiple (purple) without reading the label. Colors
+    /// mirror Mac's <c>EntryCard.swift</c> badge palette.</summary>
+    public Brush MatchBadgeBackground => MatchSource switch
+    {
+        // Accent (system accent color) for OCR — matches the existing
+        // OCR text-availability badge's palette; the two OCR-related
+        // signals live in the same visual family.
+        CpdbWin.Core.Store.MatchSource.Ocr      => (Brush)Application.Current.Resources["AccentFillColorDefaultBrush"],
+        // A distinct green so tag hits are visually separable from OCR
+        // even when both types of images populate the results.
+        CpdbWin.Core.Store.MatchSource.Tag      => new SolidColorBrush(Windows.UI.Color.FromArgb(0xFF, 0x2E, 0x8B, 0x57)),
+        // Purple for the mixed case — visually says "special".
+        CpdbWin.Core.Store.MatchSource.Multiple => new SolidColorBrush(Windows.UI.Color.FromArgb(0xFF, 0x8B, 0x2E, 0x8B)),
+        _                          => (Brush)Application.Current.Resources["SubtleFillColorSecondaryBrush"],
+    };
+
     /// <summary>Label for the right-click toggle: "Pin" when unpinned, "Unpin" when pinned.</summary>
     public string PinMenuLabel => Pinned ? "Unpin" : "Pin";
 
@@ -1334,6 +1388,7 @@ public sealed class EntryViewModel
         HasOcr    = row.HasOcr,
         Tags      = CpdbWin.Core.Analysis.ImageTags.Parse(row.ImageTags),
         Chips     = Chip.DecodeArray(row.ChipsJson),
+        MatchSource = row.MatchSource,
     };
 
     /// <summary>
