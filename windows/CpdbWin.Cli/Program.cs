@@ -71,8 +71,27 @@ public static class Program
             "import-urls"        => RunImportUrls(db, paths, args[1..]),
             "export"             => RunExport(db, args[1..]),
             "evict"              => RunEvict(db, paths, args[1..]),
+            "storage"            => RunStorage(db, paths),
             _                    => UnknownCommand(args[0]),
         };
+    }
+
+    /// <summary>
+    /// <c>cpdb-win storage</c> — read-only tier-by-tier breakdown of
+    /// DB + blob store usage. Mirrors macOS <c>cpdb storage</c> plus a
+    /// Windows-only line for the SQLite file trio (`.db`/`-wal`/`-shm`)
+    /// so the CLI output matches what Explorer / Task Manager reports.
+    /// No flags in v1 — matches Mac.
+    /// </summary>
+    private static int RunStorage(SqliteConnection db, AppPaths.Resolved paths)
+    {
+        var blobs = new BlobStore(paths.Blobs);
+        var report = StorageReporter.Report(db, blobs, paths.Database);
+        Console.WriteLine(StorageReporter.Formatted(report));
+        Console.WriteLine();
+        Console.WriteLine($"Database path: {paths.Database}");
+        Console.WriteLine($"Blob store   : {paths.Blobs}");
+        return 0;
     }
 
     /// <summary>
@@ -388,6 +407,12 @@ public static class Program
                   clipboard capture so links enrich via the normal
                   backfill. --spread-seconds backdates captured_at
                   so the import doesn't collapse to one timestamp.
+
+              cpdb-win storage
+                  Print a tier-by-tier breakdown of disk usage:
+                  SQLite trio (db + wal + shm), metadata, thumbnails,
+                  flavor bodies (inline + on-disk blobs), plus counts
+                  of live / pinned / body-evicted entries. Read-only.
 
               cpdb-win evict [--before-days N] [--dry-run]
                   Body-evict entries older than N days (default 90):

@@ -138,7 +138,7 @@ maintenance surface without a separate download.
 | `cpdb show <id>` | ✅ | — | GUI covers this |
 | `cpdb copy <id>` | ✅ | — | GUI covers this |
 | `cpdb stats` | ✅ | — | GUI covers this |
-| `cpdb storage` | ✅ v2.6.1 | ⏳ | tier-by-tier breakdown |
+| `cpdb storage` | ✅ v2.6.1 | ✅ v1.51.0 (`cpdb-win storage`) | tier-by-tier breakdown. **Windows**: `StorageReport` + `StorageReporter` (`CpdbWin.Core.Store`) — three-tier model (metadata / thumbnails / flavor bodies with inline+blob sub-tiers) plus live / pinned / body-evicted counts. Metadata derived via `PRAGMA page_size × page_count` minus the two known sub-tiers. Windows-only addition: SQLite `.db` + `-wal` + `-shm` shown separately at top (WAL mode is on, sidecars are live files Explorer sees). Preferences → Storage pane refactored to consume the same reporter, matching Mac's single-engine-two-callers pattern. |
 | `cpdb evict --before-days N` | ✅ v2.6.2 | ✅ v1.50.0 (`cpdb-win evict`) | manual eviction trigger — Mac defaults to 90d, Windows same. `--dry-run` prints candidate count; live run prints `evicted N entries` + inline / blob / total bytes freed. Days validated in `[7, 3650]` before the DB is touched. |
 | `cpdb fixture {snapshot, list, env, path, delete}` | ✅ v2.6.3 | ⏳ | test-data scaffolding |
 | `cpdb dedupe --links-all-time` | ✅ v2.7.9 | ✅ v1.7.0 | Windows: `cpdb-win dedupe --links-all-time`. Mac v2.5.2 also had a Universal-Clipboard-echo dedup; that variant is Apple-specific |

@@ -374,52 +374,20 @@ public sealed partial class PreferencesWindow : Window
         try
         {
             var paths = _host.Paths;
+            // v1.51: single reporter feeds both the Preferences pane
+            // and the `cpdb-win storage` CLI, so the two surfaces stay
+            // byte-consistent (Mac does the same with `StorageInspector`).
+            // Opens its own read-only DB connection off the UI thread —
+            // avoids blocking on Preferences load if a big blob-store
+            // walk is slow.
             var text = await Task.Run(() =>
             {
-                static long Len(string p)
-                {
-                    try { return new FileInfo(p).Exists ? new FileInfo(p).Length : 0; }
-                    catch { return 0; }
-                }
-                static long DirSize(string d)
-                {
-                    try
-                    {
-                        return Directory.Exists(d)
-                            ? Directory.EnumerateFiles(d, "*", SearchOption.AllDirectories)
-                                       .Sum(f => { try { return new FileInfo(f).Length; } catch { return 0L; } })
-                            : 0;
-                    }
-                    catch { return 0; }
-                }
-                static string MB(long b) => $"{b / 1024.0 / 1024.0:N1} MB";
-
-                long db   = Len(paths.Database);
-                long wal  = Len(paths.Database + "-wal");
-                long shm  = Len(paths.Database + "-shm");
-                long blob = DirSize(paths.Blobs);
-
-                long total = 0, live = 0, pinned = 0;
-                try
-                {
-                    using var c = CpdbWin.Core.Store.Database.Open(paths.Database);
-                    long Scalar(string sql)
-                    {
-                        using var cmd = c.CreateCommand();
-                        cmd.CommandText = sql;
-                        return Convert.ToInt64(cmd.ExecuteScalar());
-                    }
-                    total  = Scalar("SELECT COUNT(*) FROM entries");
-                    live   = Scalar("SELECT COUNT(*) FROM entries WHERE deleted_at IS NULL");
-                    pinned = Scalar("SELECT COUNT(*) FROM entries WHERE pinned = 1 AND deleted_at IS NULL");
-                }
-                catch { /* counts best-effort */ }
-
-                return
-                    $"Database : {paths.Database}\n"
-                  + $"DB size  : {MB(db)}  (+wal {MB(wal)}  +shm {MB(shm)})\n"
-                  + $"Blobs    : {MB(blob)}  ({paths.Blobs})\n"
-                  + $"Entries  : {live:N0} live · {pinned:N0} pinned · {total:N0} total (incl. tombstoned)";
+                using var c = CpdbWin.Core.Store.Database.Open(paths.Database);
+                var blobs = new CpdbWin.Core.Store.BlobStore(paths.Blobs);
+                var report = CpdbWin.Core.Store.StorageReporter.Report(c, blobs, paths.Database);
+                return CpdbWin.Core.Store.StorageReporter.Formatted(report)
+                    + $"\n\nDatabase path: {paths.Database}"
+                    + $"\nBlob store   : {paths.Blobs}";
             });
             StorageInfo.Text = text;
         }

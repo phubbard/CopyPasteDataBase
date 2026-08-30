@@ -12,6 +12,64 @@ dated `[1.X.Y]` heading and reset `[Unreleased]` to empty.
 
 ## [Unreleased]
 
+- **`cpdb-win storage` CLI + shared reporter (v1.51.0).** Windows
+  port of Mac v2.6.1 `cpdb storage`. Read-only tier-by-tier
+  breakdown of DB + blob-store usage; pairs naturally with v1.50's
+  `cpdb-win evict` — the storage report tells you what's on disk,
+  evict reclaims the flavor-bodies tier.
+
+  - **`StorageReport`** record struct + **`StorageReporter`** static
+    class (new, `CpdbWin.Core.Store`) — mirrors macOS's
+    `Sources/CpdbShared/StorageReport.swift` (`StorageReport` +
+    `StorageInspector`). Three-tier model (metadata / thumbnails /
+    flavor bodies with inline+blob sub-tiers), plus live / pinned /
+    body-evicted counts. **Metadata** derived via
+    `PRAGMA page_size × page_count` minus thumbnails minus inline
+    bytes — the SQL-side approximation of Mac's per-table walk.
+  - **Windows-only addition** (drift from Mac): the SQLite trio
+    (`.db` + `-wal` + `-shm`) shown as a separate line at the top.
+    WAL mode is on so both sidecars are live files that Explorer /
+    Task Manager will see; hiding them would desync the CLI report
+    from what the user's disk-usage tools show. `Total` remains the
+    three-tier sum only (WAL/SHM are transient — will collapse into
+    the main DB on the next checkpoint).
+  - **`cpdb-win storage` subcommand** — no flags (matches Mac).
+    Prints the formatted three-tier block plus the database + blob
+    paths at the end. Uses the same `FormatBytes` shape as
+    `cpdb-win evict` so the two commands read consistently.
+  - **Preferences → Storage pane refactored** to consume
+    `StorageReporter` instead of its inline `MB()` / `DirSize()` /
+    scalar queries. Single reporter, two callers — Mac does the
+    same. Byproduct: the pane now shows the richer three-tier
+    breakdown instead of the two-line summary it shipped with in
+    v1.21.0.
+
+  **Deliberate scope trims** (vs. what a first sketch might include):
+  - No per-kind breakdown — belongs in a hypothetical `cpdb stats`
+    (Mac doesn't have one on either platform).
+  - No tombstoned count — not user-actionable; Gc will hard-delete
+    them on its next sweep.
+  - No "evictable at N days" preview — that's exactly what
+    `cpdb-win evict --dry-run` already prints; keeping the two
+    commands separate avoids duplicating the message.
+  - No `--json`, no `--kind` filter — Mac has neither; parity first.
+  - No `--verify-hashes` — Mac's identity-cutover sample check is
+    a sync-adjacent feature; out of scope for a standalone Windows
+    build.
+
+  **Tests:**
+  - 9 `StorageReporterTests` — empty DB (non-zero metadata via FTS
+    tables), inline vs blob path routing, tombstoned exclusion
+    from pinned count, body-evicted count increments after evict,
+    the two derived invariants (`Total = Metadata + Thumbnails +
+    Flavor`, `Flavor = Inline + Blob`), formatted-output section
+    labels, `FormatBytes` unit-boundary formatting.
+
+- Parity: `docs/parity.md` **`cpdb storage`** row flips to ✅ for
+  Windows.
+
+## [1.50.0] — 2026-08-30
+
 - **Time-window body eviction + `cpdb-win evict` CLI (v1.50.0).**
   Windows port of Mac v2.6.2. `cpdb-win evict --before-days N`
   drops flavor bytes for entries older than N days, while
