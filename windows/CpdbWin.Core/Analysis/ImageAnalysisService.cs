@@ -109,6 +109,23 @@ public sealed class ImageAnalysisService : IDisposable
                     if (c.NeedsTags)
                         tags = await ImageClassifier.ClassifyAsync(bytes, topK: 3, ct: ct)
                             .ConfigureAwait(false);
+                    // v1.45: QR / barcode pass, piggybacked onto OCR
+                    // (whenever OCR is re-run, so is QR). No new
+                    // sentinel column — ocr_at doubles as the "have
+                    // we scanned this image for chips" flag. Existing
+                    // OCR'd rows won't have QR chips until a "Re-OCR
+                    // images" reset re-arms them; acceptable trade-off
+                    // to avoid a v15 schema migration for one small
+                    // opportunistic pass.
+                    if (c.NeedsOcr)
+                    {
+                        var payloads = QrDecoder.Decode(bytes);
+                        if (payloads.Count > 0)
+                        {
+                            var chips = QrChipMapper.Chips(payloads);
+                            _entries.SetChips(c.Id, Chip.EncodeArray(chips));
+                        }
+                    }
                 }
 
                 // Combined settle when both passes ran (one tx, one FTS
