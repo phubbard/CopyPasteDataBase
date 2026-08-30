@@ -12,6 +12,74 @@ dated `[1.X.Y]` heading and reset `[Unreleased]` to empty.
 
 ## [Unreleased]
 
+- **Per-column FTS5 scope toggles (v1.49.0).** Windows port of Mac's
+  v1.2 per-column scope. Three checkable pills in the search bar —
+  **text** / **OCR** / **tags** — restrict the search to a subset
+  of the three "content" FTS5 columns. Toggling one off means hits
+  in that column don't come back; the other columns keep working.
+  Toggles persist across sessions in `settings.json`. Title /
+  app_name / link_title are always in scope — a title match is
+  signal, not noise (matches Mac).
+
+  - **`SearchScope`** record struct (new, `CpdbWin.Core.Store`) —
+    three bools (`Text`, `Ocr`, `Tags`), defaults to `All`.
+    Mirrors `Sources/CpdbShared/Search/FtsIndex.SearchScope`;
+    plain-struct shape so it round-trips cleanly through
+    `System.Text.Json`.
+  - **`EntryRepository.BuildScopedFtsQuery(userQuery, scope)`** —
+    pure-function rewriter: whitespace-split the raw query into
+    tokens, double-quote each (defusing operator characters
+    `*` / `-` / `"` — the current `+ "*"` was fragile), suffix
+    each with `*` for prefix search, then wrap with an FTS5
+    column filter of the form
+    `{title app_name text ocr_text image_tags link_title} : "tok"*`.
+    Toggleable columns drop out per the scope. Returns `null` on
+    empty scope or empty query — caller renders zero rows rather
+    than silently ignoring the scope.
+  - **`UserSettings.SearchScope`** — new JSON-persisted property,
+    defaults to `SearchScope.All` so upgrades from &lt; 1.49
+    preserve prior behavior.
+  - **`MainWindow.xaml`** — three `ToggleButton` pills inserted
+    between `SearchBox` and `KindFilter` in the header grid.
+    Same visual template as the v1.44 chip UI.
+  - **`ScopeToggle_Click`** in `MainWindow.xaml.cs` — reads all
+    three toggle states, saves the new scope to `settings.json`
+    immediately, resets cursor/anchor (row shape changed), and
+    refreshes. Persisting on every mutation matches Mac's UX
+    contract: scope is a preference, not per-summon state.
+  - **`MainWindow` ctor** — new `UserSettings` + `settingsPath`
+    params (App injects both). Syncs toggle `IsChecked` from
+    persisted state BEFORE the first `Refresh` so the initial
+    render uses the right scope.
+  - **`Refresh()` search dispatch** rewired: user query goes
+    through `BuildScopedFtsQuery` instead of raw `+ "*"`; a
+    null return renders zero rows.
+
+  **Interactions:**
+  - **v1.47 match-source badges** still work correctly under
+    scope: a filtered-out column's `highlight()` returns without
+    sentinels, so `ClassifyMatchSource` naturally attributes to
+    the remaining in-scope column. Covered by the
+    `Scope_OcrOnly_KeepsOcrHitDropsTextHit` test.
+  - **v1.48 time-pivot** takes precedence — pivot mode ignores
+    scope (its whole point is "what else was on the clipboard
+    around then, regardless of type or content column").
+
+  **Tests:**
+  - 10 `ScopedFtsQueryBuilderTests` — all four toggle
+    combinations, empty-scope / empty-query short-circuit,
+    multi-token, embedded double-quote escaping, operator-char
+    defusal, `SearchScope.All` / `IsAnyEnabled` invariants.
+  - 4 `SearchScopeEndToEndTests` — real ingest + OCR/tags settle;
+    text-only scope drops OCR hit + drops tag hit; OCR-only
+    keeps OCR + drops text; title stays in scope regardless of
+    toggles.
+
+- Parity: `docs/parity.md` **Per-column scope toggles** row flips
+  to ✅ for Windows.
+
+## [1.48.0] — 2026-08-30
+
 - **Time-pivot mode (v1.48.0).** Windows port of Mac's v2.10.0 ⌘T
   time-pivot. On any selected card, press **Ctrl+T** to switch the
   popup to a chronological view of entries captured within ±W of

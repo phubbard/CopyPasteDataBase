@@ -4,12 +4,44 @@
         xmlns:local="using:CpdbWin.App"
         xmlns:analysis="using:CpdbWin.Core.Analysis">
     <Grid Padding="12" RowDefinitions="Auto,*,Auto" RowSpacing="8">
-        <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="8">
+        <Grid ColumnDefinitions="*,Auto,Auto,Auto" ColumnSpacing="8">
             <TextBox x:Name="SearchBox"
                      PlaceholderText="Search clipboard history…"
                      TextChanged="SearchBox_TextChanged"/>
+            <!-- v1.49 scope toggles: three checkable pills between the
+                 search box and the kind filter. Restricts search to a
+                 subset of the three "content" FTS5 columns. Title /
+                 app_name / link_title are always in scope regardless
+                 (a title match is signal, not noise — matches Mac). -->
+            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="4"
+                        VerticalAlignment="Center">
+                <ToggleButton x:Name="ScopeTextToggle"
+                              Content="text"
+                              IsChecked="True"
+                              Click="ScopeToggle_Click"
+                              FontSize="11"
+                              Padding="8,2"
+                              MinHeight="0"
+                              ToolTipService.ToolTip="Match against the visible clipboard text"/>
+                <ToggleButton x:Name="ScopeOcrToggle"
+                              Content="OCR"
+                              IsChecked="True"
+                              Click="ScopeToggle_Click"
+                              FontSize="11"
+                              Padding="8,2"
+                              MinHeight="0"
+                              ToolTipService.ToolTip="Match against text recognised from images"/>
+                <ToggleButton x:Name="ScopeTagsToggle"
+                              Content="tags"
+                              IsChecked="True"
+                              Click="ScopeToggle_Click"
+                              FontSize="11"
+                              Padding="8,2"
+                              MinHeight="0"
+                              ToolTipService.ToolTip="Match against image classifier tags"/>
+            </StackPanel>
             <ComboBox x:Name="KindFilter"
-                      Grid.Column="1"
+                      Grid.Column="2"
                       Width="120"
                       SelectedIndex="0"
                       SelectionChanged="KindFilter_SelectionChanged">
@@ -22,7 +54,7 @@
                 <ComboBoxItem Content="Other" Tag="other"/>
             </ComboBox>
             <Button x:Name="SettingsButton"
-                    Grid.Column="2"
+                    Grid.Column="3"
                     Click="SettingsButton_Click"
                     ToolTipService.ToolTip="Settings (Import / Export, hotkey, updates)"
                     AutomationProperties.Name="Settings">

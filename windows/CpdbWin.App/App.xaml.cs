@@ -126,7 +126,7 @@ public partial class App : Application
         // detailed comment on AutoLaunch.HealAutostartIfStale.
         AutoLaunch.HealAutostartIfStale();
 
-        _mainWindow = new MainWindow(Host);
+        _mainWindow = new MainWindow(Host, _settings, _settingsPath);
         // Visible, discoverable entry point to Preferences (the tray
         // right-click menu is the only other path). Same handler.
         _mainWindow.SettingsRequested += () =>

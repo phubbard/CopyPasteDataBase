@@ -106,6 +106,17 @@ public sealed class EntryRepository
     /// buckets and <see cref="ClassifyMatchSource"/> for the fall-through
     /// rules.
     /// </para>
+    ///
+    /// <para>
+    /// **`scope` param (v1.49)**: user query is passed through
+    /// <see cref="BuildScopedFtsQuery"/> which handles FTS5 escaping and
+    /// the <c>{col1 col2 ...}:</c> column filter. When every toggleable
+    /// column is off (<see cref="SearchScope.IsAnyEnabled"/> false), the
+    /// query returns nothing rather than silently ignoring the scope —
+    /// matches Mac's <c>SearchScope.isEnabled</c> short-circuit. The
+    /// legacy <c>ftsQuery</c> string param stays for direct callers
+    /// (tests, RRF hybrid rank) that already built their own MATCH.
+    /// </para>
     /// </summary>
     public IReadOnlyList<EntryRow> Search(string ftsQuery, int limit = 100, string? kind = null)
     {
@@ -246,6 +257,59 @@ public sealed class EntryRepository
             cmd.Parameters.AddWithValue("$hi",    anchorCapturedAt + windowSeconds);
             cmd.Parameters.AddWithValue("$limit", limit);
         });
+    }
+
+    /// <summary>
+    /// Turn a raw user query + <see cref="SearchScope"/> into an FTS5
+    /// MATCH string. Ports Mac's <c>Sources/CpdbShared/Search/FtsIndex.swift</c>
+    /// query-rewriter verbatim: whitespace-split into tokens, each token
+    /// double-quoted (so FTS5 treats it as a literal, defusing operator
+    /// characters like <c>*</c> / <c>-</c> / <c>"</c>) and suffixed with
+    /// <c>*</c> for prefix search, then the whole expression prefixed
+    /// with a column-filter of the form <c>{title app_name text
+    /// ocr_text image_tags link_title} :</c> where the three toggleable
+    /// columns (text, ocr_text, image_tags) drop out per the scope.
+    /// Title / app_name / link_title are always in scope — a title
+    /// match is signal, not noise (matches Mac).
+    ///
+    /// <para>Returns <c>null</c> when the query has no tokens after
+    /// escaping, or when <see cref="SearchScope.IsAnyEnabled"/> is
+    /// false — caller should skip the search and render zero results.</para>
+    /// </summary>
+    public static string? BuildScopedFtsQuery(string userQuery, SearchScope scope)
+    {
+        if (!scope.IsAnyEnabled) return null;
+        var tokens = TokenizeForFts(userQuery);
+        if (tokens.Count == 0) return null;
+
+        // Column filter: braces around space-separated column names,
+        // then " : " separator (FTS5 syntax — the surrounding spaces
+        // around the colon are required; no-space parses as a
+        // bareword).
+        var cols = new List<string>(6) { "title", "app_name" };
+        if (scope.Text) cols.Add("text");
+        if (scope.Ocr)  cols.Add("ocr_text");
+        if (scope.Tags) cols.Add("image_tags");
+        cols.Add("link_title");
+        var expr = string.Join(" ", tokens.Select(t => $"\"{t}\"*"));
+        return "{" + string.Join(" ", cols) + "} : " + expr;
+    }
+
+    /// <summary>Split a raw user query into FTS5-safe literal tokens.
+    /// Whitespace splits are Unicode-aware; embedded quotes are
+    /// doubled per FTS5's literal escape rule (<c>"</c> → <c>""</c>).
+    /// Empty/blank input yields an empty list.</summary>
+    private static List<string> TokenizeForFts(string userQuery)
+    {
+        var tokens = new List<string>();
+        if (string.IsNullOrWhiteSpace(userQuery)) return tokens;
+        foreach (var raw in userQuery.Split((char[]?)null,
+            StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var escaped = raw.Replace("\"", "\"\"");
+            if (escaped.Length > 0) tokens.Add(escaped);
+        }
+        return tokens;
     }
 
     /// <summary>
@@ -1054,6 +1118,34 @@ public readonly record struct EntryRow(
 /// isn't in this cut. When that lands, add the enum value here and
 /// wire the badge label + color in the UI.
 /// </remarks>
+/// <summary>
+/// Which of the three "content" FTS5 columns the user's search query
+/// is allowed to hit. Mirrors <c>Sources/CpdbShared/Search/FtsIndex.
+/// SearchScope</c> — plain struct of three bools rather than an
+/// <c>OptionSet</c> so it round-trips cleanly through
+/// <c>System.Text.Json</c> in <c>UserSettings</c>. Defaults are all
+/// true (see <see cref="All"/>); the app-facing setter persists to
+/// disk on every mutation.
+///
+/// <para>
+/// <b>title / app_name / link_title are always in scope</b> — those
+/// are the always-visible metadata that the user is effectively
+/// browsing when they type in the search box. A title match is
+/// signal, not noise; scoping it away would be perverse.
+/// </para>
+/// </summary>
+public readonly record struct SearchScope(bool Text, bool Ocr, bool Tags)
+{
+    /// <summary>Default state — every toggleable column on.</summary>
+    public static SearchScope All => new(true, true, true);
+
+    /// <summary>False when every toggleable column is off. The search
+    /// short-circuits in that case rather than silently ignoring the
+    /// scope and returning everything — matches Mac's
+    /// <c>SearchScope.isEnabled</c> guard.</summary>
+    public bool IsAnyEnabled => Text || Ocr || Tags;
+}
+
 public enum MatchSource
 {
     /// <summary>Matched a "plain text" column (text, title, app_name,
