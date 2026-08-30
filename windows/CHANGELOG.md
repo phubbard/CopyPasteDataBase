@@ -12,6 +12,46 @@ dated `[1.X.Y]` heading and reset `[Unreleased]` to empty.
 
 ## [Unreleased]
 
+- **`.Semantic` match-source badge (v1.52.0)** — v1.47 follow-up.
+  Search rows pulled in only by the semantic re-rank (v1.41
+  embedding index), that the FTS pass didn't return, now show a
+  distinct `≈` pill in the row. Overlap rows — present in both
+  the FTS and semantic result lists — keep the FTS-classified
+  source (Text/Ocr/Tag/Multiple), matching Mac's
+  `AppState.swift:519-527` merge rule byte-for-byte.
+
+  - **`MatchSource.Semantic`** — fifth enum value in `CpdbWin.Core.Store`.
+    Never produced by `EntryRepository.Search` or
+    `ClassifyMatchSource`; assigned exclusively at the render
+    layer.
+  - **`MainWindow.SpawnSemanticRerankAsync`** — the `missingIds`
+    set (semantic list minus FTS set — already computed at line
+    385) gets its hydrated rows stamped via
+    `row with { MatchSource = MatchSource.Semantic }` before the
+    `EntryViewModel.From` projection. Zero surface-area change to
+    `HybridRank.Fuse` or `RowsByIds` — no propagation dict, no
+    tuple, no extra parameter.
+  - **Badge visuals**: label `≈`, tooltip "Matched by meaning
+    (semantic re-rank)", background Material Blue 600
+    (`#1E88E5` — closest neutral to SwiftUI `.blue` under the
+    Fluent palette; visually distinct from green/TAG and
+    purple/•••).
+
+  **Tests:**
+  - 3 `SemanticMatchSourceTests` — enum value exists and is
+    distinct from the other four (drift-catcher against a
+    naming-collision or enum reorder that would silently break
+    the switch-based badge rendering); the SQL classifier never
+    returns `.Semantic` (contract invariant — a leak would
+    reclassify real OCR/tag hits and break the "semantic-only"
+    UX contract); `EntryRow` accepts the value via `record with`
+    mutation (the exact shape the render-layer stamp uses).
+
+- Parity: `docs/parity.md` **Match-source badges** row updated —
+  drops the follow-up flag on the `.semantic` bucket.
+
+## [1.51.0] — 2026-08-30
+
 - **`cpdb-win storage` CLI + shared reporter (v1.51.0).** Windows
   port of Mac v2.6.1 `cpdb storage`. Read-only tier-by-tier
   breakdown of DB + blob-store usage; pairs naturally with v1.50's

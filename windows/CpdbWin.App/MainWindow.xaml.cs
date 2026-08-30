@@ -417,10 +417,17 @@ public sealed partial class MainWindow : Window
                              ?? Array.Empty<EntryViewModel>();
             var byId = new Dictionary<long, EntryViewModel>();
             foreach (var vm in currentVms) byId[vm.EntryId] = vm;
+            // v1.52: stamp MatchSource.Semantic on the semantic-only
+            // rows before projecting to the view model — semantic hits
+            // the FTS pass didn't return earn the ≈ badge. Overlap ids
+            // (in both lists) already have a MatchSource from the FTS
+            // highlight classifier and stay in byId untouched. Mirrors
+            // Mac's AppState.swift:519-527 merge rule.
             foreach (var row in newRows)
             {
                 if (!byId.ContainsKey(row.Id))
-                    byId[row.Id] = EntryViewModel.From(row);
+                    byId[row.Id] = EntryViewModel.From(
+                        row with { MatchSource = CpdbWin.Core.Store.MatchSource.Semantic });
             }
 
             // Preserve current selection so re-ranking doesn't drop the
@@ -1586,6 +1593,7 @@ public sealed class EntryViewModel
         CpdbWin.Core.Store.MatchSource.Ocr      => "OCR",
         CpdbWin.Core.Store.MatchSource.Tag      => "TAG",
         CpdbWin.Core.Store.MatchSource.Multiple => "•••",
+        CpdbWin.Core.Store.MatchSource.Semantic => "≈",
         _                          => "",
     };
 
@@ -1597,6 +1605,7 @@ public sealed class EntryViewModel
         CpdbWin.Core.Store.MatchSource.Ocr      => "Matched text recognised from an image",
         CpdbWin.Core.Store.MatchSource.Tag      => "Matched an image classifier tag",
         CpdbWin.Core.Store.MatchSource.Multiple => "Matched more than one non-text column",
+        CpdbWin.Core.Store.MatchSource.Semantic => "Matched by meaning (semantic re-rank)",
         _                          => "",
     };
 
@@ -1615,6 +1624,11 @@ public sealed class EntryViewModel
         CpdbWin.Core.Store.MatchSource.Tag      => new SolidColorBrush(Windows.UI.Color.FromArgb(0xFF, 0x2E, 0x8B, 0x57)),
         // Purple for the mixed case — visually says "special".
         CpdbWin.Core.Store.MatchSource.Multiple => new SolidColorBrush(Windows.UI.Color.FromArgb(0xFF, 0x8B, 0x2E, 0x8B)),
+        // Material Blue 600 for semantic — closest neutral to SwiftUI
+        // `.blue` under Fluent's palette; visually distinct from the
+        // green (TAG) and purple (Multiple) so a scanning eye can tell
+        // "matched by meaning" apart from column-source badges.
+        CpdbWin.Core.Store.MatchSource.Semantic => new SolidColorBrush(Windows.UI.Color.FromArgb(0xFF, 0x1E, 0x88, 0xE5)),
         _                          => (Brush)Application.Current.Resources["SubtleFillColorSecondaryBrush"],
     };
 

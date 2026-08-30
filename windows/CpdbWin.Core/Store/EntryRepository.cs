@@ -1109,15 +1109,6 @@ public readonly record struct EntryRow(
 /// <c>Sources/CpdbShared/Search/FtsIndex.MatchSource</c>; naming
 /// preserved byte-for-byte so parity fixtures port straight across.
 /// </summary>
-/// <remarks>
-/// Mac also has a <c>.semantic</c> case set by the popup's embedding
-/// re-ranker. Windows' <c>HybridRank</c> currently returns fused IDs
-/// through <see cref="EntryRepository.RowsByIds"/>, which drops the
-/// per-hit source — plumbing <c>.semantic</c> through requires the RRF
-/// pipeline to preserve which rank each id got its slot from, which
-/// isn't in this cut. When that lands, add the enum value here and
-/// wire the badge label + color in the UI.
-/// </remarks>
 /// <summary>
 /// Which of the three "content" FTS5 columns the user's search query
 /// is allowed to hit. Mirrors <c>Sources/CpdbShared/Search/FtsIndex.
@@ -1160,6 +1151,15 @@ public enum MatchSource
     /// <summary>Matched more than one non-text column at once (both
     /// OCR and tags fired). Rare in practice but honest to the data.</summary>
     Multiple,
+    /// <summary>Pulled in by the semantic re-ranker (v1.41 embedding
+    /// index) — the FTS query didn't surface this row, but the
+    /// embedding cosine did. Assigned at the render layer in
+    /// <c>MainWindow.SpawnSemanticRerankAsync</c>; never produced by
+    /// the SQL Search path or <see cref="EntryRepository.ClassifyMatchSource"/>.
+    /// Semantic-only, matching Mac's <c>AppState.swift:519-527</c> merge:
+    /// an id present in both the FTS and semantic lists keeps its
+    /// FTS-classified source rather than being reclassified here.</summary>
+    Semantic,
 }
 
 public readonly record struct FlavorRow(
