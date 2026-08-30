@@ -673,6 +673,51 @@ public class MigratorTests : IDisposable
     }
 
     [Fact]
+    public void V15Migration_AddsCapturedAtIndex()
+    {
+        SeedV5Schema();
+        SeedSupplementaryTables();
+        Migrator.Migrate(_db);
+
+        // The v15 partial index is what makes Neighbors() an index
+        // walk instead of a full scan. If this stops firing, the
+        // time-pivot query silently degrades on a real user's DB.
+        using var cmd = _db.CreateCommand();
+        cmd.CommandText = """
+            EXPLAIN QUERY PLAN
+            SELECT id FROM entries
+            WHERE deleted_at IS NULL
+              AND captured_at BETWEEN ? AND ?
+            ORDER BY captured_at ASC
+            LIMIT 500
+            """;
+        cmd.Parameters.AddWithValue("$1", 0);
+        cmd.Parameters.AddWithValue("$2", 100);
+        using var r = cmd.ExecuteReader();
+        var plans = new List<string>();
+        while (r.Read()) plans.Add(r.GetString(3));
+
+        Assert.Contains(plans, p => p.Contains("idx_entries_captured_at"));
+        Assert.Contains("v15_captured_at_index", AppliedMigrations());
+    }
+
+    [Fact]
+    public void V15Migration_IdempotentReRunIsNoOp()
+    {
+        SeedV5Schema();
+        SeedSupplementaryTables();
+        Migrator.Migrate(_db);
+
+        using (var cmd = _db.CreateCommand())
+        {
+            cmd.CommandText = "DELETE FROM grdb_migrations WHERE identifier = 'v15_captured_at_index'";
+            cmd.ExecuteNonQuery();
+        }
+        Migrator.Migrate(_db);  // CREATE INDEX IF NOT EXISTS: must be a no-op.
+        Assert.Contains("v15_captured_at_index", AppliedMigrations());
+    }
+
+    [Fact]
     public void V14RecencyIndex_MatchesPopupRecentQueryShape()
     {
         SeedV5Schema();

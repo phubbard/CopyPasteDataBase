@@ -40,6 +40,10 @@ public static class Schema
         // algorithm equality across platforms.
         "v13_semantic_enrichment",
         "v14_recency_index",
+        // v15 (v1.48.0 time-pivot): captured_at partial index the
+        // Neighbors() range scan walks instead of full-scanning the
+        // table. See docs/parity.md → Time-pivot mode.
+        "v15_captured_at_index",
     };
 
     public const string UnionDdl = """
@@ -123,6 +127,15 @@ public static class Schema
         -- first v3.3 launch via their popup-perf log.
         CREATE INDEX idx_entries_recency
             ON entries(pinned DESC, created_at DESC)
+            WHERE deleted_at IS NULL;
+        -- v15 (captured_at index, v1.48.0 time-pivot): the pivot
+        -- primitive (EntryRepository.Neighbors) does a bounded range
+        -- scan on captured_at BETWEEN $lo AND $hi; without this index
+        -- SQLite full-scans every live row and filters. Partial on
+        -- deleted_at IS NULL for the same reason idx_entries_recency
+        -- is — the tombstone check falls out of the index walk.
+        CREATE INDEX idx_entries_captured_at
+            ON entries(captured_at)
             WHERE deleted_at IS NULL;
 
         CREATE TABLE entry_flavors (

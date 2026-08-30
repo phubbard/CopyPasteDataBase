@@ -41,8 +41,38 @@ public sealed partial class MainWindow : Window
         => SettingsRequested?.Invoke();
 
     [DllImport("user32.dll")] private static extern short GetKeyState(int vKey);
-    private const int VK_SHIFT = 0x10;
-    private static bool IsShiftDown() => (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+    private const int VK_SHIFT   = 0x10;
+    private const int VK_CONTROL = 0x11;
+    private static bool IsShiftDown() => (GetKeyState(VK_SHIFT)   & 0x8000) != 0;
+    private static bool IsCtrlDown()  => (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+
+    // ─── Time-pivot mode (v1.48.0) ────────────────────────────────────
+    // Windows port of Mac v2.10.0 ⌘T: on a selected card, switch the
+    // popup to a chronological view of entries captured within ±W of
+    // the anchor's captured_at. Ctrl+T toggles; bare [/] widen/narrow
+    // (gated — outside pivot they're literals the search box can
+    // consume); Esc exits before its usual clear/hide chain.
+
+    /// <summary>Window sizes, seconds. Same table Mac uses
+    /// (<c>AppState.swift:105-113</c>): 15m / 30m / 1h / 3h / 6h /
+    /// 12h / 24h. Default index 1 (30 min) matches Mac's
+    /// <c>timePivotDefaultIndex = 1</c>.</summary>
+    private static readonly int[] s_pivotWindowSeconds = new[]
+    {
+        15 * 60, 30 * 60, 60 * 60, 3 * 3600, 6 * 3600, 12 * 3600, 24 * 3600,
+    };
+    private const int PivotDefaultIndex = 1;
+
+    /// <summary>Live pivot state; <c>null</c> when we're in the
+    /// normal Recent/Search flow. The snapshot fields let Esc
+    /// restore what the user was looking at before Ctrl+T.</summary>
+    private sealed record TimePivotState(
+        long AnchorEntryId,
+        double AnchorCapturedAt,
+        int WindowIndex,
+        string SavedQuery,
+        long? SavedSelectedEntryId);
+    private TimePivotState? _timePivot;
 
     public MainWindow(AppHost host)
     {
@@ -211,9 +241,29 @@ public sealed partial class MainWindow : Window
         IReadOnlyList<EntryRow> rows;
         try
         {
-            rows = string.IsNullOrWhiteSpace(query)
-                ? _host.Entries.Recent(kind: kind)
-                : _host.Entries.Search(query.Trim() + "*", kind: kind);
+            // Data-source dispatch:
+            //   1. pivot active  → chronological ±W window (kind-agnostic
+            //      by design — the whole point is "what else was on the
+            //      clipboard around then", regardless of type);
+            //   2. non-empty query → FTS5 search (with kind filter);
+            //   3. otherwise      → Recent (with kind filter).
+            // Pivot supersedes both search AND kind filter so the user
+            // can't accidentally hide the anchor by filtering on a kind
+            // that isn't its own.
+            if (_timePivot is { } pivot)
+            {
+                rows = _host.Entries.Neighbors(
+                    pivot.AnchorCapturedAt,
+                    s_pivotWindowSeconds[pivot.WindowIndex]);
+            }
+            else if (!string.IsNullOrWhiteSpace(query))
+            {
+                rows = _host.Entries.Search(query.Trim() + "*", kind: kind);
+            }
+            else
+            {
+                rows = _host.Entries.Recent(kind: kind);
+            }
         }
         catch
         {
@@ -388,6 +438,122 @@ public sealed partial class MainWindow : Window
             if (a[i].EntryId != bList[i].EntryId) return false;
         return true;
     }
+
+    // ─── Time-pivot mode: state transitions + hint line ──────────────
+
+    /// <summary>Enter time-pivot mode anchored on <paramref name="anchor"/>.
+    /// Snapshots the current search box + selection so Esc can restore
+    /// them. No-op when a pivot is already active (caller should use
+    /// <see cref="ExitTimePivot"/>).</summary>
+    private void EnterTimePivot(EntryViewModel anchor)
+    {
+        if (_timePivot is not null) return;
+        var anchorRow = _host.Entries.RowsByIds(new[] { anchor.EntryId }).FirstOrDefault();
+        if (anchorRow.Id == 0) return;  // tombstoned between select + keydown; give up quietly
+
+        _timePivot = new TimePivotState(
+            AnchorEntryId:      anchor.EntryId,
+            AnchorCapturedAt:   anchorRow.CapturedAt,
+            WindowIndex:        PivotDefaultIndex,
+            SavedQuery:         SearchBox.Text,
+            SavedSelectedEntryId: (EntryList.SelectedItem as EntryViewModel)?.EntryId);
+        Refresh();
+        SelectAnchorInPivot();
+        UpdatePivotStatus();
+    }
+
+    /// <summary>Leave pivot mode. Restores the saved query + selection
+    /// so the user lands back where they were. No-op if we're not
+    /// currently pivoting.</summary>
+    private void ExitTimePivot()
+    {
+        if (_timePivot is not { } pivot) return;
+
+        var savedSelectionId = pivot.SavedSelectedEntryId;
+        _timePivot = null;
+
+        // Only touch the search box if it actually differs — assigning
+        // even the same string fires TextChanged, which triggers a
+        // second Refresh.
+        if (SearchBox.Text != pivot.SavedQuery)
+            SearchBox.Text = pivot.SavedQuery;
+        else
+            Refresh();  // TextChanged wouldn't fire, so refresh explicitly
+
+        if (savedSelectionId is long id)
+            SelectEntryById(id);
+
+        StatusText.Text = "";
+    }
+
+    /// <summary>Widen the pivot window one step (bare <c>]</c>). Clamps
+    /// at the largest window (24 h) — no wrap.</summary>
+    private void WidenTimePivot()
+    {
+        if (_timePivot is not { } p) return;
+        if (p.WindowIndex >= s_pivotWindowSeconds.Length - 1) return;
+        _timePivot = p with { WindowIndex = p.WindowIndex + 1 };
+        Refresh();
+        SelectAnchorInPivot();
+        UpdatePivotStatus();
+    }
+
+    /// <summary>Narrow the pivot window one step (bare <c>[</c>). Clamps
+    /// at the smallest window (15 min) — no wrap.</summary>
+    private void NarrowTimePivot()
+    {
+        if (_timePivot is not { } p) return;
+        if (p.WindowIndex <= 0) return;
+        _timePivot = p with { WindowIndex = p.WindowIndex - 1 };
+        Refresh();
+        SelectAnchorInPivot();
+        UpdatePivotStatus();
+    }
+
+    /// <summary>Refresh() clears selection; re-select the anchor row
+    /// (or the closest survivor if the anchor was somehow filtered
+    /// out) so the user's cursor stays on the row they pivoted from.
+    /// </summary>
+    private void SelectAnchorInPivot()
+    {
+        if (_timePivot is not { } pivot) return;
+        SelectEntryById(pivot.AnchorEntryId);
+    }
+
+    private void SelectEntryById(long entryId)
+    {
+        for (int i = 0; i < EntryList.Items.Count; i++)
+        {
+            if (EntryList.Items[i] is EntryViewModel vm && vm.EntryId == entryId)
+            {
+                EntryList.SelectedIndex = i;
+                _cursorIndex = i;
+                EntryList.ScrollIntoView(vm);
+                return;
+            }
+        }
+    }
+
+    /// <summary>Write the pivot hint line to <c>StatusText</c>. Format
+    /// matches Mac's <c>pivotHeader</c>: "±window around timestamp ·
+    /// [/] widen · Esc exit". Kept short so it fits the footer strip
+    /// on narrow popup widths.</summary>
+    private void UpdatePivotStatus()
+    {
+        if (_timePivot is not { } p) return;
+        var anchor = DateTimeOffset.FromUnixTimeMilliseconds((long)(p.AnchorCapturedAt * 1000)).LocalDateTime;
+        StatusText.Text =
+            $"Time pivot: ±{FormatWindow(s_pivotWindowSeconds[p.WindowIndex])} around " +
+            $"{anchor:ddd MMM d, HH:mm} · [/] widen · Esc exit";
+    }
+
+    private static string FormatWindow(int seconds) => seconds switch
+    {
+        < 3600  => $"{seconds / 60} min",
+        3600    => "1 h",
+        < 86400 => $"{seconds / 3600} h",
+        _       => "1 d",
+    };
 
     private void UpdateFooter(int shown)
     {
@@ -966,8 +1132,31 @@ public sealed partial class MainWindow : Window
 
     private const int KeyPageSize = 8;
 
+    // VirtualKey has no named constants for the OEM bracket keys; use
+    // the raw VK_OEM_4 / VK_OEM_6 codes for time-pivot [/] widen/narrow.
+    private const VirtualKey VK_OEM_4 = (VirtualKey)219;
+    private const VirtualKey VK_OEM_6 = (VirtualKey)221;
+
     private void SearchBox_KeyDown(object sender, KeyRoutedEventArgs e)
     {
+        // Ctrl+T: enter/exit time-pivot on the selected row. Highest-
+        // priority intercept so the search-nav switch below can't eat
+        // it as a plain letter. `[` / `]` only fire when a pivot is
+        // already active — otherwise the search box needs to be able
+        // to type them as literals.
+        if (e.Key == VirtualKey.T && IsCtrlDown())
+        {
+            if (_timePivot is not null) ExitTimePivot();
+            else if (EntryList.SelectedItem is EntryViewModel anchor) EnterTimePivot(anchor);
+            e.Handled = true;
+            return;
+        }
+        if (_timePivot is not null)
+        {
+            if (e.Key == VK_OEM_4) { NarrowTimePivot(); e.Handled = true; return; }
+            if (e.Key == VK_OEM_6) { WidenTimePivot();  e.Handled = true; return; }
+        }
+
         int count = EntryList.Items.Count;
         // Read from our own cursor first; fall back to SelectedIndex for the
         // initial Down-from-no-selection case.
@@ -1022,6 +1211,10 @@ public sealed partial class MainWindow : Window
                 }
                 return;
             case VirtualKey.Escape:
+                // Layered dismiss: exit pivot first, then the usual
+                // clear-search / hide-window chain. Mirrors Mac's
+                // PopupController Esc handler (line 420).
+                if (_timePivot is not null) { ExitTimePivot(); e.Handled = true; return; }
                 if (!string.IsNullOrEmpty(SearchBox.Text)) SearchBox.Text = "";
                 else AppWindow.Hide();
                 e.Handled = true;
@@ -1062,6 +1255,22 @@ public sealed partial class MainWindow : Window
 
     private void EntryList_KeyDown(object sender, KeyRoutedEventArgs e)
     {
+        // Same three time-pivot intercepts as the search-box handler.
+        // Bare [/] are safe to consume here (the list itself doesn't
+        // type them).
+        if (e.Key == VirtualKey.T && IsCtrlDown())
+        {
+            if (_timePivot is not null) ExitTimePivot();
+            else if (EntryList.SelectedItem is EntryViewModel anchor) EnterTimePivot(anchor);
+            e.Handled = true;
+            return;
+        }
+        if (_timePivot is not null)
+        {
+            if (e.Key == VK_OEM_4) { NarrowTimePivot(); e.Handled = true; return; }
+            if (e.Key == VK_OEM_6) { WidenTimePivot();  e.Handled = true; return; }
+        }
+
         switch (e.Key)
         {
             case VirtualKey.Enter:
@@ -1082,6 +1291,7 @@ public sealed partial class MainWindow : Window
                 }
                 break;
             case VirtualKey.Escape:
+                if (_timePivot is not null) { ExitTimePivot(); e.Handled = true; break; }
                 if (!string.IsNullOrEmpty(SearchBox.Text)) SearchBox.Text = "";
                 SearchBox.Focus(FocusState.Keyboard);
                 e.Handled = true;
