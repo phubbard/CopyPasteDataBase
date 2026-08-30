@@ -12,6 +12,65 @@ dated `[1.X.Y]` heading and reset `[Unreleased]` to empty.
 
 ## [Unreleased]
 
+- **Time-window body eviction + `cpdb-win evict` CLI (v1.50.0).**
+  Windows port of Mac v2.6.2. `cpdb-win evict --before-days N`
+  drops flavor bytes for entries older than N days, while
+  **keeping the row live and searchable** — this is body-eviction,
+  not tombstone. The row's metadata (title, preview, thumbnails,
+  chips, FTS index) survives; only the raw clipboard bytes go.
+  Restoring a body-evicted row to the clipboard isn't possible
+  (bytes are gone), but you can still find and read what it was.
+
+  - **`EntryEvictor`** (new, `CpdbWin.Core.Store`) — matches macOS's
+    `Sources/CpdbShared/EntryEvictor.swift` contract byte-for-byte:
+    - **Anchor**: `created_at` (dedup bumps it — a re-copy legit
+      refreshes the entry's clock). Not `captured_at` (would evict
+      frequently-re-copied rows too eagerly) and not `modified_at`
+      (pin/unpin would refresh the age).
+    - **Pinned always skipped**, no override. Pin is the user's
+      escape valve; `docs/schema.md §Pinning` requires every policy
+      to honor it.
+    - **Idempotent**: candidate predicate excludes
+      `body_evicted_at IS NULL`, so a second run finds nothing new.
+    - **Two-phase blob cleanup**: SQL txn 1 sums inline bytes,
+      snapshots DISTINCT blob keys, deletes flavor rows, stamps
+      the sentinel. Post-commit, per-key re-check (`still
+      referenced by any surviving flavor?`) → `BlobStore.Delete`.
+      Deliberately post-commit — a rollback of phase 1 must not
+      lose bytes. Missed unlinks (locked, permission, race) fall
+      through to the periodic `Gc.CleanOrphanBlobs` sweep.
+    - **Report struct**: `EntryCount`, `InlineFlavorBytesFreed`,
+      `BlobBytesFreed`, `BlobsRemoved` — the CLI formats it as
+      four aligned lines.
+    - **Bounds**: `days ∈ [7, 3650]` (Mac constants; refuses
+      fat-fingered `--before-days 0` from wiping recent history).
+  - **`body_evicted_at` column** — reserved v7 column, previously
+    unwritten. This eviction pass is now its first writer;
+    `HistoryExporter --include-evicted` was already the reader.
+  - **`cpdb-win evict`** — CLI subcommand:
+    - `--before-days N` (default 90 — matches Mac's
+      `EvictionPrefs.timeWindowDaysDefault`).
+    - `--dry-run` prints the candidate count and exits without
+      writing.
+    - Human-readable multi-line output: `evicted N entries` + three
+      aligned bytes-freed lines using an inline `FormatBytes`
+      helper (there's no C# `ByteCountFormatter`).
+
+  **Tests:**
+  - 11 `EntryEvictorTests` — cutoff respect, pinned/tombstoned/
+    already-evicted skips, flavor drop + `body_evicted_at` stamp,
+    metadata + FTS preservation (this is the whole point of
+    body-only eviction), idempotency, end-to-end
+    `EvictOlderThan`, bounds validation, out-of-line blob file
+    unlink, **shared-blob preservation** (a synthetic
+    entry_flavors row referencing the same blob_key must survive
+    — the per-key re-check catches it).
+
+- Parity: `docs/parity.md` **Time-window eviction** + **`cpdb evict
+  --before-days N`** rows flip to ✅ for Windows.
+
+## [1.49.0] — 2026-08-30
+
 - **Per-column FTS5 scope toggles (v1.49.0).** Windows port of Mac's
   v1.2 per-column scope. Three checkable pills in the search bar —
   **text** / **OCR** / **tags** — restrict the search to a subset
