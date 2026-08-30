@@ -8,8 +8,18 @@ namespace CpdbWin.Core.Capture;
 /// <see cref="CanonicalHash.Flavor"/>s that survived translation. Feeds
 /// straight into <see cref="CanonicalHash.Compute"/> for dedup-keying and
 /// into the <c>entry_flavors</c> table for storage.
+///
+/// <para>
+/// <see cref="HasTransientMarker"/> is set during <see cref="Capture"/>
+/// while the clipboard is still open — see <see cref="TransientGuard"/>.
+/// It defaults to <c>false</c> for the record-struct positional
+/// constructor so tests / importers that build a snapshot without a
+/// live clipboard aren't accidentally opting into a skip path.
+/// </para>
 /// </summary>
-public readonly record struct ClipboardSnapshot(IReadOnlyList<CanonicalHash.Flavor> Flavors)
+public readonly record struct ClipboardSnapshot(
+    IReadOnlyList<CanonicalHash.Flavor> Flavors,
+    bool HasTransientMarker = false)
 {
     /// <summary>Legacy v1 (full-set) SHA-256. Kept for the rare caller
     /// that needs to compute v1 explicitly; production capture should
@@ -36,6 +46,13 @@ public readonly record struct ClipboardSnapshot(IReadOnlyList<CanonicalHash.Flav
         OpenWithRetry(retryAttempts, retryDelayMs);
         try
         {
+            // Probe transient markers first — cheap (two format
+            // lookups) and lets a password-manager clip short-circuit
+            // the whole flavor decode. The check must live inside the
+            // OpenClipboard window; the resulting bool is carried on
+            // the snapshot so downstream callers don't need to re-open.
+            var transient = TransientGuard.ProbeOpenClipboard();
+
             var flavors = new List<CanonicalHash.Flavor>();
             uint format = 0;
             while ((format = Native.EnumClipboardFormats(format)) != 0)
@@ -54,7 +71,7 @@ public readonly record struct ClipboardSnapshot(IReadOnlyList<CanonicalHash.Flav
                 foreach (var t in UtiTranslator.TranslateMulti(format, name, raw))
                     flavors.Add(new CanonicalHash.Flavor(t.Uti, t.Data));
             }
-            return new ClipboardSnapshot(flavors);
+            return new ClipboardSnapshot(flavors, transient);
         }
         finally
         {
