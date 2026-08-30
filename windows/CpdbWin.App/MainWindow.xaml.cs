@@ -5,6 +5,7 @@ using CpdbWin.Core;
 using CpdbWin.Core.Analysis;
 using CpdbWin.Core.Capture;
 using CpdbWin.Core.Ingest;
+using CpdbWin.Core.Service;
 using CpdbWin.Core.Store;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -74,11 +75,23 @@ public sealed partial class MainWindow : Window
         long? SavedSelectedEntryId);
     private TimePivotState? _timePivot;
 
-    public MainWindow(AppHost host)
+    private readonly UserSettings _settings;
+    private readonly string _settingsPath;
+
+    public MainWindow(AppHost host, UserSettings settings, string settingsPath)
     {
         InitializeComponent();
         Title = CpdbVersion.Full;
         _host = host;
+        _settings = settings;
+        _settingsPath = settingsPath;
+        // v1.49: sync scope-toggle IsChecked from persisted settings
+        // BEFORE any Refresh() so the first render uses the right
+        // scope. Direct assignment doesn't fire Click, so no need to
+        // guard against a re-entrant Refresh here.
+        ScopeTextToggle.IsChecked = _settings.SearchScope.Text;
+        ScopeOcrToggle .IsChecked = _settings.SearchScope.Ocr;
+        ScopeTagsToggle.IsChecked = _settings.SearchScope.Tags;
         _host.Capture.Ingested += OnCaptureIngested;
         _host.Capture.Errored += OnCaptureErrored;
         // Live-refresh as the link-metadata backfill loop fills in titles.
@@ -258,7 +271,16 @@ public sealed partial class MainWindow : Window
             }
             else if (!string.IsNullOrWhiteSpace(query))
             {
-                rows = _host.Entries.Search(query.Trim() + "*", kind: kind);
+                // v1.49: run the user query through the FTS5 rewriter
+                // (escape + column-filter wrap). Returns null when the
+                // scope is empty or the query has no usable tokens —
+                // render zero rows in that case rather than falling
+                // back to Recent (silently ignoring a scope toggle
+                // would be worse UX than showing an empty result set).
+                var ftsQuery = EntryRepository.BuildScopedFtsQuery(query, _settings.SearchScope);
+                rows = ftsQuery is null
+                    ? Array.Empty<EntryRow>()
+                    : _host.Entries.Search(ftsQuery, kind: kind);
             }
             else
             {
@@ -584,6 +606,26 @@ public sealed partial class MainWindow : Window
     {
         // Reset cursor / anchor on filter change — the rows are about to
         // change shape so any previously valid index is suspect.
+        _cursorIndex = -1;
+        _shiftAnchor = -1;
+        Refresh();
+    }
+
+    /// <summary>
+    /// v1.49 per-column scope toggle. Fires on every ToggleButton
+    /// state change (any of text / OCR / tags). Persists to disk
+    /// immediately — Mac semantics: the toggle is a preference, not
+    /// per-summon state, so a user who tunes scope once shouldn't
+    /// have to redo it every time they open the popup.
+    /// </summary>
+    private void ScopeToggle_Click(object sender, RoutedEventArgs e)
+    {
+        _settings.SearchScope = new SearchScope(
+            Text: ScopeTextToggle.IsChecked == true,
+            Ocr:  ScopeOcrToggle .IsChecked == true,
+            Tags: ScopeTagsToggle.IsChecked == true);
+        _settings.Save(_settingsPath);
+        // Row shape changes — reset cursor/anchor like a kind filter.
         _cursorIndex = -1;
         _shiftAnchor = -1;
         Refresh();

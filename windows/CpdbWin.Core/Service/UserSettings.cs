@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using CpdbWin.Core.Store;
 
 namespace CpdbWin.Core.Service;
 
@@ -48,6 +49,17 @@ public sealed class UserSettings
     /// </summary>
     [JsonPropertyName("autoLaunchInitialized")]
     public bool AutoLaunchInitialized { get; set; } = false;
+
+    /// <summary>
+    /// Per-column FTS5 scope toggles (v1.49). Restricts search to a
+    /// subset of the three content columns — text, OCR text, image
+    /// tags. Title / app_name / link_title are always in scope (see
+    /// <see cref="SearchScope"/>). Defaults to all-on so upgrades
+    /// from &lt;1.49 preserve prior behavior. Persisted as three
+    /// bools rather than a bit-set for JSON legibility.
+    /// </summary>
+    [JsonPropertyName("searchScope")]
+    public SearchScope SearchScope { get; set; } = SearchScope.All;
 
     private static readonly JsonSerializerOptions JsonOpts = new()
     {
