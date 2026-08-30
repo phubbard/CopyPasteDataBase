@@ -40,6 +40,10 @@ public static class Schema
         // algorithm equality across platforms.
         "v13_semantic_enrichment",
         "v14_recency_index",
+        // v15 (v1.48.0 time-pivot): captured_at partial index the
+        // Neighbors() range scan walks instead of full-scanning the
+        // table. See docs/parity.md → Time-pivot mode.
+        "v15_captured_at_index",
     };
 
     public const string UnionDdl = """
