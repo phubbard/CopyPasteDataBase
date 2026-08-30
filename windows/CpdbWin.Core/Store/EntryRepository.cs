@@ -25,7 +25,8 @@ public sealed class EntryRepository
                e.link_title,
                CASE WHEN e.ocr_text IS NOT NULL AND e.ocr_text <> ''
                     THEN 1 ELSE 0 END AS has_ocr,
-               e.image_tags
+               e.image_tags,
+               e.chips_json
         FROM entries e
         LEFT JOIN apps a ON a.id = e.source_app_id
         LEFT JOIN previews p ON p.entry_id = e.id
@@ -844,7 +845,8 @@ public sealed class EntryRepository
                 Pinned: reader.GetInt64(10) != 0,
                 LinkTitle: reader.IsDBNull(11) ? null : reader.GetString(11),
                 HasOcr: reader.GetInt64(12) != 0,
-                ImageTags: reader.IsDBNull(13) ? null : reader.GetString(13)
+                ImageTags: reader.IsDBNull(13) ? null : reader.GetString(13),
+                ChipsJson: reader.IsDBNull(14) ? null : reader.GetString(14)
             ));
         }
         return rows;
@@ -865,7 +867,8 @@ public readonly record struct EntryRow(
     bool Pinned,
     string? LinkTitle,
     bool HasOcr,
-    string? ImageTags);
+    string? ImageTags,
+    string? ChipsJson);
 
 public readonly record struct FlavorRow(
     long EntryId,

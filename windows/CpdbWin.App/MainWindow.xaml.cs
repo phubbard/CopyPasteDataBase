@@ -1224,6 +1224,34 @@ public sealed partial class MainWindow : Window
         }
     }
 
+    /// <summary>
+    /// Chip pill clicked in a row's action-chip strip. Resolves the
+    /// chip to a URI per its type (see <see cref="ChipActionResolver"/>)
+    /// and hands off to the OS via
+    /// <see cref="Windows.System.Launcher"/>. Fire-and-forget: a
+    /// blocked / unhandled scheme surfaces as a status-bar note
+    /// rather than crashing the popup.
+    /// </summary>
+    private async void ChipButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement fe || fe.Tag is not Chip chip) return;
+        var uri = ChipActionResolver.ToUri(chip);
+        if (uri is null)
+        {
+            StatusText.Text = $"No action for chip type '{chip.T}'";
+            return;
+        }
+        try
+        {
+            var ok = await Windows.System.Launcher.LaunchUriAsync(uri);
+            if (!ok) StatusText.Text = $"Could not open {uri.Host}";
+        }
+        catch (Exception ex)
+        {
+            StatusText.Text = $"Chip launch failed: {ex.Message}";
+        }
+    }
+
     private bool TryWriteFlavorByPriority(long entryId)
     {
         var text = _host.Entries.GetFlavorBytes(entryId, "public.utf8-plain-text");
@@ -1263,6 +1291,21 @@ public sealed class EntryViewModel
     /// </summary>
     public IReadOnlyList<string> Tags { get; init; } = Array.Empty<string>();
 
+    /// <summary>
+    /// Detected action chips for the entry (dates, phones, tracking
+    /// numbers, URLs — see <see cref="Chip"/>). Populated by the
+    /// v1.43 <c>ChipBackfillService</c> + capture-wake path; empty
+    /// when the row hasn't been scanned yet OR was scanned and no
+    /// chips were found (both cases surface as an empty list —
+    /// callers checking presence should use <see cref="Chips"/>
+    /// count, not null).
+    /// </summary>
+    public IReadOnlyList<Chip> Chips { get; init; } = Array.Empty<Chip>();
+
+    /// <summary>Chip row visibility — collapsed when we have nothing
+    /// to render so the row doesn't reserve empty vertical space.</summary>
+    public Visibility ChipsVisibility => Chips.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+
     /// <summary>Visible when the entry is pinned — drives the row glyph.</summary>
     public Visibility PinGlyphVisibility => Pinned ? Visibility.Visible : Visibility.Collapsed;
 
@@ -1290,6 +1333,7 @@ public sealed class EntryViewModel
         Pinned    = row.Pinned,
         HasOcr    = row.HasOcr,
         Tags      = CpdbWin.Core.Analysis.ImageTags.Parse(row.ImageTags),
+        Chips     = Chip.DecodeArray(row.ChipsJson),
     };
 
     /// <summary>
