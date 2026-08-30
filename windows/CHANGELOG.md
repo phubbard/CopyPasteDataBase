@@ -12,6 +12,47 @@ dated `[1.X.Y]` heading and reset `[Unreleased]` to empty.
 
 ## [Unreleased]
 
+- **Action-chip UI in row template (v1.44.0).** Fifth of the staged
+  Mac-3.3.0 rollout: renders the chips v1.43 populates as clickable
+  pills in each row of the popup. **First user-visible chip UI** —
+  URLs open in the default browser, phone numbers hit `tel:`, tracking
+  numbers open the carrier's tracker page.
+
+  - **Row template** — new `<ItemsControl ItemsSource="{x:Bind Chips}">`
+    inside the title/subtitle `StackPanel`, horizontal-stacked
+    `Button` per chip, `MinHeight="0"` so the pill row is compact.
+    `ChipsVisibility` collapses the whole row when a row has zero
+    chips so empty vertical space isn't reserved.
+  - **`EntryViewModel.Chips`** — decoded from the new
+    `EntryRow.ChipsJson` (added to `SelectEntryColumns` so
+    `Recent()` / `Search()` return the JSON alongside every row).
+    `Chip.DecodeArray` tolerates NULL / empty / corrupt values —
+    no scenario crashes the popup.
+  - **`ChipActionResolver`** (in `CpdbWin.Core.Analysis`, unit-
+    testable, no UI deps) maps a chip to its click URI:
+    - **url** → the chip's value as `Uri.Absolute`
+    - **phone** → `tel:<digits>` (whitespace stripped so
+      `"(555) 555-0100"` doesn't confuse the URI parser)
+    - **tracking** → `TrackingCarrier.TrackingUrl` (re-detect
+      carrier from `V` so a defensive edit can't mis-route);
+      unrecognised carrier falls back to a Google search
+    - **date**, **text**, **address**, **flight**, **money** →
+      null. No canonical Windows "open in calendar" URI, and the
+      three NSDataDetector-only types can't come from Windows
+      capture but *can* arrive via a future sync — falling silent
+      beats launching a broken scheme.
+  - **`ChipButton_Click`** in `MainWindow` — resolves via
+    `ChipActionResolver`, dispatches through
+    `Windows.System.Launcher.LaunchUriAsync`, surfaces a status-
+    bar note on failure so a blocked scheme never crashes the
+    popup.
+
+  **Tests:**
+  - 9 `ChipActionResolverTests` — URL / phone (whitespace strip) /
+    tracking (per-carrier + unknown-carrier Google fallback) /
+    date + reduced-fidelity types pinned as `null`.
+  - 561/561 non-flaky tests pass.
+
 - **Action-chip detection + backfill (v1.43.0).** Fourth of the
   staged Mac-3.3.0 parity work. Chip detection populates
   `entries.chips_json` silently for text + link entries. **No
