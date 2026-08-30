@@ -12,6 +12,67 @@ dated `[1.X.Y]` heading and reset `[Unreleased]` to empty.
 
 ## [Unreleased]
 
+- **Time-pivot mode (v1.48.0).** Windows port of Mac's v2.10.0 ⌘T
+  time-pivot. On any selected card, press **Ctrl+T** to switch the
+  popup to a chronological view of entries captured within ±W of
+  the anchor's `captured_at`. **`[` / `]`** narrow / widen the
+  window (bare keys — gated on pivot being active, so the search
+  box can still type them as literals). **Esc** exits pivot,
+  restoring the search query + selection you had before Ctrl+T.
+  Kind-agnostic by design: the whole point is "what else was on
+  the clipboard around then" regardless of type.
+
+  - **Window-size table**: 15 min / 30 min (default) / 1 h / 3 h /
+    6 h / 12 h / 24 h — same seven steps Mac ships
+    (`AppState.swift:105-113`). Clamps at both ends, no wrap.
+  - **`EntryRepository.Neighbors(anchorCapturedAt, windowSeconds,
+    limit=500)`** — chronological, ASC, inclusive bounds, live-
+    entries-only, kind-agnostic, no pin float. Mirrors macOS's
+    `Sources/CpdbShared/EntryRepository.neighbors(...)`.
+    **`captured_at`, not `created_at`** — dedup bumps `created_at`
+    on re-capture but leaves `captured_at` at the original moment,
+    so an anchor stays anchored to when the content first arrived
+    rather than jumping forward every time the user re-copies.
+  - **`v15_captured_at_index` migration** — new partial index on
+    `entries(captured_at) WHERE deleted_at IS NULL`. Without it
+    the pivot query is a full scan; with it, an index walk. Fresh
+    installs pick it up in `Schema.Initialize`; existing installs
+    via `Migrator.Migrate`.
+  - **`MainWindow` state**: private `TimePivotState` record
+    (`AnchorEntryId`, `AnchorCapturedAt`, `WindowIndex`,
+    `SavedQuery`, `SavedSelectedEntryId`). `null` when we're in
+    normal Recent/Search flow.
+  - **Data-source dispatch** in `Refresh()`: pivot supersedes both
+    search and kind filter (so the user can't accidentally hide
+    the anchor by filtering on a kind that isn't its own).
+  - **Anchor restoration on every refresh** — `Refresh()` clears
+    selection; `SelectAnchorInPivot` re-selects the anchor row
+    after each pivot render so the user's cursor stays put.
+  - **Hint line**: writes `"Time pivot: ±30 min around Sat Aug 30,
+    14:23 · [/] widen · Esc exit"` to the existing `StatusText`
+    TextBlock. Matches the shape of Mac's `pivotHeader`.
+  - **Keyboard**: Ctrl+T / Esc / bare `[` / bare `]` intercepted in
+    both `SearchBox_KeyDown` and `EntryList_KeyDown` so the
+    shortcut works regardless of focus. Bare bracket keys gate on
+    `_timePivot is not null` — outside pivot they remain literals
+    the search box can type.
+
+  **Tests:**
+  - 9 `NeighborsTests` — chronological order, inclusive
+    boundaries, zero-window (anchor-alone), tombstone exclusion,
+    kind-agnostic, empty window, limit cap, MatchSource stays null,
+    and the crucial **`CapturedAtIsAnchor_NotCreatedAt`** — a
+    row re-copied 10 min later still shows up in a pivot anchored
+    to its ORIGINAL capture time.
+  - 2 `MigratorTests` — v15 index present in `EXPLAIN QUERY PLAN`
+    output for the Neighbors query shape (drift-catcher if the SQL
+    ever changes to bypass the index), idempotent re-run.
+
+- Parity: `docs/parity.md` **Time-pivot mode** row flips to ✅ for
+  Windows.
+
+## [1.47.0] — 2026-08-30
+
 - **Match-source badges in row template (v1.47.0).** Small pill on
   each search-result row indicating which non-text FTS5 column
   produced the hit — "OCR" (accent) for hits in recognised image

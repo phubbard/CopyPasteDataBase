@@ -50,6 +50,7 @@ public static class Migrator
         if (!applied.Contains("v11_semantic_identity")) ApplyV11SemanticIdentity(conn, blobs);
         if (!applied.Contains("v13_semantic_enrichment")) ApplyV13SemanticEnrichment(conn);
         if (!applied.Contains("v14_recency_index")) ApplyV14RecencyIndex(conn);
+        if (!applied.Contains("v15_captured_at_index")) ApplyV15CapturedAtIndex(conn);
     }
 
     /// <summary>
@@ -518,6 +519,36 @@ public static class Migrator
         }
 
         RecordApplied(conn, tx, "v14_recency_index");
+        tx.Commit();
+    }
+
+    /// <summary>
+    /// Range index on <c>captured_at</c>, needed by v1.48.0's time-pivot
+    /// primitive (<see cref="EntryRepository.Neighbors"/>). The pivot
+    /// query is a bounded range scan of <c>captured_at BETWEEN $lo AND
+    /// $hi</c>; without the index SQLite full-scans every live row and
+    /// filters. Fresh installs pick up the index via
+    /// <see cref="Schema.Initialize"/>. **Partial index on
+    /// <c>deleted_at IS NULL</c>** so the tombstone check falls out of
+    /// the index walk instead of forcing a heap fetch — matches the
+    /// shape of the v14 recency index.
+    /// </summary>
+    private static void ApplyV15CapturedAtIndex(SqliteConnection conn)
+    {
+        using var tx = conn.BeginTransaction();
+
+        using (var cmd = conn.CreateCommand())
+        {
+            cmd.Transaction = tx;
+            cmd.CommandText = """
+                CREATE INDEX IF NOT EXISTS idx_entries_captured_at
+                    ON entries(captured_at)
+                    WHERE deleted_at IS NULL
+                """;
+            cmd.ExecuteNonQuery();
+        }
+
+        RecordApplied(conn, tx, "v15_captured_at_index");
         tx.Commit();
     }
 }

@@ -206,6 +206,49 @@ public sealed class EntryRepository
     public const char HighlightSentinelEnd   = '';
 
     /// <summary>
+    /// Chronological slice of live entries whose <c>captured_at</c>
+    /// falls in <c>[anchorCapturedAt - windowSeconds, anchorCapturedAt
+    /// + windowSeconds]</c>, oldest first. The primitive behind v1.48.0
+    /// time-pivot mode (Ctrl+T on a selected card).
+    ///
+    /// <para>
+    /// **Anchor semantics**: <c>captured_at</c>, not <c>created_at</c> —
+    /// dedup bumps <c>created_at</c> on a re-capture but leaves
+    /// <c>captured_at</c> at the original moment, so an anchor stays
+    /// anchored to when the content first arrived rather than jumping
+    /// forward every time the user re-copies. Matches macOS's
+    /// <c>Sources/CpdbShared/EntryRepository.neighbors(...)</c>.
+    /// </para>
+    ///
+    /// <para>
+    /// **Inclusive bounds** — a row captured exactly at the anchor
+    /// timestamp (or exactly at the window edge) is included. The
+    /// anchor itself always appears in the result set as long as it
+    /// isn't tombstoned. **Kind-agnostic** by design: the whole point
+    /// of pivot is to see what else was on the clipboard around that
+    /// time, regardless of type. **No pin float** (unlike
+    /// <see cref="Recent"/>): chronological order is the whole
+    /// affordance.
+    /// </para>
+    /// </summary>
+    public IReadOnlyList<EntryRow> Neighbors(double anchorCapturedAt, double windowSeconds, int limit = 500)
+    {
+        var sql = SelectEntryColumns + """
+
+            WHERE e.deleted_at IS NULL
+              AND e.captured_at BETWEEN $lo AND $hi
+            ORDER BY e.captured_at ASC
+            LIMIT $limit
+            """;
+        return Query(sql, cmd =>
+        {
+            cmd.Parameters.AddWithValue("$lo",    anchorCapturedAt - windowSeconds);
+            cmd.Parameters.AddWithValue("$hi",    anchorCapturedAt + windowSeconds);
+            cmd.Parameters.AddWithValue("$limit", limit);
+        });
+    }
+
+    /// <summary>
     /// Toggle the <c>entries.pinned</c> bit for a single row. Per
     /// docs/schema.md § Pinning the column is INTEGER 0/1; the on-disk
     /// representation is just that single update — sort order and

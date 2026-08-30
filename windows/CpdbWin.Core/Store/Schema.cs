@@ -124,6 +124,15 @@ public static class Schema
         CREATE INDEX idx_entries_recency
             ON entries(pinned DESC, created_at DESC)
             WHERE deleted_at IS NULL;
+        -- v15 (captured_at index, v1.48.0 time-pivot): the pivot
+        -- primitive (EntryRepository.Neighbors) does a bounded range
+        -- scan on captured_at BETWEEN $lo AND $hi; without this index
+        -- SQLite full-scans every live row and filters. Partial on
+        -- deleted_at IS NULL for the same reason idx_entries_recency
+        -- is — the tombstone check falls out of the index walk.
+        CREATE INDEX idx_entries_captured_at
+            ON entries(captured_at)
+            WHERE deleted_at IS NULL;
 
         CREATE TABLE entry_flavors (
             entry_id  INTEGER NOT NULL REFERENCES entries(id) ON DELETE CASCADE,
