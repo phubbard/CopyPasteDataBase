@@ -12,6 +12,63 @@ dated `[1.X.Y]` heading and reset `[Unreleased]` to empty.
 
 ## [Unreleased]
 
+- **Transient / concealed-marker skip at ingest (v1.46.0).** Windows
+  port of Mac's `TransientGuard` — whole-clip skip when the source
+  app tagged its clipboard write with a "don't store" marker, so
+  password managers and Incognito browser copies never land in
+  history in the first place. **First user-visible privacy
+  improvement of the parity work**; nothing else in this release
+  changes behavior for a plain paste.
+
+  - **`TransientGuard`** (new, `CpdbWin.Core.Capture`) — recognises
+    the two Windows format-name markers:
+    - **`ExcludeClipboardContentFromMonitorProcessing`** — canary
+      flag. Presence alone = skip. Historically set by 1Password /
+      Bitwarden / KeePass Windows clients.
+    - **`CanIncludeInClipboardHistory`** — the modern Windows
+      Clipboard History gate. 4-byte DWORD; value 0 = exclude.
+      Present in Chromium Incognito copies + assorted credential
+      managers.
+    - **Fail-safe direction**: probe I/O failures err **toward
+      capture** (unregistered format / global-lock hiccup), except
+      when the CanInclude format is present but its DWORD read
+      fails — then treat as 0 (skip), because the bit was
+      intentionally set and respecting the intent beats respecting
+      our uncertainty.
+  - **`ClipboardSnapshot`** — probes both markers inside its
+    already-open `OpenClipboard` window and carries the outcome as
+    `HasTransientMarker` on the snapshot. No second `OpenClipboard`
+    call; the read-and-flag both happen in one clipboard-open
+    critical section.
+  - **`Ingestor.Ingest`** — new skip check right after the empty-
+    snapshot early-return and before the `IgnoredApps` app-
+    attribution check. Content-based marker beats app-attribution:
+    a 1Password-marked clip written from Notepad still gets
+    skipped, and a marked-and-ignored-app clip surfaces the more
+    informative "transient/concealed marker" reason instead of
+    "ignored app: win.1password". Every capture path — live
+    `CaptureService`, `UrlImporter`, tests, future sync-pull —
+    funnels through this same `Ingest` method, so the guard
+    inherits by construction (mirrors `Sources/CpdbCore/Capture/
+    Ingestor.swift:54`).
+
+  **Tests:**
+  - 4 `TransientGuardTests` — snapshot-flagged / clean / empty /
+    format-name byte-exact-match constants.
+  - 4 `IngestorWithTransientMarkerTests` — end-to-end skip with
+    zero writes to `entries` / `entry_flavors` / `entries_fts`,
+    counter-test that a clean snapshot of the same shape still
+    inserts, transient-beats-ignored-app reason ordering.
+  - The Win32 `ProbeOpenClipboard` path isn't exercised in unit
+    tests — it needs a real clipboard write with registered format
+    IDs and would race the OS clipboard. Covered end-to-end by the
+    live-capture smoke test against a password-manager sample.
+
+- Parity: `docs/parity.md` **Transient/concealed-marker skip at
+  ingest** row flips to ✅ for Windows.
+
+## [1.45.0] — 2026-08-30
+
 - **QR / barcode chips on captured images (v1.45.0).** Sixth of the
   staged Mac-3.3.0 rollout — the last of the semantic-search-and-chips
   arc. The image sweeper already runs OCR + ImageNet-1k classification

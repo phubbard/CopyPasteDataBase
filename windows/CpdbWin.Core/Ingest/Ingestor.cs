@@ -36,6 +36,16 @@ public sealed class Ingestor
         if (snapshot.Flavors.Count == 0)
             return new IngestOutcome(IngestKind.Skipped, 0, "empty snapshot");
 
+        // Whole-clip skip when the source app tagged the write with a
+        // "don't store" marker. Enforced below the pasteboard so every
+        // capture path (live watcher, importers, tests) inherits it —
+        // mirrors Sources/CpdbCore/Capture/Ingestor.swift:54. Content-
+        // based, source-app-agnostic; the app-attribution blocklist
+        // below (IgnoredApps) is a peer, not a substitute.
+        if (TransientGuard.ShouldReject(snapshot))
+            return new IngestOutcome(IngestKind.Skipped, 0,
+                "transient/concealed marker");
+
         if (_ignored.ShouldIgnore(sourceApp))
             return new IngestOutcome(IngestKind.Skipped, 0,
                 $"ignored app: {sourceApp!.Value.BundleId}");
