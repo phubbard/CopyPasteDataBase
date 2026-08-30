@@ -581,6 +581,76 @@ public sealed class EntryRepository
         tx.Commit();
     }
 
+    // ─── Action-chip storage (v13_semantic_enrichment, chips_json column) ──
+
+    /// <summary>
+    /// Return text + link entries the chip backfiller should scan next
+    /// — rows whose <c>chips_json</c> is NULL (never scanned). A row
+    /// that came back with zero chips still gets <c>"[]"</c> written,
+    /// so this query self-drains as the sweep progresses. Ordered
+    /// newest-first so a freshly-copied clip gets its chips within
+    /// one sweep tick. Mirrors macOS <c>entriesNeedingChips</c>.
+    /// </summary>
+    public IReadOnlyList<long> EntriesNeedingChips(int limit)
+    {
+        const string sql = """
+            SELECT id FROM entries
+            WHERE kind IN ('text', 'link')
+              AND deleted_at IS NULL
+              AND chips_json IS NULL
+            ORDER BY created_at DESC
+            LIMIT $lim
+            """;
+        var ids = new List<long>();
+        using var cmd = _db.CreateCommand();
+        cmd.CommandText = sql;
+        cmd.Parameters.AddWithValue("$lim", limit);
+        using var r = cmd.ExecuteReader();
+        while (r.Read()) ids.Add(r.GetInt64(0));
+        return ids;
+    }
+
+    /// <summary>
+    /// Text an entry should be scanned for chips. Uses
+    /// <c>text_preview</c> — same as the sweeper does, and shorter
+    /// than the full flavor bytes — because chip detection is
+    /// deterministic and text-preview is the canonical stored form
+    /// (already normalized on capture). Returns null for tombstoned
+    /// or missing rows.
+    /// </summary>
+    public string? GetChipScanText(long entryId)
+    {
+        using var cmd = _db.CreateCommand();
+        cmd.CommandText = "SELECT text_preview FROM entries WHERE id = $id AND deleted_at IS NULL";
+        cmd.Parameters.AddWithValue("$id", entryId);
+        using var r = cmd.ExecuteReader();
+        if (!r.Read()) return null;
+        return r.IsDBNull(0) ? null : r.GetString(0);
+    }
+
+    /// <summary>
+    /// Write <paramref name="json"/> into <c>chips_json</c> for
+    /// <paramref name="entryId"/>, but only when the column is still
+    /// NULL — first-writer-wins between the ingest-time detection
+    /// task and the periodic backfill sweep. A row that raced to
+    /// "[]" (scanned, found nothing) doesn't get overwritten by a
+    /// subsequent scan that would also come back empty.
+    /// </summary>
+    public void SetChipsIfUnset(long entryId, string json)
+    {
+        using var cmd = _db.CreateCommand();
+        cmd.CommandText = """
+            UPDATE entries
+            SET chips_json = $j
+            WHERE id = $id
+              AND chips_json IS NULL
+              AND deleted_at IS NULL
+            """;
+        cmd.Parameters.AddWithValue("$id", entryId);
+        cmd.Parameters.AddWithValue("$j",  json);
+        cmd.ExecuteNonQuery();
+    }
+
     // ─── Semantic-search embedding storage (v13_semantic_enrichment) ────
 
     /// <summary>

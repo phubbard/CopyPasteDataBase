@@ -12,6 +12,80 @@ dated `[1.X.Y]` heading and reset `[Unreleased]` to empty.
 
 ## [Unreleased]
 
+- **Action-chip detection + backfill (v1.43.0).** Fourth of the
+  staged Mac-3.3.0 parity work. Chip detection populates
+  `entries.chips_json` silently for text + link entries. **No
+  user-visible UI change yet** — the chip pills render in v1.44 as
+  their own PR. Splitting keeps the detection contract reviewable
+  independently of the UI surface.
+
+  - **`Chip`** — data model matching Mac's wire format:
+    `{ "t": kind, "v": raw value, "s": display }`. Same three
+    single-letter keys, same JSON array shape stored in
+    `chips_json`. `Chip.Merge` de-duplicates on `(t, v)` so
+    re-running detection (a later QR pass, a backfill re-scan)
+    never doubles a chip already recorded.
+  - **`ChipType`** constants: `date, address, phone, url,
+    tracking, flight, money, text`. Only a subset actually fires
+    on Windows (see below); the enum matches Mac's for wire-format
+    stability.
+  - **`TrackingCarrier`** + **`TrackingPatterns`** — UPS / USPS /
+    FedEx regexes verbatim from Mac (`\b1Z[0-9A-Z]{16}\b` case-
+    sensitive; `\b(94|93|92|82|20)\d{20}\b`; 12/15-digit runs).
+    URL templates for the three carriers + Google fallback.
+  - **`TextChipDetector`** — regex-based scanner:
+    - **url** — `http(s)://…` or `www.…` (bare-domain autodetect
+      that Mac's `NSDataDetector` does is out; the pattern requires
+      an explicit anchor to stay deterministic across locales).
+    - **phone** — US-shaped `(555) 555-0100` /
+      `+1 555-555-0100` — no E.164 normalization (Mac's is via
+      NSDataDetector).
+    - **date** — numeric shapes only (`M/D/YYYY`,
+      `YYYY-MM-DD`, `Month D[, YYYY]`) — no NL parsing. Time-of-day
+      token nearby → display includes weekday.
+    - **tracking** — full-fidelity vs Mac; UPS pattern always runs
+      (1Z prefix is unmistakable); non-UPS patterns behind a
+      shipping-context keyword gate (`tracking`, `shipment`,
+      `fedex`, etc.) so bare 12/15-digit runs don't fire on order
+      IDs / phone extensions.
+    - **address, flight, money** — **not ported** (NSDataDetector-
+      only on Mac; no cheap Windows replacement). A Mac reader
+      encountering a Windows row just sees those types absent, not
+      malformed — chips_json is an open JSON array by design.
+    - Text truncated at `MaxScanLength = 10_000` characters to
+      keep detection bounded even for a giant paste.
+  - **`ChipBackfillService`** — periodic (2-minute) + capture-wake
+    sweep, 50-row batches, mirrors `ImageAnalysisService`'s shape.
+    `EntriesNeedingChips` returns rows with `chips_json IS NULL`;
+    a scanned-but-empty row still writes `"[]"` so it stops being a
+    candidate.
+  - **`EntryRepository`** hooks:
+    - `EntriesNeedingChips(limit)` — text/link rows with NULL
+      `chips_json`, newest first.
+    - `GetChipScanText(id)` — reads `text_preview` (same field the
+      Mac sweeper uses).
+    - `SetChipsIfUnset(id, json)` — guarded UPDATE, first-writer-
+      wins between the ingest-time detection task and the periodic
+      backfill.
+  - **`AppHost`** wire-up: `Chips` property, sweeper started
+    alongside the existing loops (respects the data-loss circuit
+    breaker), capture-wake on text/link ingest events fires
+    alongside `Embeddings.WakeForCapture`.
+
+  **Tests:**
+  - 8 `ChipTests` — decode/encode round-trip, corrupt-JSON
+    tolerance, `Merge` dedup + preserve-order + null-vs-empty
+    equivalence.
+  - 18 `TextChipDetectorTests` — URL / phone / date (all three
+    shapes) / tracking (all three carriers, context-gate behaviour,
+    bare 1Z always-fires); truncation cap; **reduced-fidelity gap
+    pin** (address/flight/money must yield nothing, so a future
+    accidental regex doesn't start emitting them at Windows
+    fidelity).
+  - `TrackingPatterns.TryDetect` + `TrackingUrl` per-carrier
+    coverage including the null-carrier Google fallback.
+  - 552/552 non-flaky tests pass.
+
 - **Hybrid search UI wire-up (v1.42.0).** Third of the staged
   semantic-search rollout: FTS5 as before + an async semantic
   re-rank after the FTS query returns, merged via RRF, re-assigns
