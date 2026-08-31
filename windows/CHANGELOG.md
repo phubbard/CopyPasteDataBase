@@ -12,6 +12,64 @@ dated `[1.X.Y]` heading and reset `[Unreleased]` to empty.
 
 ## [Unreleased]
 
+- **`cpdb-win fixture` CLI (v1.53.0).** Windows port of Mac v2.6.3
+  `cpdb fixture {snapshot, list, env, path, delete}`. Test-data
+  scaffolding: snapshot the live DB + blob store into a named
+  fixture directory, list them, print a fixture's path or a
+  shell snippet that retargets the app / CLI at it, delete one.
+
+  - **`FixtureManager`** (new, `CpdbWin.Core.Store`) — the five
+    operations plus name validation. Fixtures live at
+    **`%LOCALAPPDATA%\cpdb-fixtures\<name>\`** — sibling of the
+    live `%LOCALAPPDATA%\cpdb\` support root, not a child.
+    Sibling by design: a fat-fingered `fixture delete` (or an
+    accidental nuke of the fixtures tree) can never touch the
+    live DB. Mirrors Mac's `{bundleId}-fixtures` layout.
+  - **Snapshot semantics** — `PRAGMA wal_checkpoint(TRUNCATE)` on
+    the live DB first, then copy only `cpdb.db` + the entire
+    `blobs/` tree. The WAL / SHM sidecars are collapsed by the
+    checkpoint so a fixture opened later with a fresh SQLite
+    handle is fully consistent. **Cleaner than Mac's `ditto`
+    approach** (which just prints "quit cpdb.app first for a
+    consistent snapshot") — the checkpoint gives us a consistent
+    snapshot even with the GUI running.
+  - **`AppPaths.DefaultRoot`** now honors **`CPDB_SUPPORT_DIR`**
+    env var (same name Mac uses). Empty/whitespace values are
+    ignored — common shell footgun (`set VAR=` "clearing" a var
+    actually sets it to empty). `fixture env NAME` emits the
+    shell snippet: `set CPDB_SUPPORT_DIR=...` for cmd (default) or
+    `$env:CPDB_SUPPORT_DIR = "..."` for PowerShell (`--powershell`).
+  - **Name validation** — rejects path separators (`/`, `\`, `:`),
+    `.` / `..` traversal, and every char in
+    `Path.GetInvalidFileNameChars()`. Cheap defence against a bad
+    CLI arg resolving outside the fixtures root.
+  - **CLI shape** — matches Mac's flag semantics exactly:
+    - `snapshot NAME [--overwrite]` — refuses by default;
+      `--overwrite` deletes + rebuilds.
+    - `list` — two aligned columns (name + size), alphabetical.
+      `(no fixtures)` when empty.
+    - `env NAME [--powershell]` — cmd default, PowerShell opt-in.
+      Refuses on missing fixture (a snippet pointing at nothing
+      would silently misroute the next command).
+    - `path NAME` — raw absolute path, no quoting.
+    - `delete NAME [--force]` — prompts `[y/N]` unless `--force`.
+
+  **Tests:**
+  - 20 `FixtureManagerTests` + 2 `AppPathsEnvOverrideTests`
+    covering: snapshot copies DB + blobs, fixture DB opens
+    cleanly with a fresh SQLite handle (the whole point), refuses
+    overwrite by default, `--overwrite` replaces, list empty/
+    populated/alphabetical, delete removes + throws on missing,
+    both env-snippet dialects, env snippet on missing fixture
+    throws, name-validation `[Theory]` matrix for path-traversal
+    + reserved chars vs. good names, `PathFor` joins under root,
+    env-var override wins over the default, empty env-var ignored.
+
+- Parity: `docs/parity.md` **`cpdb fixture`** row + **Test-fixture
+  scaffolding** row flip to ✅ for Windows.
+
+## [1.52.0] — 2026-08-30
+
 - **`.Semantic` match-source badge (v1.52.0)** — v1.47 follow-up.
   Search rows pulled in only by the semantic re-rank (v1.41
   embedding index), that the FTS pass didn't return, now show a
