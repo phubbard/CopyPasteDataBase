@@ -64,6 +64,14 @@ public sealed partial class MainWindow : Window
     };
     private const int PivotDefaultIndex = 1;
 
+    // ─── Quick Look (v1.54.0) ─────────────────────────────────────────
+    // Windows analog of Mac's QLPreviewPanel: Space (when SearchBox
+    // is empty) or Ctrl+Y on a selected image row opens a floating
+    // full-size preview window (QuickLookWindow). Escape or Space
+    // dismisses. Cached instance so a rapid-toggle doesn't leak
+    // windows; cleared on Closed. v1 scope: image rows only.
+    private QuickLookWindow? _quickLook;
+
     /// <summary>Live pivot state; <c>null</c> when we're in the
     /// normal Recent/Search flow. The snapshot fields let Esc
     /// restore what the user was looking at before Ctrl+T.</summary>
@@ -466,6 +474,38 @@ public sealed partial class MainWindow : Window
         for (int i = 0; i < a.Count; i++)
             if (a[i].EntryId != bList[i].EntryId) return false;
         return true;
+    }
+
+    // ─── Quick Look: open / toggle / dismiss ─────────────────────────
+
+    /// <summary>Toggle Quick Look on the selected row. If a preview
+    /// window is already open, close it (Space/Ctrl+Y as a toggle,
+    /// matches Mac). Otherwise: image row → open, non-image → status
+    /// hint ("Quick Look supports image entries in this release"),
+    /// no selection → silent no-op.</summary>
+    private void ToggleQuickLook()
+    {
+        if (_quickLook is not null)
+        {
+            _quickLook.Close();
+            return;
+        }
+        if (EntryList.SelectedItem is not EntryViewModel vm) return;
+
+        // v1: image kinds only. Row-model exposes .Thumbnail as the
+        // rendered pill icon; kind lives on the underlying EntryRow
+        // via row.Kind. Cheapest way to check: does the row have a
+        // thumbnail (only image rows do)?
+        var row = _host.Entries.RowsByIds(new[] { vm.EntryId }).FirstOrDefault();
+        if (row.Kind != "image")
+        {
+            StatusText.Text = "Quick Look supports image entries in this release";
+            return;
+        }
+
+        _quickLook = new QuickLookWindow(_host, vm.EntryId);
+        _quickLook.Closed += (_, _) => _quickLook = null;
+        _quickLook.Activate();
     }
 
     // ─── Time-pivot mode: state transitions + hint line ──────────────
@@ -1108,7 +1148,7 @@ public sealed partial class MainWindow : Window
     /// </summary>
     private static readonly ConditionalWeakTable<BitmapImage, IRandomAccessStream> _bitmapStreams = new();
 
-    private static BitmapImage? LoadBitmap(byte[] bytes, long entryId = -1)
+    internal static BitmapImage? LoadBitmap(byte[] bytes, long entryId = -1)
     {
         try
         {
@@ -1188,6 +1228,25 @@ public sealed partial class MainWindow : Window
 
     private void SearchBox_KeyDown(object sender, KeyRoutedEventArgs e)
     {
+        // Ctrl+Y: Quick Look on selected row (always fires, doesn't
+        // clash with any typed literal). Mirrors Mac's Cmd+Y.
+        if (e.Key == VirtualKey.Y && IsCtrlDown())
+        {
+            ToggleQuickLook();
+            e.Handled = true;
+            return;
+        }
+        // Bare Space in the search box triggers Quick Look ONLY when
+        // the search field is empty — matches Mac's gate at
+        // PopupController.swift:478. If the user is typing, Space
+        // stays a literal.
+        if (e.Key == VirtualKey.Space && string.IsNullOrEmpty(SearchBox.Text))
+        {
+            ToggleQuickLook();
+            e.Handled = true;
+            return;
+        }
+
         // Ctrl+T: enter/exit time-pivot on the selected row. Highest-
         // priority intercept so the search-nav switch below can't eat
         // it as a plain letter. `[` / `]` only fire when a pivot is
@@ -1304,6 +1363,23 @@ public sealed partial class MainWindow : Window
 
     private void EntryList_KeyDown(object sender, KeyRoutedEventArgs e)
     {
+        // Quick Look shortcuts, mirror the SearchBox handler. Bare
+        // Space is safe to consume here (the list itself doesn't
+        // type it) — no empty-query gate needed. Ctrl+Y is the
+        // universal shortcut, matching Mac's Cmd+Y.
+        if (e.Key == VirtualKey.Y && IsCtrlDown())
+        {
+            ToggleQuickLook();
+            e.Handled = true;
+            return;
+        }
+        if (e.Key == VirtualKey.Space)
+        {
+            ToggleQuickLook();
+            e.Handled = true;
+            return;
+        }
+
         // Same three time-pivot intercepts as the search-box handler.
         // Bare [/] are safe to consume here (the list itself doesn't
         // type them).
