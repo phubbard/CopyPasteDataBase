@@ -12,6 +12,56 @@ dated `[1.X.Y]` heading and reset `[Unreleased]` to empty.
 
 ## [Unreleased]
 
+- **Quick Look preview (v1.54.0).** Windows analog of Mac's v1.3
+  `QLPreviewPanel`. **Space** (when the search box is empty) or
+  **Ctrl+Y** on a selected image row opens a floating full-size
+  preview window; Escape or Space dismisses. The preview window is
+  a borderless dark-chrome `Window` with a zoomable `ScrollViewer`
+  around the image.
+
+  - **`QuickLookWindow`** (new, `CpdbWin.App`) — mirrors the
+    `PreferencesWindow` secondary-window pattern. Byte source:
+    prefers `public.png`, falls back through `public.jpeg` →
+    `public.tiff`, then falls back to the row's thumbnail if all
+    raw flavors were body-evicted (v1.50 contract — the thumbnail
+    survives eviction, so a preview is degraded-but-non-empty
+    instead of black).
+  - **`MainWindow.ToggleQuickLook`** — cached `_quickLook` window
+    reference, cleared on `Closed`. Space or Ctrl+Y with a preview
+    already open closes it (**toggle semantics, matches Mac**);
+    with no window open, spawns a fresh one on the selected row.
+  - **Keyboard triggers** — intercepted in both `SearchBox_KeyDown`
+    (bare Space gated on empty query, so typing keeps working) and
+    `EntryList_KeyDown` (bare Space always intercepted — the list
+    doesn't type it). Ctrl+Y works in both regardless of focus,
+    mirroring Mac's Cmd+Y universal shortcut.
+  - **Scope: image kinds only for v1**. Non-image rows show a
+    status-line hint ("Quick Look supports image entries in this
+    release"). The right-hand detail pane already renders text at
+    reasonable size and shows link + color previews natively —
+    a floating text window would just duplicate it. Text preview
+    is a natural v2 addition if a user asks.
+  - **Byte-loading**: reuses the existing `MainWindow.LoadBitmap`
+    helper (visibility widened to `internal static`) so the
+    `InMemoryRandomAccessStream` + `ConditionalWeakTable` pin
+    pattern that solved the inline preview's silent-black-image
+    bug applies to the Quick Look window byte-for-byte.
+
+  **Deliberate scope trims** (all follow-up material if asked):
+  - No temp-file handoff — Windows can decode bytes straight into
+    `BitmapImage.SetSource`. Mac uses temp files because
+    `QLPreviewPanel` insists on a `URL`.
+  - No sibling-nav within the preview (arrow keys → next/prev
+    entry). Mac itself doesn't do this either — its
+    `PreviewCoordinator` hard-codes 1 item.
+  - No animation on open/close. WinUI transitions are cheap to add
+    later; for v1 the pop-in is fine.
+
+- Parity: `docs/parity.md` **Quick Look / preview** row flips to
+  ✅ for Windows.
+
+## [1.53.0] — 2026-08-31
+
 - **`cpdb-win fixture` CLI (v1.53.0).** Windows port of Mac v2.6.3
   `cpdb fixture {snapshot, list, env, path, delete}`. Test-data
   scaffolding: snapshot the live DB + blob store into a named
