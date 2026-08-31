@@ -72,8 +72,152 @@ public static class Program
             "export"             => RunExport(db, args[1..]),
             "evict"              => RunEvict(db, paths, args[1..]),
             "storage"            => RunStorage(db, paths),
+            "fixture"            => RunFixture(paths, args[1..]),
             _                    => UnknownCommand(args[0]),
         };
+    }
+
+    /// <summary>
+    /// <c>cpdb-win fixture {snapshot|list|env|path|delete}</c> —
+    /// test-data scaffolding. See
+    /// <see cref="CpdbWin.Core.Store.FixtureManager"/> for the storage
+    /// contract (sibling-of-cpdb layout, WAL-checkpoint before copy,
+    /// name validation).
+    /// </summary>
+    private static int RunFixture(AppPaths.Resolved paths, string[] rest)
+    {
+        if (rest.Length == 0)
+        {
+            Console.Error.WriteLine("cpdb-win fixture: missing subcommand");
+            Console.Error.WriteLine("  usage: cpdb-win fixture {snapshot NAME [--overwrite] | list | env NAME [--powershell] | path NAME | delete NAME [--force]}");
+            return 2;
+        }
+        var mgr = FixtureManager.Default(paths);
+        try
+        {
+            return rest[0] switch
+            {
+                "snapshot" => RunFixtureSnapshot(mgr, rest[1..]),
+                "list"     => RunFixtureList(mgr),
+                "env"      => RunFixtureEnv(mgr, rest[1..]),
+                "path"     => RunFixturePath(mgr, rest[1..]),
+                "delete"   => RunFixtureDelete(mgr, rest[1..]),
+                _          => FixtureUnknown(rest[0]),
+            };
+        }
+        catch (FixtureExistsException ex)
+        {
+            Console.Error.WriteLine($"cpdb-win fixture: {ex.Message}");
+            Console.Error.WriteLine("  pass --overwrite to replace");
+            return 1;
+        }
+        catch (FixtureNotFoundException ex)
+        {
+            Console.Error.WriteLine($"cpdb-win fixture: {ex.Message}");
+            return 1;
+        }
+        catch (ArgumentException ex)
+        {
+            Console.Error.WriteLine($"cpdb-win fixture: {ex.Message}");
+            return 2;
+        }
+    }
+
+    private static int RunFixtureSnapshot(FixtureManager mgr, string[] rest)
+    {
+        var name = rest.FirstOrDefault(a => !a.StartsWith("--"));
+        if (name is null)
+        {
+            Console.Error.WriteLine("cpdb-win fixture snapshot: missing NAME");
+            return 2;
+        }
+        var overwrite = rest.Contains("--overwrite");
+        var result = mgr.Snapshot(name, overwrite);
+        Console.WriteLine($"snapshot '{result.Name}' -> {result.Path}");
+        Console.WriteLine($"  {FormatBytes(result.BytesCopied)} copied");
+        return 0;
+    }
+
+    private static int RunFixtureList(FixtureManager mgr)
+    {
+        var items = mgr.List();
+        if (items.Count == 0)
+        {
+            Console.WriteLine("(no fixtures)");
+            return 0;
+        }
+        // Two aligned columns: name + size. Widths derived from the
+        // data so nothing wraps on a normal terminal.
+        int nameWidth = Math.Max(4, items.Max(i => i.Name.Length));
+        foreach (var i in items)
+            Console.WriteLine($"  {i.Name.PadRight(nameWidth)}   {FormatBytes(i.Bytes)}");
+        return 0;
+    }
+
+    private static int RunFixtureEnv(FixtureManager mgr, string[] rest)
+    {
+        var name = rest.FirstOrDefault(a => !a.StartsWith("--"));
+        if (name is null)
+        {
+            Console.Error.WriteLine("cpdb-win fixture env: missing NAME");
+            return 2;
+        }
+        var shell = rest.Contains("--powershell") ? FixtureShell.PowerShell : FixtureShell.Cmd;
+        Console.WriteLine(mgr.EnvSnippet(name, shell));
+        return 0;
+    }
+
+    private static int RunFixturePath(FixtureManager mgr, string[] rest)
+    {
+        var name = rest.FirstOrDefault(a => !a.StartsWith("--"));
+        if (name is null)
+        {
+            Console.Error.WriteLine("cpdb-win fixture path: missing NAME");
+            return 2;
+        }
+        FixtureManager.ValidateName(name);
+        var path = mgr.PathFor(name);
+        if (!Directory.Exists(path))
+        {
+            Console.Error.WriteLine($"cpdb-win fixture: no fixture named '{name}' (looked in {path})");
+            return 1;
+        }
+        Console.WriteLine(path);
+        return 0;
+    }
+
+    private static int RunFixtureDelete(FixtureManager mgr, string[] rest)
+    {
+        var name = rest.FirstOrDefault(a => !a.StartsWith("--"));
+        if (name is null)
+        {
+            Console.Error.WriteLine("cpdb-win fixture delete: missing NAME");
+            return 2;
+        }
+        var force = rest.Contains("--force");
+        if (!force)
+        {
+            // Match Mac: prompt-to-confirm unless --force. In a script,
+            // the caller passes --force; interactively, this is the
+            // "type y to confirm" safety net.
+            Console.Write($"delete fixture '{name}'? [y/N] ");
+            var answer = Console.ReadLine()?.Trim();
+            if (!string.Equals(answer, "y", StringComparison.OrdinalIgnoreCase))
+            {
+                Console.WriteLine("aborted");
+                return 0;
+            }
+        }
+        mgr.Delete(name);
+        Console.WriteLine($"deleted '{name}'");
+        return 0;
+    }
+
+    private static int FixtureUnknown(string sub)
+    {
+        Console.Error.WriteLine($"cpdb-win fixture: unknown subcommand '{sub}'");
+        Console.Error.WriteLine("  usage: cpdb-win fixture {snapshot NAME [--overwrite] | list | env NAME [--powershell] | path NAME | delete NAME [--force]}");
+        return 2;
     }
 
     /// <summary>
@@ -407,6 +551,20 @@ public static class Program
                   clipboard capture so links enrich via the normal
                   backfill. --spread-seconds backdates captured_at
                   so the import doesn't collapse to one timestamp.
+
+              cpdb-win fixture snapshot NAME [--overwrite]
+              cpdb-win fixture list
+              cpdb-win fixture env NAME [--powershell]
+              cpdb-win fixture path NAME
+              cpdb-win fixture delete NAME [--force]
+                  Test-data scaffolding. `snapshot` WAL-checkpoints
+                  the live DB then copies cpdb.db + blobs/ tree into
+                  %LOCALAPPDATA%\cpdb-fixtures\NAME\. `env` emits a
+                  shell snippet setting CPDB_SUPPORT_DIR so a fresh
+                  shell can run against the fixture instead of the
+                  live DB (`set` for cmd, `--powershell` for
+                  $env:CPDB_SUPPORT_DIR = "…"). `delete` prompts
+                  unless --force.
 
               cpdb-win storage
                   Print a tier-by-tier breakdown of disk usage:
