@@ -13,6 +13,8 @@ import CpdbShared
 /// lets everything except those two through.
 struct NoteEditor: View {
     @Binding var text: String
+    /// See `NoteNSTextView.onFocusLost`.
+    var onFocusLost: (() -> Void)? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -26,7 +28,7 @@ struct NoteEditor: View {
                     .font(.system(size: 9, design: .monospaced))
                     .opacity(0.6)
             }
-            NoteTextView(text: $text)
+            NoteTextView(text: $text, onFocusLost: onFocusLost)
                 .overlay(alignment: .topLeading) {
                     if text.isEmpty {
                         // Aligned with the text view's container inset +
@@ -61,6 +63,8 @@ struct NoteEditor: View {
 /// than SwiftUI's `TextEditor` so focus is explicit: see `NoteNSTextView`.
 struct NoteTextView: NSViewRepresentable {
     @Binding var text: String
+    /// See `NoteNSTextView.onFocusLost`.
+    var onFocusLost: (() -> Void)? = nil
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -73,6 +77,7 @@ struct NoteTextView: NSViewRepresentable {
 
         let textView = NoteNSTextView(frame: .zero)
         textView.delegate = context.coordinator
+        textView.onFocusLost = onFocusLost
         textView.minSize = .zero
         textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         textView.isVerticallyResizable = true
@@ -105,6 +110,7 @@ struct NoteTextView: NSViewRepresentable {
 
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         context.coordinator.parent = self
+        (scroll.documentView as? NoteNSTextView)?.onFocusLost = onFocusLost
         guard let textView = scroll.documentView as? NSTextView, textView.string != text else { return }
         textView.string = text
     }
@@ -136,6 +142,28 @@ struct NoteTextView: NSViewRepresentable {
 final class NoteNSTextView: NSTextView {
     private weak var focusDonor: NSResponder?
     private var donorSelection: NSRange?
+
+    /// Fired (next runloop turn) when this view genuinely loses first
+    /// responder — the user clicked the search field, say. The popup's
+    /// key monitor keys its editor mode off `PopupState.isEditingNote`,
+    /// so an editor that keeps "editing" after its focus left would eat
+    /// Return/arrows/Esc that the user now expects to act on the popup.
+    /// The wired handler commits the draft (idempotent: a no-op once the
+    /// editor is already closed, which also covers the resign that fires
+    /// during this view's own save/unmount).
+    var onFocusLost: (() -> Void)?
+
+    override func resignFirstResponder() -> Bool {
+        let resigned = super.resignFirstResponder()
+        if resigned {
+            // Async: resign can fire inside makeFirstResponder re-entrancy
+            // and mid-SwiftUI-update; the commit mutates observable state.
+            DispatchQueue.main.async { [weak self] in
+                self?.onFocusLost?()
+            }
+        }
+        return resigned
+    }
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
@@ -169,8 +197,19 @@ final class NoteNSTextView: NSTextView {
             // out, and that lands after this callback — so hand focus back
             // on the next turn, and only if nothing else (the user
             // clicking elsewhere) has claimed it in the meantime.
-            DispatchQueue.main.async { [weak window, weak donor] in
-                guard let window, window.firstResponder === window, let donor,
+            //
+            // The window must NOT be captured here, even weakly: when this
+            // unmount is the window itself deallocating (a torn-down panel
+            // in tests; PopupController.configure replacing the panel),
+            // forming a weak reference to a deallocating instance is an
+            // Objective-C fatal error. `donor` is captured strongly — at
+            // this point it is alive, merely un-parented later — and the
+            // window is re-derived from it at fire time, coming back nil
+            // if the window is gone by then.
+            DispatchQueue.main.async { [donor] in
+                guard let donor,
+                      let window = (donor as? NSView)?.window,
+                      window.firstResponder === window,
                       window.makeFirstResponder(donor)
                 else { return }
                 // makeFirstResponder selects a text field's whole contents;
@@ -188,6 +227,12 @@ final class NoteNSTextView: NSTextView {
     /// standard editing shortcuts to a text view (they are menu key
     /// equivalents). Handle them here; anything else falls through.
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        // AppKit offers key equivalents to the whole view tree, not just
+        // the focused view — without this guard, ⌘A/C/X/V/Z pressed while
+        // the search field holds focus would act on the note draft.
+        guard window?.firstResponder === self else {
+            return super.performKeyEquivalent(with: event)
+        }
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         guard flags.contains(.command), !flags.contains(.option), !flags.contains(.control),
               let key = event.charactersIgnoringModifiers?.lowercased()

@@ -19,6 +19,10 @@ struct EntryCard: View {
     /// Non-nil only on the card whose sticky note is being edited: the
     /// editor overlays this card and writes into the binding.
     var noteDraft: Binding<String>? = nil
+    /// Fired when the open editor's text view loses focus (user clicked
+    /// the search field); the strip wires this to commit, so editor mode
+    /// can never outlive the editor's keyboard ownership.
+    var onNoteFocusLost: (() -> Void)? = nil
 
     static let cardSize = CGSize(width: 320, height: 360)
 
@@ -94,7 +98,7 @@ struct EntryCard: View {
         }
         .overlay(alignment: .bottom) {
             if let noteDraft {
-                NoteEditor(text: noteDraft)
+                NoteEditor(text: noteDraft, onFocusLost: onNoteFocusLost)
                     .padding(8)
             }
         }

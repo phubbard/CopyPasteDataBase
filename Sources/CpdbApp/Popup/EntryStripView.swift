@@ -34,7 +34,8 @@ struct EntryStripView: View {
                             matchSource: state.matchSourcesById[row.entry.id!],
                             isSelected: index == state.selectedIndex,
                             isTimePivotAnchor: state.timePivot?.anchorEntryId == row.entry.id,
-                            noteDraft: state.noteEditEntryId == row.entry.id ? $state.noteDraft : nil
+                            noteDraft: state.noteEditEntryId == row.entry.id ? $state.noteDraft : nil,
+                            onNoteFocusLost: { state.commitNoteEdit() }
                         )
                         .id(row.entry.id!)
                         // .highPriorityGesture, not .onTapGesture(count: 2):

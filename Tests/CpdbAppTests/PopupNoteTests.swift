@@ -391,6 +391,21 @@ extension PopupNoteAppKitSuites {
             }
             let textView = NoteNSTextView(frame: NSRect(x: 0, y: 0, width: 200, height: 100))
             textView.string = "hello world"
+            // The shortcuts only act while the view is first responder —
+            // AppKit offers key equivalents to the whole tree, and a note
+            // editor must not respond to ⌘A/⌘V aimed at the search field.
+            // A bare, window-less view therefore handles nothing:
+            #expect(!textView.performKeyEquivalent(with: key("a", .command)))
+            #expect(textView.selectedRange.length == 0)
+
+            let window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 300, height: 200),
+                styleMask: [.titled], backing: .buffered, defer: false
+            )
+            window.isReleasedWhenClosed = false
+            defer { window.orderOut(nil) }
+            window.contentView?.addSubview(textView)
+            window.makeFirstResponder(textView)
 
             #expect(textView.performKeyEquivalent(with: key("a", .command)))
             #expect(textView.selectedRange == NSRange(location: 0, length: 11))
@@ -399,6 +414,13 @@ extension PopupNoteAppKitSuites {
             textView.setSelectedRange(NSRange(location: 3, length: 0))
             _ = textView.performKeyEquivalent(with: key("a", [.command, .option]))
             #expect(textView.selectedRange == NSRange(location: 3, length: 0))
+
+            // Focus elsewhere in the same window → the editor leaves the
+            // shortcut alone (the exact hijack the guard exists to stop).
+            window.makeFirstResponder(nil)
+            textView.setSelectedRange(NSRange(location: 0, length: 0))
+            #expect(!textView.performKeyEquivalent(with: key("a", .command)))
+            #expect(textView.selectedRange.length == 0)
         }
     }
 }
