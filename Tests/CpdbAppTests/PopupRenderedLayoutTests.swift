@@ -24,7 +24,7 @@ struct PopupRenderedLayoutTests {
 
     // MARK: - Fixture
 
-    private func makeStore() throws -> Store {
+    private func makeStore(note: String? = nil) throws -> Store {
         let store = try Store.inMemory()
         let devId = try store.dbQueue.write { db -> Int64 in
             var d = Device(identifier: "d", name: "D", kind: "mac")
@@ -40,7 +40,8 @@ struct PopupRenderedLayoutTests {
             var e = Entry(
                 uuid: Data(repeating: 1, count: 16), createdAt: 1, capturedAt: 1,
                 kind: .text, sourceDeviceId: devId, textPreview: text,
-                contentHash: Data(repeating: 1, count: 32), totalSize: Int64(text.utf8.count)
+                contentHash: Data(repeating: 1, count: 32), totalSize: Int64(text.utf8.count),
+                note: note
             )
             try e.insert(db)
             var f = Flavor(
@@ -69,10 +70,16 @@ struct PopupRenderedLayoutTests {
 
     private enum RenderError: Error { case noBitmap }
 
-    private func render(store: Store) throws -> Rendered {
+    /// - Parameter editingNote: open the sticky-note editor on the card
+    ///   before rendering.
+    private func render(store: Store, editingNote: Bool = false) throws -> Rendered {
         let state = PopupState(store: store)
         state.refresh()
         #expect(state.rows.count == 1)
+        if editingNote, let id = state.rows.first?.entry.id {
+            state.beginNoteEdit(entryId: id)
+            #expect(state.isEditingNote)
+        }
         // Deselect: EntryCard draws a 3pt accentColor selection stroke
         // around the selected card, which eats into the near-white
         // edge pixels this test measures (confirmed empirically: it
@@ -155,12 +162,19 @@ struct PopupRenderedLayoutTests {
     /// pixels, so the longest run is an unambiguous stand-in for "where
     /// the card is and how tall it rendered."
     private func longestNearWhiteRun(bitmap: NSBitmapImageRep, columnPx: Int) -> (startPx: Int, lengthPx: Int) {
+        longestRun(bitmap: bitmap, columnPx: columnPx) { Self.luminance($0) > Self.nearWhiteLuminance }
+    }
+
+    /// Longest contiguous run of pixels satisfying `matching` in the column
+    /// at `columnPx`. A card with a sticky note has an amber band that is
+    /// not near-white, so its tests measure with `isCardFill` instead.
+    private func longestRun(
+        bitmap: NSBitmapImageRep, columnPx: Int, matching: (NSColor) -> Bool
+    ) -> (startPx: Int, lengthPx: Int) {
         var bestStart = 0, bestLen = 0
         var curStart = 0, curLen = 0
         for y in 0..<bitmap.pixelsHigh {
-            let isNearWhite = bitmap.colorAt(x: columnPx, y: y)
-                .map { Self.luminance($0) > Self.nearWhiteLuminance } ?? false
-            if isNearWhite {
+            if bitmap.colorAt(x: columnPx, y: y).map(matching) ?? false {
                 if curLen == 0 { curStart = y }
                 curLen += 1
                 if curLen > bestLen { bestLen = curLen; bestStart = curStart }
@@ -169,6 +183,18 @@ struct PopupRenderedLayoutTests {
             }
         }
         return (bestStart, bestLen)
+    }
+
+    /// A pixel tinted by the sticky-note strip or editor paper over the
+    /// white card: red clearly above blue (near-white and ink are not).
+    private static func isNoteTinted(_ color: NSColor) -> Bool {
+        guard let rgb = color.usingColorSpace(.deviceRGB) else { return false }
+        return rgb.redComponent > 0.85 && rgb.redComponent - rgb.blueComponent > 0.12
+    }
+
+    /// The card's background in any state: near-white, or note-tinted.
+    private static func isCardFill(_ color: NSColor) -> Bool {
+        luminance(color) > nearWhiteLuminance || isNoteTinted(color)
     }
 
     /// Minimum luminance found in a view-point rectangle. Used by the
@@ -260,6 +286,142 @@ struct PopupRenderedLayoutTests {
             minLum >= Self.darkTextLuminance,
             "found dark pixels in the strip's top-padding band above the card (min luminance \(minLum)) — looks like ghost text"
         )
+    }
+
+    // MARK: - Sticky notes (card-height contract)
+    //
+    // A note adds a strip band to the card and an editor overlay on it.
+    // Both must live INSIDE `EntryCard.cardSize` — the v3.2.x clipping
+    // lesson — so these measure the real rendered pixels, not the
+    // arithmetic. The first line of the note is short on purpose so the
+    // scan column (x = 170) never crosses its glyphs.
+
+    private static let multiLineNote = "NOTE SENTINEL\nsecond line\nthird line"
+
+    @Test("A card with a multi-line note still renders at its full cardSize.height")
+    func notedCardRendersFullHeight() throws {
+        let store = try makeStore(note: Self.multiLineNote)
+        let rendered = try render(store: store)
+        let columnPx = Int(Self.scanColumnPoint * rendered.scaleX)
+        let run = longestRun(bitmap: rendered.bitmap, columnPx: columnPx, matching: Self.isCardFill)
+        let heightPt = CGFloat(run.lengthPx) / rendered.scaleY
+
+        #expect(
+            abs(heightPt - EntryCard.cardSize.height) <= 2.0,
+            "noted card measured \(heightPt)pt vs expected \(EntryCard.cardSize.height)pt — the note strip must be carved out of the body slot, not added to the card"
+        )
+    }
+
+    @Test("A card with a multi-line note still shows its headline")
+    func notedCardHeadlineIsVisible() throws {
+        let store = try makeStore(note: Self.multiLineNote)
+        let rendered = try render(store: store)
+        let columnPx = Int(Self.scanColumnPoint * rendered.scaleX)
+        let run = longestRun(bitmap: rendered.bitmap, columnPx: columnPx, matching: Self.isCardFill)
+        let cardTopPt = CGFloat(run.startPx) / rendered.scaleY
+
+        let minLum = minLuminance(
+            bitmap: rendered.bitmap, scaleX: rendered.scaleX, scaleY: rendered.scaleY,
+            xRange: Self.cardXRange, yRange: cardTopPt...(cardTopPt + 60)
+        )
+        #expect(
+            minLum < Self.darkTextLuminance,
+            "no dark headline pixels in the noted card's top 60pt (min luminance \(minLum))"
+        )
+    }
+
+    @Test("The note strip fills its fixed band directly above the footer")
+    func noteStripSitsAboveFooter() throws {
+        let store = try makeStore(note: Self.multiLineNote)
+        let rendered = try render(store: store)
+        let columnPx = Int(Self.scanColumnPoint * rendered.scaleX)
+        let card = longestRun(bitmap: rendered.bitmap, columnPx: columnPx, matching: Self.isCardFill)
+        let strip = longestRun(bitmap: rendered.bitmap, columnPx: columnPx, matching: Self.isNoteTinted)
+
+        let cardBottomPt = CGFloat(card.startPx + card.lengthPx) / rendered.scaleY
+        let stripHeightPt = CGFloat(strip.lengthPx) / rendered.scaleY
+        let stripBottomPt = CGFloat(strip.startPx + strip.lengthPx) / rendered.scaleY
+
+        #expect(abs(stripHeightPt - EntryCard.noteBand) <= 3.0, "strip measured \(stripHeightPt)pt vs noteBand \(EntryCard.noteBand)pt")
+        #expect(
+            abs((cardBottomPt - stripBottomPt) - EntryCard.footerBand) <= 3.0,
+            "strip should end one footerBand above the card bottom (card bottom \(cardBottomPt)pt, strip bottom \(stripBottomPt)pt)"
+        )
+    }
+
+    @Test("A card without a note renders no strip")
+    func noteFreeCardHasNoStrip() throws {
+        let store = try makeStore()
+        let rendered = try render(store: store)
+        let columnPx = Int(Self.scanColumnPoint * rendered.scaleX)
+        let strip = longestRun(bitmap: rendered.bitmap, columnPx: columnPx, matching: Self.isNoteTinted)
+        #expect(strip.lengthPx == 0)
+    }
+
+    @Test("The note editor overlays the card inside its cardSize box")
+    func editorOverlayStaysInsideCard() throws {
+        // Baseline: where the card sits with the same note and no editor.
+        let plain = try render(store: try makeStore(note: Self.multiLineNote))
+        let editing = try render(store: try makeStore(note: Self.multiLineNote), editingNote: true)
+        let columnPx = Int(Self.scanColumnPoint * plain.scaleX)
+        let baseline = longestRun(bitmap: plain.bitmap, columnPx: columnPx, matching: Self.isCardFill)
+        let top = longestRun(bitmap: editing.bitmap, columnPx: columnPx, matching: Self.isCardFill)
+        let paper = longestRun(bitmap: editing.bitmap, columnPx: columnPx, matching: Self.isNoteTinted)
+
+        let cardTopPt = CGFloat(baseline.startPx) / plain.scaleY
+        let cardBottomPt = cardTopPt + EntryCard.cardSize.height
+        let paperTopPt = CGFloat(paper.startPx) / editing.scaleY
+        let paperBottomPt = CGFloat(paper.startPx + paper.lengthPx) / editing.scaleY
+
+        // Opening the editor must not move or resize the card.
+        #expect(
+            abs(CGFloat(top.startPx) / editing.scaleY - cardTopPt) <= 1.0,
+            "card top moved when the editor opened"
+        )
+        // The editor's paper (minus its antialiased edges) is on screen at
+        // its fixed height, entirely inside the card's box.
+        #expect(
+            abs((paperBottomPt - paperTopPt) - EntryCard.noteEditorHeight) <= 6.0,
+            "editor paper measured \(paperBottomPt - paperTopPt)pt vs noteEditorHeight \(EntryCard.noteEditorHeight)pt"
+        )
+        #expect(paperTopPt >= cardTopPt && paperBottomPt <= cardBottomPt, "editor paper \(paperTopPt)–\(paperBottomPt)pt escapes the card \(cardTopPt)–\(cardBottomPt)pt")
+        // ...and leaves the headline readable above it.
+        let minLum = minLuminance(
+            bitmap: editing.bitmap, scaleX: editing.scaleX, scaleY: editing.scaleY,
+            xRange: Self.cardXRange, yRange: cardTopPt...(cardTopPt + 60)
+        )
+        #expect(minLum < Self.darkTextLuminance, "editor overlay hid the headline (min luminance \(minLum))")
+    }
+
+    /// `EntryCard`'s own ideal size, which is what the strip's LazyHStack
+    /// lays out, for notes of every shape: a long first line, many lines,
+    /// leading blank lines, the stored maximum — and with the editor open.
+    @Test(
+        "EntryCard is exactly cardSize whatever the note",
+        arguments: [
+            "x",
+            String(repeating: "unbroken ", count: 200),
+            (1...80).map { "line \($0)" }.joined(separator: "\n"),
+            "\n\n\n   \nfirst real line\nsecond",
+            String(repeating: "w ", count: EntryRepository.maxNoteLength / 2),
+        ]
+    )
+    func notedCardIsExactlyCardSize(note: String) {
+        var entry = Entry(
+            uuid: Data(repeating: 9, count: 16), createdAt: 1, capturedAt: 1,
+            kind: .text, sourceDeviceId: 1, textPreview: "HEADLINE\nbody",
+            contentHash: Data(repeating: 9, count: 32), totalSize: 13, note: note
+        )
+        entry.id = 1
+        let row = EntryRepository.EntryRow(entry: entry)
+        for editing in [false, true] {
+            let card = EntryCard(
+                row: row, snippet: nil, matchSource: nil, isSelected: false,
+                noteDraft: editing ? .constant(note) : nil
+            )
+            let size = NSHostingView(rootView: card).fittingSize
+            #expect(size == EntryCard.cardSize, "editing=\(editing): fitting size \(size) vs \(EntryCard.cardSize)")
+        }
     }
 }
 #endif

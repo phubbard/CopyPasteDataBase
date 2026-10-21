@@ -10,15 +10,20 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
-- **Sticky notes on entries (core, no UI yet).** A free-text note on any
-  clipboard entry, e.g. to annotate a screenshot, searchable by keyword
-  (FTS `note` column; new `.note` match-source badge) and semantically
-  (the note is folded into the embedding input, so a screenshot gets a
-  vector from its note alone). Syncs over CloudKit with last-writer-wins
-  like pins; a not-yet-updated device's pin toggle can't wipe notes.
-  `cpdb note <id> [text… | --clear]` reads, sets, or clears one (max
-  4096 characters). Schema v15; the upgrade keeps long text entries
-  fully searchable.
+- **Sticky notes on entries.** A free-text note on any clipboard entry,
+  e.g. to annotate a screenshot, searchable by keyword (FTS `note`
+  column; `note` match-source badge) and semantically (the note is
+  folded into the embedding input, so a screenshot gets a vector from
+  its note alone). In the popup: ⌘N or right-click → Add / Edit Note…
+  opens a yellow sticky editor over the selected card (`⌘↩` saves,
+  `Esc` cancels, clicking away saves, a blank note removes it; right-click
+  → Remove Note); a card with a note shows a one-line yellow strip with
+  its first line and the full text in the tooltip. The strip is carved
+  out of the card's body, so card and panel heights are unchanged.
+  Syncs over CloudKit with last-writer-wins like pins; a not-yet-updated
+  device's pin toggle can't wipe notes. `cpdb note <id> [text… |
+  --clear]` reads, sets, or clears one (max 4096 characters). Schema
+  v15; the upgrade keeps long text entries fully searchable.
   **Release gate: deploy the new `note` field on the `Entry` record type
   to the CloudKit *Production* schema before shipping a build with this.**
   Every push now writes `note`, so without it every entry push is

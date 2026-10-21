@@ -11,6 +11,10 @@ public enum Log {
 
     public static let daemon  = Logger(subsystem: subsystem, category: "daemon")
     public static let capture = Logger(subsystem: subsystem, category: "capture")
+    /// Store writes. The popup's sticky-note saves/clears log here at
+    /// `.log` with a stable "note:" prefix, for the same `log show`
+    /// persistence reason as `paste`; numeric entry ids only, never note
+    /// content.
     public static let store   = Logger(subsystem: subsystem, category: "store")
     public static let importer = Logger(subsystem: subsystem, category: "importer")
     public static let cli     = Logger(subsystem: subsystem, category: "cli")

@@ -16,6 +16,9 @@ struct EntryCard: View {
     /// mode. Renders a small clock badge so the user can spot the
     /// reference point among the chronologically-ordered neighbors.
     var isTimePivotAnchor: Bool = false
+    /// Non-nil only on the card whose sticky note is being edited: the
+    /// editor overlays this card and writes into the binding.
+    var noteDraft: Binding<String>? = nil
 
     static let cardSize = CGSize(width: 320, height: 360)
 
@@ -29,12 +32,29 @@ struct EntryCard: View {
     /// the VStack always totals exactly cardSize.height.
     static let footerBand: CGFloat = 32
 
+    /// Sticky-note strip band, present only on a card that has a note. It
+    /// is taken OUT of the body slot (body = card − footer − note band),
+    /// never added on top, so the VStack still totals exactly
+    /// `cardSize.height` — the same fixed-band discipline as
+    /// `footerBand`, and what keeps `PopupController.panelHeight` valid.
+    /// It sits directly under the body, below the bottom-pinned `ChipRow`,
+    /// so the two never overlap.
+    static let noteBand: CGFloat = 28
+
+    /// Height of the note editor overlaid on the card while editing. An
+    /// overlay, so it affects no layout.
+    static let noteEditorHeight: CGFloat = 150
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             body(for: row.entry.kind)
                 .frame(maxWidth: .infinity)
-                .frame(height: Self.cardSize.height - Self.footerBand, alignment: .topLeading)
+                .frame(height: Self.cardSize.height - Self.footerBand - (note == nil ? 0 : Self.noteBand), alignment: .topLeading)
                 .clipped()
+            if let note {
+                NoteStrip(note: note)
+                    .frame(height: Self.noteBand)
+            }
             footer
                 .frame(height: Self.footerBand)
         }
@@ -72,8 +92,31 @@ struct EntryCard: View {
             }
             .padding(8)
         }
+        .overlay(alignment: .bottom) {
+            if let noteDraft {
+                NoteEditor(text: noteDraft)
+                    .padding(8)
+            }
+        }
         .shadow(color: .black.opacity(isSelected ? 0.22 : 0.10), radius: isSelected ? 10 : 4, y: 2)
-        .help(tooltip)
+        // No card tooltip while editing: it would pop over the editor.
+        .help(noteDraft == nil ? tooltip : "")
+    }
+
+    /// The user's sticky note, when it has visible content.
+    private var note: String? { NoteStrip.visibleNote(row.entry.note) }
+
+    /// The FTS snippet a text card may show in place of its preview. FTS5
+    /// picks the best-matching column for the snippet, so on a hit that
+    /// involves the note it can be a fragment of the NOTE — the card would
+    /// then show the note's words as if they were the clip's. Those hits
+    /// keep the clip's own text; the strip and the match badge say why
+    /// the card matched.
+    static func bodySnippet(_ snippet: String?, matchSource: FtsIndex.MatchSource?) -> String? {
+        switch matchSource {
+        case .note, .multiple: return nil
+        default: return snippet
+        }
     }
 
     /// Multi-line tooltip surfaced via SwiftUI's `.help(...)` modifier.
@@ -166,7 +209,7 @@ struct EntryCard: View {
             if let hex = HexColor.detect(row.entry.textPreview ?? "") {
                 ColorCard(row: row, hexOverride: hex)
             } else {
-                TextCard(row: row, snippet: snippet)
+                TextCard(row: row, snippet: Self.bodySnippet(snippet, matchSource: matchSource))
             }
         case .link:
             LinkCard(row: row)

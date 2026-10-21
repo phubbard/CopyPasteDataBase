@@ -590,7 +590,7 @@ public struct EntryRepository {
     /// `note` cut to `maxNoteLength` Unicode scalars. Scalars rather than
     /// Characters so a single pathological grapheme cluster (a base
     /// character with a million combining marks) can't dodge the bound.
-    static func cappedNote(_ note: String) -> String {
+    public static func cappedNote(_ note: String) -> String {
         let scalars = note.unicodeScalars
         guard scalars.count > maxNoteLength else { return note }
         return String(String.UnicodeScalarView(scalars.prefix(maxNoteLength)))

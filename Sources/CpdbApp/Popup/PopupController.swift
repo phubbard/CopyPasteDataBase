@@ -180,6 +180,11 @@ final class PopupController {
     func hide(closeQL: Bool = true) {
         let preservePosition = !closeQL && (state?.rememberScrollOnPreview ?? false)
 
+        // A half-typed sticky note survives a click-away, hotkey toggle or
+        // paste: save it (Finder-rename convention). Esc is the only way
+        // to discard one.
+        state?.commitNoteEdit()
+        state?.cancelNoteEdit()
         removeMonitors()
         state?.stopLiveUpdates()
         panel?.orderOut(nil)
@@ -268,6 +273,36 @@ final class PopupController {
         // Routed through PopupState → UndoCoordinator so the delete is
         // recorded for ⌘Z. The single-row tombstone is a sub-ms write.
         state.delete(id: id)
+    }
+
+    /// Open the sticky-note editor on the selected card (⌘N).
+    func editNoteOnSelected() {
+        guard let state = state, let id = state.selectedEntry?.id else { return }
+        state.beginNoteEdit(entryId: id)
+    }
+
+    /// Key handling while the sticky-note editor is open, called by the
+    /// monitor before its normal switch. The editor's `NSTextView` owns
+    /// the keyboard, so everything the switch claims for the strip —
+    /// arrows, Return (paste!), Delete, Space, ⌘Z — must reach the text
+    /// view instead. Only Esc (discard the edit; does NOT dismiss the
+    /// popup — one layer at a time) and ⌘Return (save) are ours. Returns
+    /// true if the event was consumed.
+    func noteEditorKeyDown(keyCode: UInt16, cmdHeld: Bool) -> Bool {
+        guard let state = state, state.isEditingNote else { return false }
+        // Esc / Return belong to an in-progress IME composition first.
+        if (panel?.firstResponder as? NSTextView)?.hasMarkedText() == true { return false }
+        switch keyCode {
+        case 53: // Escape
+            state.cancelNoteEdit()
+            return true
+        case 36, 76: // Return / Enter
+            guard cmdHeld else { return false } // plain Return is a newline
+            state.commitNoteEdit()
+            return true
+        default:
+            return false
+        }
     }
 
     // MARK: - App Intents entry points
@@ -416,6 +451,9 @@ final class PopupController {
             // returned from the outer closure based on that signal,
             // never crossing the MainActor boundary itself.
             let consumed: Bool = MainActor.assumeIsolated {
+                if self.state?.isEditingNote == true {
+                    return self.noteEditorKeyDown(keyCode: keyCode, cmdHeld: cmdHeld)
+                }
                 switch keyCode {
                 case 53: // Escape
                     // Time-pivot mode owns Escape — it exits the
@@ -439,6 +477,14 @@ final class PopupController {
                     if let entry = self.state?.selectedEntry {
                         self.state?.enterTimePivot(anchoredOn: entry)
                     }
+                    return true
+                case 45 where cmdHeld:
+                    // ⌘N — add / edit the selected card's sticky note.
+                    // Unclaimed: no other case uses keyCode 45, the status
+                    // menu has no "n" equivalent, and ⌘N isn't a
+                    // text-editing key in the search field, so plain ⌘N
+                    // (no Shift needed) is free.
+                    self.editNoteOnSelected()
                     return true
                 case 6 where cmdHeld && event.modifierFlags.contains(.shift):
                     // ⌘⇧Z — redo the last undone delete/pin.

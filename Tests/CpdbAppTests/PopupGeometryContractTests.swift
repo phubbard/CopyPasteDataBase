@@ -32,5 +32,17 @@ struct PopupGeometryContractTests {
             + 160
         #expect(PopupController.panelHeight <= upperBound)
     }
+
+    @Test("a noted card's bands are carved out of the card, never added to it")
+    @MainActor
+    func noteBandFitsInsideCard() {
+        // EntryCard's body slot is cardSize − footer − (note band when
+        // noted); the card itself never grows, so panelHeight needs no
+        // allowance for notes. The rendered-layout suite measures the real
+        // pixels; this pins the constants it relies on.
+        let bodySlot = EntryCard.cardSize.height - EntryCard.footerBand - EntryCard.noteBand
+        #expect(bodySlot >= EntryCard.cardSize.height / 2)
+        #expect(EntryCard.noteEditorHeight < EntryCard.cardSize.height - EntryCard.footerBand)
+    }
 }
 #endif

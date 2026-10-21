@@ -449,6 +449,7 @@ Press your hotkey from any app:
 | `Space` | Quick Look — only when the search field is empty |
 | `Delete` (fn+⌫) | Delete the selected entry (any time) |
 | `⌫` Backspace | Delete the selected entry — only when the search field is empty (otherwise edits the query) |
+| `⌘N` | Add / edit a sticky note on the selected card (also right-click → Add Note… / Edit Note…, Remove Note). `⌘↩` saves, `Esc` cancels, clicking away saves; saving nothing (blank) removes the note. Cards with a note show a yellow strip with its first line (full text in the tooltip); notes are searched by keyword and by meaning like any other text |
 | `⌘T` | Time-pivot — show neighbors of the selected card (entries captured within ±30 min, chronological). Works equally from a search hit or a normal recent-list selection |
 | `[` / `]` | While in time-pivot mode: narrow / widen the window (15 min → 30 min → 1 h → 3 h → 6 h → 12 h → 1 day) |
 | `Esc` | Dismiss popup |
@@ -461,8 +462,9 @@ focus returns to the app you were in before summoning cpdb.
 In the popup header, three small capsule toggles gate which FTS columns the
 search query consults: **text**, **OCR**, **tags**. Defaults to all three
 on; your preference is remembered. Matching cards show a coloured corner
-chip (`OCR`, `tag`, `•••`) when a hit came from something other than the
-primary text column.
+chip (`OCR`, `tag`, `note`, `•••`) when a hit came from something other than
+the primary text column. Sticky notes are always searched, whatever the
+toggles say.
 
 ### CLI
 

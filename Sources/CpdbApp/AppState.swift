@@ -14,7 +14,9 @@ import CpdbShared
 @MainActor
 @Observable
 final class PopupState {
-    private(set) var rows: [EntryRepository.EntryRow] = []
+    private(set) var rows: [EntryRepository.EntryRow] = [] {
+        didSet { dropNoteEditIfEntryLeft() }
+    }
     private(set) var snippetsById: [Int64: String] = [:]
     /// Per-entry match source, populated only while searching. Empty in
     /// "most recent" mode. Used by `EntryCard` to show a small badge.
@@ -231,6 +233,103 @@ final class PopupState {
             Log.cli.error("pin toggle failed id=\(id, privacy: .public): \(String(describing: error), privacy: .public)")
         }
         refresh()
+    }
+
+    // MARK: - Sticky notes
+
+    /// Entry whose sticky note is open in the card editor. Keyed by id,
+    /// never by `selectedIndex`: a background capture or sync can shift
+    /// rows under a half-typed note, and the text must still land on the
+    /// entry it was typed for. Non-nil means the editor's text view owns
+    /// the keyboard — `PopupController`'s key monitor checks it.
+    private(set) var noteEditEntryId: Int64?
+
+    /// The editor's text. Meaningful only while `noteEditEntryId` is set.
+    var noteDraft: String = ""
+
+    var isEditingNote: Bool { noteEditEntryId != nil }
+
+    /// Open the note editor on an entry, seeded with its current note
+    /// (read from the store, not the possibly one-refresh-stale row). Opens
+    /// at most one editor: another card's edit is saved first. No-ops for
+    /// an entry the popup isn't showing.
+    func beginNoteEdit(entryId: Int64) {
+        guard noteEditEntryId != entryId else { return }
+        if noteEditEntryId != nil { commitNoteEdit() }
+        guard rows.contains(where: { $0.entry.id == entryId }) else { return }
+        do {
+            noteDraft = try repository.note(id: entryId) ?? ""
+        } catch {
+            // Don't open on a failed read: saving the editor's empty
+            // draft would overwrite a note we couldn't see.
+            Log.store.error("note: read failed entry=\(entryId, privacy: .public): \(String(describing: error), privacy: .public)")
+            return
+        }
+        noteEditEntryId = entryId
+    }
+
+    /// Save the open edit to the entry it was opened on and close the
+    /// editor; the strip reflects it immediately. Blank text clears the
+    /// note. Returns false — editor still open, draft intact — only if the
+    /// write threw, so a failed save can be retried instead of losing the
+    /// text.
+    @discardableResult
+    func commitNoteEdit() -> Bool {
+        guard let id = noteEditEntryId else { return true }
+        guard writeNote(id: id, note: noteDraft) else { return false }
+        closeNoteEditor()
+        refresh()
+        return true
+    }
+
+    /// Close the editor without writing.
+    func cancelNoteEdit() {
+        closeNoteEditor()
+    }
+
+    /// Set or clear an entry's note outside the editor (context-menu
+    /// "Remove Note") and refresh the strip.
+    func setNote(id: Int64, note: String?) {
+        // A stale draft for this entry must not survive to re-save the
+        // note that was just removed when the popup hides.
+        if noteEditEntryId == id { closeNoteEditor() }
+        writeNote(id: id, note: note)
+        refresh()
+    }
+
+    private func closeNoteEditor() {
+        noteEditEntryId = nil
+        noteDraft = ""
+    }
+
+    /// `rows` observer: the edited card can leave the strip mid-edit (a
+    /// search or kind-filter change, a delete or sync arriving). Save what
+    /// was typed — a no-op if the entry was tombstoned — and close the
+    /// editor rather than strand it with the key monitor in editor mode.
+    private func dropNoteEditIfEntryLeft() {
+        guard let id = noteEditEntryId, !rows.contains(where: { $0.entry.id == id }) else { return }
+        writeNote(id: id, note: noteDraft)
+        closeNoteEditor()
+    }
+
+    /// The popup's single note write. One persistent log line per real
+    /// change (`.log` level, so it survives to `log show`; stable "note:"
+    /// prefix; numeric ids only, never note content). Unchanged text and a
+    /// vanished entry write nothing and log nothing.
+    @discardableResult
+    private func writeNote(id: Int64, note: String?) -> Bool {
+        do {
+            let before = try repository.note(id: id)
+            try repository.setNote(id: id, note: note)
+            let after = try repository.note(id: id)
+            if before != after {
+                Log.store.log("note: \(after == nil ? "cleared" : "saved", privacy: .public) entry=\(id, privacy: .public)")
+            }
+            return true
+        } catch {
+            Log.store.error("note: write failed entry=\(id, privacy: .public): \(String(describing: error), privacy: .public)")
+            return false
+        }
     }
 
     func performUndo() {

@@ -33,7 +33,8 @@ struct EntryStripView: View {
                             snippet: state.snippetsById[row.entry.id!],
                             matchSource: state.matchSourcesById[row.entry.id!],
                             isSelected: index == state.selectedIndex,
-                            isTimePivotAnchor: state.timePivot?.anchorEntryId == row.entry.id
+                            isTimePivotAnchor: state.timePivot?.anchorEntryId == row.entry.id,
+                            noteDraft: state.noteEditEntryId == row.entry.id ? $state.noteDraft : nil
                         )
                         .id(row.entry.id!)
                         // .highPriorityGesture, not .onTapGesture(count: 2):
@@ -71,6 +72,9 @@ struct EntryStripView: View {
                             }
                         )
                         .onTapGesture {
+                            // Clicking away from a card being annotated
+                            // saves its note, as it does everywhere else.
+                            if state.noteEditEntryId != row.entry.id { state.commitNoteEdit() }
                             state.selectedIndex = index
                         }
                         .contextMenu {
@@ -121,6 +125,7 @@ struct EntryStripView: View {
     ///   - Quick Look (⌘Y also works via the popup's key monitor)
     ///   - Share via the macOS share sheet (NSSharingServicePicker)
     ///   - Delete (tombstone + CloudKit push)
+    /// plus pin, time-pivot, and sticky-note actions (Add/Edit/Remove Note).
     @ViewBuilder
     private func contextMenu(
         for row: EntryRepository.EntryRow,
@@ -156,6 +161,24 @@ struct EntryStripView: View {
                 Label("Unpin", systemImage: "pin.slash")
             } else {
                 Label("Pin", systemImage: "pin")
+            }
+        }
+
+        Button {
+            guard let id = row.entry.id else { return }
+            state.selectedIndex = index
+            state.beginNoteEdit(entryId: id)
+        } label: {
+            Label(row.entry.note == nil ? "Add Note…" : "Edit Note…", systemImage: "note.text")
+        }
+        .keyboardShortcut("n", modifiers: .command)
+
+        if row.entry.note != nil {
+            Button {
+                guard let id = row.entry.id else { return }
+                state.setNote(id: id, note: nil)
+            } label: {
+                Label("Remove Note", systemImage: "minus.circle")
             }
         }
 
