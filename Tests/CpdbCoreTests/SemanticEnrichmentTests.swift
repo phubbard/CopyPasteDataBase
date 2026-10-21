@@ -127,7 +127,7 @@ struct SemanticEnrichmentTests {
         let candidates = Set(try repo.entriesNeedingEmbedding(modelId: "nl-v1", revision: 1, limit: 10))
         #expect(candidates.contains(textId))
         #expect(candidates.contains(linkId))
-        #expect(!candidates.contains(imageId), "image-kind entries should never be embedding candidates")
+        #expect(!candidates.contains(imageId), "image-kind entries without a note should never be embedding candidates")
     }
 
     @Test("entriesNeedingEmbedding excludes deleted entries")

@@ -61,6 +61,18 @@ public enum EmbeddingService {
         return Int64(model.dimension)
     }
 
+    /// The text an entry is embedded from: its `text_preview`, then the
+    /// user's sticky note after a paragraph break, so the note is
+    /// semantically searchable. Blank parts are dropped — an annotated
+    /// screenshot has no preview, so its note is the whole input — and nil
+    /// means nothing is embeddable. Without a note this is exactly
+    /// `text_preview`, the same input `Ingestor`'s capture hook uses.
+    public static func inputText(textPreview: String?, note: String?) -> String? {
+        let parts = [textPreview, note].compactMap { $0 }
+            .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        return parts.isEmpty ? nil : parts.joined(separator: "\n\n")
+    }
+
     /// Embed `text`: split into ≤`maxTokensPerChunk`-token chunks along
     /// paragraph/sentence boundaries, mean-pool each chunk's per-token
     /// vectors, mean-pool across chunks, then L2-normalize. Returns nil if

@@ -585,25 +585,7 @@ struct AnalyzeImages: ParsableCommand {
                 """,
                 arguments: [ocrText, imageTags, now, entryId]
             )
-            if let row = try Row.fetchOne(
-                db,
-                sql: """
-                    SELECT e.title, e.text_preview, a.name AS app_name
-                    FROM entries e LEFT JOIN apps a ON a.id = e.source_app_id
-                    WHERE e.id = ?
-                """,
-                arguments: [entryId]
-            ) {
-                try FtsIndex.indexEntry(
-                    db: db,
-                    entryId: entryId,
-                    title: row["title"],
-                    text: row["text_preview"],
-                    appName: row["app_name"],
-                    ocrText: ocrText,
-                    imageTags: imageTags
-                )
-            }
+            try EntryRepository.reindexFts(entryId: entryId, in: db)
             // Enqueue for CloudKit push in the same transaction as the
             // analysis write — otherwise a CLI backfill's OCR/tags never
             // leave this machine (the entry's own insert push, if any,

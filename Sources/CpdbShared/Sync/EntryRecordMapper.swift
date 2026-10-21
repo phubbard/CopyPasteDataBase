@@ -120,6 +120,13 @@ public enum EntryRecordMapper {
         record[CKSchema.EntryField.aiTitle]    = entry.aiTitle   as NSString?
         record[CKSchema.EntryField.aiSummary]  = entry.aiSummary as NSString?
 
+        // User note (schema v15). Never nil on the wire: a local NULL
+        // ships as "" so a deliberate clear overwrites the server's old
+        // note, and so a peer can tell this sender is notes-aware. Absent
+        // is reserved for senders that predate notes — see
+        // `CKSchema.EntryField.note`.
+        record[CKSchema.EntryField.note] = (entry.note ?? "") as NSString
+
         // Embedding lives in a separate local table (`entry_embeddings`),
         // so it isn't on `entry` itself — the caller loads it and passes
         // it in. Nil clears all four wire fields (matches "no local
@@ -203,6 +210,12 @@ public enum EntryRecordMapper {
         /// Foundation-Models-generated summary (schema v12). Adopt-once:
         /// nil = no device has enriched this yet.
         public var aiSummary: String?
+        /// The user's sticky note (schema v15), as it appears on the wire
+        /// — NOT the local column's convention. Nil = field absent (the
+        /// sender predates notes: preserve the local note); "" = the
+        /// sender deliberately has no note (clear the local one);
+        /// otherwise the note text. `CloudKitSyncer.upsert` resolves it.
+        public var note: String?
         /// Semantic-search embedding (schema v12). Nil when the
         /// originating device has no local embedding row for this entry,
         /// or any of the four wire fields is missing.
@@ -284,6 +297,9 @@ public enum EntryRecordMapper {
             chipsJson: record[CKSchema.EntryField.chipsJson] as? String,
             aiTitle:   record[CKSchema.EntryField.aiTitle] as? String,
             aiSummary: record[CKSchema.EntryField.aiSummary] as? String,
+            // Deliberately NOT collapsed: nil (absent) and "" (cleared)
+            // are different instructions to the pull path.
+            note: record[CKSchema.EntryField.note] as? String,
             embedding: decodeEmbedding(record)
         )
     }

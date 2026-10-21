@@ -70,17 +70,18 @@ struct DatabaseMigrationTests {
         }
     }
 
-    @Test("entries_fts has the v8 column layout (title + 5 content cols + link_title)")
+    @Test("entries_fts has the v15 column layout (title + 5 content cols + link_title + note)")
     func ftsLatestColumnLayout() throws {
         let store = try Store.inMemory()
         try store.dbQueue.read { db in
             // fts5 virtual tables expose columns via normal pragma.
             // v2 brought the table to 5 cols (added ocr_text +
             // image_tags); v8 added link_title for fetched page
-            // titles. Update this list when the schema grows.
+            // titles; v15 added note for the user's sticky note.
+            // Update this list when the schema grows.
             let cols = try Row.fetchAll(db, sql: "PRAGMA table_info(entries_fts)")
                 .map { $0["name"] as String }
-            #expect(cols == ["title", "text", "app_name", "ocr_text", "image_tags", "link_title"])
+            #expect(cols == ["title", "text", "app_name", "ocr_text", "image_tags", "link_title", "note"])
         }
     }
 
@@ -220,6 +221,141 @@ struct DatabaseMigrationTests {
             try db.execute(sql: "DELETE FROM entries WHERE id = ?", arguments: [entry.id])
             let countAfter = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM entry_embeddings")
             #expect(countAfter == 0)
+        }
+    }
+
+    // MARK: - v15 entry notes
+
+    /// The full migrator, for tests that stop it part-way
+    /// (`migrate(_:upTo:)`) to seed pre-upgrade data, then run the rest.
+    private func makeMigrator() -> DatabaseMigrator {
+        var migrator = DatabaseMigrator()
+        Schema.registerMigrations(in: &migrator)
+        return migrator
+    }
+
+    @Test("v15 adds a nullable note column to entries")
+    func v15AddsNoteColumn() throws {
+        let store = try Store.inMemory()
+        try store.dbQueue.read { db in
+            let info = try Row.fetchAll(db, sql: "PRAGMA table_info(entries)")
+            let note = try #require(info.first { ($0["name"] as String) == "note" })
+            #expect(note["type"] as String == "TEXT")
+            #expect(note["notnull"] as Int == 0)
+            #expect(note["dflt_value"] as String? == nil)
+        }
+    }
+
+    @Test("v15 rebuilds entries_fts with note searchable as its own column")
+    func v15FtsHasSearchableNoteColumn() throws {
+        let store = try Store.inMemory()
+        try store.dbQueue.write { db in
+            var device = Device(identifier: "D15", name: "M", kind: "mac")
+            try device.insert(db)
+            var entry = Entry(
+                uuid: Data(repeating: 0x51, count: 16), createdAt: 1, capturedAt: 1, kind: .text,
+                sourceDeviceId: device.id!, textPreview: "plain body",
+                contentHash: Data(repeating: 0x52, count: 32), totalSize: 1, note: "marginalia text")
+            try entry.insert(db)
+            try FtsIndex.indexEntry(
+                db: db, entryId: entry.id!, title: nil, text: entry.textPreview, appName: nil,
+                note: entry.note)
+
+            let inNote = try Int64.fetchAll(db, sql: "SELECT rowid FROM entries_fts WHERE entries_fts MATCH 'note:marginalia'")
+            #expect(inNote == [entry.id!])
+            // Column-scoped: the word lives only in `note`, not in `text`.
+            let inText = try Int64.fetchAll(db, sql: "SELECT rowid FROM entries_fts WHERE entries_fts MATCH 'text:marginalia'")
+            #expect(inText.isEmpty)
+        }
+    }
+
+    @Test("v15 upgrade keeps every live row searchable, leaves notes NULL, and skips tombstones")
+    func v15ReindexPreservesRows() throws {
+        let queue = try DatabaseQueue()
+        let migrator = makeMigrator()
+        try migrator.migrate(queue, upTo: "v14_recency_index")
+
+        // Pre-upgrade state: the v14 FTS layout (no note column).
+        let preCols = try queue.read { db in
+            try Row.fetchAll(db, sql: "PRAGMA table_info(entries_fts)").map { $0["name"] as String }
+        }
+        #expect(preCols == ["title", "text", "app_name", "ocr_text", "image_tags", "link_title"])
+
+        let (liveId, tombId) = try queue.write { db -> (Int64, Int64) in
+            try db.execute(sql: "INSERT INTO apps (bundle_id, name) VALUES ('com.example.App', 'Quillpad')")
+            try db.execute(sql: "INSERT INTO devices (identifier, name, kind) VALUES ('D14', 'M', 'mac')")
+            func insert(_ byte: UInt8, deletedAt: Double?, title: String, text: String, ocr: String, link: String) throws -> Int64 {
+                try db.execute(
+                    sql: """
+                        INSERT INTO entries (uuid, created_at, captured_at, kind, source_app_id, source_device_id,
+                                             title, text_preview, content_hash, total_size, deleted_at, ocr_text, link_title)
+                        VALUES (?, 1, 1, 'text', 1, 1, ?, ?, ?, 1, ?, ?, ?)
+                        """,
+                    arguments: [Data(repeating: byte, count: 16), title, text, Data(repeating: byte, count: 32), deletedAt, ocr, link])
+                let id = db.lastInsertedRowID
+                if deletedAt == nil {
+                    try db.execute(
+                        sql: """
+                            INSERT INTO entries_fts(rowid, title, text, app_name, ocr_text, image_tags, link_title)
+                            VALUES (?, ?, ?, 'Quillpad', ?, '', ?)
+                            """,
+                        arguments: [id, title, text, ocr, link])
+                }
+                return id
+            }
+            return (
+                try insert(0x61, deletedAt: nil, title: "live headline", text: "live payload", ocr: "ocrword", link: "linkword"),
+                try insert(0x62, deletedAt: 5, title: "dead headline", text: "dead payload", ocr: "", link: "")
+            )
+        }
+
+        try migrator.migrate(queue)
+
+        try queue.read { db in
+            let cols = try Row.fetchAll(db, sql: "PRAGMA table_info(entries_fts)").map { $0["name"] as String }
+            #expect(cols == ["title", "text", "app_name", "ocr_text", "image_tags", "link_title", "note"])
+            // Every searchable column of the live row carried over,
+            // including the joined app name.
+            for word in ["headline", "payload", "ocrword", "linkword", "quillpad"] {
+                let ids = try Int64.fetchAll(db, sql: "SELECT rowid FROM entries_fts WHERE entries_fts MATCH ?", arguments: [word])
+                #expect(ids == [liveId], "expected '\(word)' to find only the live row")
+            }
+            // The tombstone was never in FTS and the rebuild must not add it.
+            #expect(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM entries_fts WHERE rowid = ?", arguments: [tombId]) == 0)
+            #expect(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM entries_fts") == 1)
+            // Existing rows start with no note, in both places.
+            #expect(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM entries WHERE note IS NOT NULL") == 0)
+            #expect(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM entries_fts WHERE note != ''") == 0)
+        }
+    }
+
+    @Test("running v15 again is a no-op: the rebuilt FTS and stored notes are untouched")
+    func v15SecondRunIsNoOp() throws {
+        let queue = try DatabaseQueue()
+        let migrator = makeMigrator()
+        try migrator.migrate(queue)
+        let id = try queue.write { db -> Int64 in
+            try db.execute(sql: "INSERT INTO devices (identifier, name, kind) VALUES ('D', 'M', 'mac')")
+            try db.execute(
+                sql: """
+                    INSERT INTO entries (uuid, created_at, captured_at, kind, source_device_id, text_preview, content_hash, total_size, note)
+                    VALUES (?, 1, 1, 'text', 1, 'body', ?, 1, 'durable note')
+                    """,
+                arguments: [Data(repeating: 0x71, count: 16), Data(repeating: 0x72, count: 32)])
+            let id = db.lastInsertedRowID
+            try FtsIndex.indexEntry(db: db, entryId: id, title: nil, text: "body", appName: nil, note: "durable note")
+            return id
+        }
+
+        try migrator.migrate(queue)   // already at v15: GRDB skips it
+
+        try queue.read { db in
+            let stored = try String.fetchOne(db, sql: "SELECT note FROM entries WHERE id = ?", arguments: [id])
+            let found = try Int64.fetchAll(db, sql: "SELECT rowid FROM entries_fts WHERE entries_fts MATCH 'note:durable'")
+            let applied = try migrator.appliedIdentifiers(db)
+            #expect(stored == "durable note")
+            #expect(found == [id])
+            #expect(applied.contains("v15_entry_notes"))
         }
     }
 

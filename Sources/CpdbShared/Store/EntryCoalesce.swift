@@ -2,9 +2,9 @@ import Foundation
 import GRDB
 
 /// Merge same-identity sibling entries onto one survivor, preserving
-/// everything user-visible or expensively derived: pins, pinboard
-/// memberships, link enrichment, OCR/image analysis, preview thumbnails,
-/// and rich flavors the survivor lacks.
+/// everything user-visible or expensively derived: pins, sticky notes,
+/// pinboard memberships, link enrichment, OCR/image analysis, preview
+/// thumbnails, and rich flavors the survivor lacks.
 ///
 /// This is the SHARED coalesce path (docs/canonical-hash-v2.md §4.3 step 3
 /// + §5.3): the identity-cutover collision merge, the pull-side uuid-merge
@@ -53,7 +53,7 @@ public enum EntryCoalesce {
             db,
             sql: """
                 SELECT title, text_preview, link_title, link_fetched_at,
-                       ocr_text, image_tags, analyzed_at, body_evicted_at
+                       ocr_text, image_tags, analyzed_at, body_evicted_at, note
                 FROM entries WHERE id = ?
                 """,
             arguments: [survivorId]
@@ -91,6 +91,23 @@ public enum EntryCoalesce {
                     """,
                 arguments: [survivorId]
             )
+        }
+        // Sticky note: user data, not a re-derivation, so the survivor's
+        // own note is never overwritten — a donor's (most recently edited
+        // first) is adopted only when the survivor has none. The
+        // survivor's embedding predates the adopted note; drop it so the
+        // sweep re-embeds.
+        if (survivor?["note"] as String?) == nil,
+           let donorNote = try String.fetchOne(
+               db,
+               sql: """
+                   SELECT note FROM entries
+                   WHERE id IN (\(idList)) AND note IS NOT NULL
+                   ORDER BY modified_at DESC LIMIT 1
+                   """
+           ) {
+            try db.execute(sql: "UPDATE entries SET note = ? WHERE id = ?", arguments: [donorNote, survivorId])
+            try db.execute(sql: "DELETE FROM entry_embeddings WHERE entry_id = ?", arguments: [survivorId])
         }
         if (survivor?["analyzed_at"] as Double?) == nil {
             try db.execute(
@@ -170,7 +187,7 @@ public enum EntryCoalesce {
         let post = try Row.fetchOne(
             db,
             sql: """
-                SELECT e.title, e.text_preview, e.ocr_text, e.image_tags, e.link_title,
+                SELECT e.title, e.text_preview, e.ocr_text, e.image_tags, e.link_title, e.note,
                        a.name AS app_name
                 FROM entries e LEFT JOIN apps a ON a.id = e.source_app_id
                 WHERE e.id = ?
@@ -185,7 +202,8 @@ public enum EntryCoalesce {
             appName: post?["app_name"],
             ocrText: post?["ocr_text"],
             imageTags: post?["image_tags"],
-            linkTitle: post?["link_title"]
+            linkTitle: post?["link_title"],
+            note: post?["note"]
         )
     }
 }

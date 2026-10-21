@@ -114,6 +114,17 @@ public enum CKSchema {
         public static let embeddingModelId   = "embeddingModelId"  // String?
         public static let embeddingRevision  = "embeddingRevision" // Int64?
         public static let embeddingDims      = "embeddingDims"     // Int64?
+        // Schema v15: the user's sticky note. USER DATA, not enrichment —
+        // it rides the same last-writer-wins on `modifiedAt` as `pinned`.
+        // Unlike every other optional field, absent and empty-string MEAN
+        // DIFFERENT THINGS: a notes-aware sender always writes the field
+        // ("" when the entry has no note), so
+        //   - absent → the sender predates notes. Preserve the local note
+        //     even if this record wins LWW (a pin toggled on a
+        //     not-yet-updated device must not wipe notes);
+        //   - ""     → deliberate clear. Clear the local note.
+        // Same failure class as the historical OCR-empty-overwrite bug.
+        public static let note               = "note"             // String ("" = no note / cleared)
     }
 
     public enum FlavorField {

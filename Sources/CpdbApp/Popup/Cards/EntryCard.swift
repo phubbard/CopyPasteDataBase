@@ -134,6 +134,8 @@ struct EntryCard: View {
                 badgeCapsule(label: "OCR", color: .accentColor)
             case .tag:
                 badgeCapsule(label: "tag", color: .green)
+            case .note:
+                badgeCapsule(label: "note", color: .orange)
             case .multiple:
                 badgeCapsule(label: "•••", color: .purple)
             case .semantic:

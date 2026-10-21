@@ -1,6 +1,8 @@
 import Foundation
+import GRDB
 
-/// Self-heals text/link entries missing an on-device semantic embedding.
+/// Self-heals text/link entries — and any entry carrying a sticky note —
+/// missing an on-device semantic embedding.
 /// Mirrors `ImageAnalysisSweeper`'s architecture and rationale — see that
 /// type's doc comment for the two gaps this class of sweeper closes:
 ///
@@ -119,8 +121,7 @@ public struct EmbeddingSweeper {
         for entryId in candidates {
             do {
                 guard let entry = try repository.fetch(id: entryId),
-                      let text = entry.textPreview,
-                      !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                      let text = EmbeddingService.inputText(textPreview: entry.textPreview, note: entry.note)
                 else {
                     report.skippedEmpty += 1
                     continue
@@ -129,7 +130,16 @@ public struct EmbeddingSweeper {
                     report.skippedEmpty += 1
                     continue
                 }
-                try await repository.store.dbQueue.write { db in
+                let embeddedNote = entry.note
+                let saved = try await repository.store.dbQueue.write { db -> Bool in
+                    // The embed above is async; a note edit that landed
+                    // meanwhile deleted the (then-absent) embedding row
+                    // and would otherwise be followed by this vector,
+                    // computed from the old note, persisting forever.
+                    // Leave the row absent so the next pass re-embeds.
+                    let currentNote = try String.fetchOne(
+                        db, sql: "SELECT note FROM entries WHERE id = ?", arguments: [entryId])
+                    guard currentNote == embeddedNote else { return false }
                     try EntryRepository.saveEmbedding(
                         entryId: entryId,
                         modelId: EmbeddingService.modelId,
@@ -145,7 +155,9 @@ public struct EmbeddingSweeper {
                     // this sweep is the self-heal path, running well
                     // after capture) would never reach sibling devices.
                     try PushQueue.enqueue(entryId: entryId, in: db)
+                    return true
                 }
+                guard saved else { continue }
                 await EmbeddingIndex.shared.invalidate()
                 report.embedded += 1
             } catch {

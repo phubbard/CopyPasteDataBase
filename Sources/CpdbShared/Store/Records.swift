@@ -84,6 +84,12 @@ public struct Entry: Codable, FetchableRecord, MutablePersistableRecord, Hashabl
     /// failing entry doesn't starve every older candidate forever. See
     /// the `v13_ai_enrichment_retry_cap` migration.
     public var aiRetryCount: Int = 0
+    /// User-authored sticky note ("annotate a screenshot"). NULL = none;
+    /// never the empty string — `EntryRepository.setNote` normalizes
+    /// empty and whitespace-only input to NULL. User data, not
+    /// enrichment: edits bump `modifiedAt` and resolve last-writer-wins
+    /// on pull. Indexed by FTS5 and folded into the embedding input text.
+    public var note: String?
 
     public static let databaseTableName = "entries"
 
@@ -115,6 +121,7 @@ public struct Entry: Codable, FetchableRecord, MutablePersistableRecord, Hashabl
         case aiTitle         = "ai_title"
         case aiSummary       = "ai_summary"
         case aiRetryCount    = "ai_retry_count"
+        case note
     }
 
     public mutating func didInsert(_ inserted: InsertionSuccess) {
@@ -148,7 +155,8 @@ public struct Entry: Codable, FetchableRecord, MutablePersistableRecord, Hashabl
         chipsJson: String? = nil,
         aiTitle: String? = nil,
         aiSummary: String? = nil,
-        aiRetryCount: Int = 0
+        aiRetryCount: Int = 0,
+        note: String? = nil
     ) {
         self.id = id
         self.uuid = uuid
@@ -177,6 +185,7 @@ public struct Entry: Codable, FetchableRecord, MutablePersistableRecord, Hashabl
         self.aiTitle = aiTitle
         self.aiSummary = aiSummary
         self.aiRetryCount = aiRetryCount
+        self.note = note
     }
 }
 

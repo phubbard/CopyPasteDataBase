@@ -577,5 +577,62 @@ enum Schema {
                     WHERE deleted_at IS NULL;
                 """)
         }
+
+        migrator.registerMigration("v15_entry_notes") { db in
+            // User-authored sticky note on an entry. Unlike the adopt-once
+            // enrichment columns this is USER DATA: it follows the
+            // `pinned` precedent (bumps modified_at, last-writer-wins on
+            // pull), not the chips/ai_* adopt-once convention.
+            //
+            //   note — NULL = no note. Never the empty string locally:
+            //          `EntryRepository.setNote` normalizes empty and
+            //          whitespace-only input to NULL. (On the CloudKit
+            //          wire the distinction flips — see
+            //          `EntryRecordMapper`: absent = "sender predates
+            //          notes, preserve", "" = deliberate clear.)
+            try db.execute(sql: "ALTER TABLE entries ADD COLUMN note TEXT;")
+
+            // FTS5 doesn't support ALTER. Drop + recreate with the new
+            // column appended, then reindex every live row. Same dance as
+            // v8's link_title addition.
+            try db.execute(sql: "DROP TABLE entries_fts;")
+            try db.execute(sql: """
+                CREATE VIRTUAL TABLE entries_fts USING fts5(
+                    title,
+                    text,
+                    app_name,
+                    ocr_text,
+                    image_tags,
+                    link_title,
+                    note,
+                    tokenize='porter unicode61 remove_diacritics 2'
+                );
+            """)
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT e.id, e.title, e.text_preview, a.name AS app_name,
+                       e.ocr_text, e.image_tags, e.link_title, e.note
+                FROM entries e
+                LEFT JOIN apps a ON a.id = e.source_app_id
+                WHERE e.deleted_at IS NULL
+            """)
+            for row in rows {
+                try db.execute(
+                    sql: """
+                        INSERT INTO entries_fts(rowid, title, text, app_name, ocr_text, image_tags, link_title, note)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    arguments: [
+                        row["id"] as Int64,
+                        (row["title"] as String?) ?? "",
+                        (row["text_preview"] as String?) ?? "",
+                        (row["app_name"] as String?) ?? "",
+                        (row["ocr_text"] as String?) ?? "",
+                        (row["image_tags"] as String?) ?? "",
+                        (row["link_title"] as String?) ?? "",
+                        (row["note"] as String?) ?? "",
+                    ]
+                )
+            }
+        }
     }
 }

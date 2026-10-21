@@ -1267,7 +1267,10 @@ public actor CloudKitSyncer {
         // passively-used Mac with a warm popup index would keep serving
         // a semantic search that's silently missing every pulled entry
         // until an unrelated local capture happened to invalidate it.
-        if entriesSnapshot.contains(where: { $0.embedding != nil }) {
+        //
+        // A pulled note can also delete a now-stale local embedding row
+        // (`upsert`), so any record carrying the note field counts too.
+        if entriesSnapshot.contains(where: { $0.embedding != nil || $0.note != nil }) {
             await EmbeddingIndex.shared.invalidate()
         }
 
@@ -1479,10 +1482,24 @@ public actor CloudKitSyncer {
             // a few lines down when the remote wins.
             let localModifiedAtBeforePull = existing.modifiedAt
             let remoteMutationWins = d.modifiedAt >= existing.modifiedAt
+            var noteChanged = false
+            var repushNote = false
             if remoteMutationWins {
                 existing.deletedAt  = d.deletedAt
                 existing.pinned     = d.pinned
                 existing.modifiedAt = d.modifiedAt
+                // The sticky note is user data and rides the same LWW —
+                // except that an ABSENT wire field (sender predates
+                // notes) keeps the local note even though the remote
+                // record won. See `resolvedNote`.
+                let note = Self.resolvedNote(local: existing.note, remote: d.note)
+                noteChanged = note != existing.note
+                // Pushes overwrite the whole server record, so the
+                // not-yet-updated sender's push also dropped the note
+                // from the server. Re-push ours (below) so a device that
+                // hasn't pulled yet doesn't lose it for good.
+                repushNote = d.note == nil && existing.note != nil
+                existing.note = note
             }
             // else keep local deleted_at / pinned / modified_at — our
             // local mutation is newer and already pushed; the sibling that
@@ -1526,6 +1543,15 @@ public actor CloudKitSyncer {
             if existing.aiTitle == nil { existing.aiTitle = d.aiTitle }
             if existing.aiSummary == nil { existing.aiSummary = d.aiSummary }
             try existing.update(db)
+            // A note change makes the local vector stale (it was embedded
+            // from the old note). Drop it so the adopt-once step below
+            // takes the remote's, or `EmbeddingSweeper` re-embeds.
+            if noteChanged {
+                try db.execute(sql: "DELETE FROM entry_embeddings WHERE entry_id = ?", arguments: [existing.id!])
+            }
+            if repushNote {
+                try PushQueue.enqueue(entryId: existing.id!, in: db)
+            }
             // Embedding lives in its own table, same adopt-once rule:
             // only take the remote embedding if we don't already have
             // one locally. (Revision-based re-adoption is a decision for
@@ -1560,7 +1586,8 @@ public actor CloudKitSyncer {
                     appName: d.source.appName,
                     ocrText: existing.ocrText,
                     imageTags: existing.imageTags,
-                    linkTitle: existing.linkTitle
+                    linkTitle: existing.linkTitle,
+                    note: existing.note
                 )
             } else {
                 try FtsIndex.removeEntry(db: db, entryId: existing.id!)
@@ -1689,7 +1716,10 @@ public actor CloudKitSyncer {
                 modifiedAt: d.modifiedAt,
                 chipsJson: d.chipsJson,
                 aiTitle: d.aiTitle,
-                aiSummary: d.aiSummary
+                aiSummary: d.aiSummary,
+                // No local note to preserve on a brand-new row: absent
+                // and "" both mean none.
+                note: EntryRepository.normalizedNote(d.note)
             )
             // Insert hardening: a uuid (or content_hash) unique-constraint
             // collision must NOT abort the whole page's write transaction
@@ -1712,7 +1742,8 @@ public actor CloudKitSyncer {
                 appName: d.source.appName,
                 ocrText: entry.ocrText,
                 imageTags: entry.imageTags,
-                linkTitle: entry.linkTitle
+                linkTitle: entry.linkTitle,
+                note: entry.note
             )
             try applyThumbnails(d, entryId: entry.id!, in: db)
             try drainOrphanFlavors(forHash: d.contentHash, entryId: entry.id!, blobs: blobs, in: db)
@@ -1825,10 +1856,20 @@ public actor CloudKitSyncer {
                 sql: "UPDATE entries SET link_title = ?, link_fetched_at = ? WHERE id = ?",
                 arguments: [d.linkTitle, d.linkFetchedAt, local.id!])
         }
+        // No LWW on this path (modified_at isn't compared), so a remote
+        // "" can't be told from "never had a note": only ever ADOPT a
+        // note into a row that has none, never overwrite or clear.
+        let adoptedNote = local.note == nil ? EntryRepository.normalizedNote(d.note) : nil
+        if let adoptedNote {
+            try db.execute(
+                sql: "UPDATE entries SET note = ? WHERE id = ?", arguments: [adoptedNote, local.id!])
+            try db.execute(sql: "DELETE FROM entry_embeddings WHERE entry_id = ?", arguments: [local.id!])
+        }
         try FtsIndex.indexEntry(
             db: db, entryId: local.id!, title: d.title, text: d.textPreview,
             appName: d.source.appName, ocrText: d.ocrText, imageTags: d.imageTags,
-            linkTitle: d.linkFetchedAt != nil ? d.linkTitle : local.linkTitle)
+            linkTitle: d.linkFetchedAt != nil ? d.linkTitle : local.linkTitle,
+            note: adoptedNote ?? local.note)
         try applyThumbnails(d, entryId: local.id!, in: db)
         try drainOrphanFlavors(forHash: d.contentHash, entryId: local.id!, blobs: blobs, in: db)
         // Re-enqueue: our re-keyed row now matches the remote record name,
@@ -1837,6 +1878,20 @@ public actor CloudKitSyncer {
         try PushQueue.enqueue(entryId: local.id!, in: db, now: now)
         Self.recordForkResolved()
         return .updated
+    }
+
+    /// Pure resolution of a sticky note when an inbound remote record
+    /// WON last-writer-wins and is applied onto an existing local row.
+    /// `remote` is the wire value (`EntryRecordMapper.Decoded.note`):
+    ///   - nil  → field absent, the sender predates notes. Keep `local`
+    ///            even though the remote won — otherwise a pin toggled
+    ///            on a not-yet-updated device would silently wipe notes
+    ///            (same class as the historical OCR-empty-overwrite bug);
+    ///   - ""   → deliberate clear (blank text normalizes the same way);
+    ///   - text → replaces `local`.
+    static func resolvedNote(local: String?, remote: String?) -> String? {
+        guard let remote else { return local }
+        return EntryRepository.normalizedNote(remote)
     }
 
     /// Pure decision: after a pull applies an inbound remote record onto

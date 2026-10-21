@@ -363,36 +363,8 @@ public struct EntryRepository {
                 """,
                 arguments: [title, now, entryId]
             )
-            // Re-index FTS so the new title is searchable. Pull
-            // current scalar columns rather than risk a stale read.
-            if let row = try Row.fetchOne(
-                db,
-                sql: """
-                    SELECT title, text_preview, ocr_text, image_tags
-                    FROM entries WHERE id = ?
-                """,
-                arguments: [entryId]
-            ) {
-                let appName: String? = try Row.fetchOne(
-                    db,
-                    sql: """
-                        SELECT a.name FROM entries e
-                        LEFT JOIN apps a ON a.id = e.source_app_id
-                        WHERE e.id = ?
-                    """,
-                    arguments: [entryId]
-                )?["name"] as String?
-                try FtsIndex.indexEntry(
-                    db: db,
-                    entryId: entryId,
-                    title: row["title"] as String?,
-                    text: row["text_preview"] as String?,
-                    appName: appName,
-                    ocrText: row["ocr_text"] as String?,
-                    imageTags: row["image_tags"] as String?,
-                    linkTitle: title
-                )
-            }
+            // Re-index FTS so the new title is searchable.
+            try Self.reindexFts(entryId: entryId, in: db)
             try PushQueue.enqueue(entryId: entryId, in: db, now: now)
         }
     }
@@ -539,6 +511,86 @@ public struct EntryRepository {
         }
     }
 
+    /// Set, replace, or clear the user's sticky note on a live entry.
+    /// `nil`, empty, and whitespace-only input all clear it (stored as
+    /// NULL — the column never holds ""). Non-blank text is stored
+    /// verbatim.
+    ///
+    /// A note is user data, so it follows `setPinned` rather than the
+    /// enrichment setters: a real change bumps `modified_at` (so it wins
+    /// last-writer-wins on sibling devices) and enqueues a CloudKit push;
+    /// writing the note the row already has no-ops. In the same
+    /// transaction it rewrites the FTS row and deletes the entry's
+    /// embedding, so `EmbeddingSweeper` re-embeds with the note folded in
+    /// (`EmbeddingService.inputText`) — an image with a note becomes a
+    /// sweep candidate; one whose note was cleared stops being one.
+    public func setNote(id: Int64, note: String?) throws {
+        let normalized = Self.normalizedNote(note)
+        let now = Date().timeIntervalSince1970
+        let droppedEmbedding = try store.dbQueue.write { db -> Bool in
+            try db.execute(
+                sql: """
+                    UPDATE entries
+                    SET note = ?, modified_at = ?
+                    WHERE id = ? AND deleted_at IS NULL AND note IS NOT ?
+                """,
+                arguments: [normalized, now, id, normalized]
+            )
+            guard db.changesCount > 0 else { return false }
+            try Self.reindexFts(entryId: id, in: db)
+            try db.execute(sql: "DELETE FROM entry_embeddings WHERE entry_id = ?", arguments: [id])
+            let dropped = db.changesCount > 0
+            try PushQueue.enqueue(entryId: id, in: db, now: now)
+            return dropped
+        }
+        // The in-memory search buffer must not keep serving the deleted
+        // vector (see `EmbeddingIndex`'s invalidation contract).
+        if droppedEmbedding {
+            Task { await EmbeddingIndex.shared.invalidate() }
+        }
+    }
+
+    /// The sticky note on a live entry, or nil if it has none or the
+    /// entry is missing or tombstoned.
+    public func note(id: Int64) throws -> String? {
+        try store.dbQueue.read { db in
+            try String.fetchOne(
+                db, sql: "SELECT note FROM entries WHERE id = ? AND deleted_at IS NULL", arguments: [id])
+        }
+    }
+
+    /// Blank (empty or whitespace-only) → nil; anything else unchanged.
+    /// The single normalization point for notes: `setNote` on the way in,
+    /// and the pull path on a note that arrived over the wire.
+    static func normalizedNote(_ note: String?) -> String? {
+        guard let note, !note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        return note
+    }
+
+    /// Rewrite an entry's FTS row from its current `entries` + `apps`
+    /// columns. For writers that change ONE searchable column and must
+    /// not drop the others — `FtsIndex.indexEntry` replaces the whole row,
+    /// so a caller that re-indexes by hand has to remember every column
+    /// (`link_title`, `note`, …) or silently loses it from search. Does
+    /// not check liveness: callers decide whether the row belongs in FTS.
+    public static func reindexFts(entryId: Int64, in db: Database) throws {
+        guard let row = try Row.fetchOne(
+            db,
+            sql: """
+                SELECT e.title, e.text_preview, e.ocr_text, e.image_tags, e.link_title, e.note,
+                       a.name AS app_name
+                FROM entries e LEFT JOIN apps a ON a.id = e.source_app_id
+                WHERE e.id = ?
+                """,
+            arguments: [entryId]
+        ) else { return }
+        try FtsIndex.indexEntry(
+            db: db, entryId: entryId,
+            title: row["title"], text: row["text_preview"], appName: row["app_name"],
+            ocrText: row["ocr_text"], imageTags: row["image_tags"], linkTitle: row["link_title"],
+            note: row["note"])
+    }
+
     /// Tombstone a single entry (user-initiated delete). Sets
     /// `deleted_at` on the row, removes the FTS shadow, and enqueues
     /// for CloudKit push so the tombstone propagates to iOS and
@@ -592,21 +644,7 @@ public struct EntryRepository {
             )
             guard db.changesCount > 0 else { return false }
             // Re-index FTS from the row's current fields.
-            if let row = try Row.fetchOne(
-                db,
-                sql: """
-                    SELECT e.title, e.text_preview, e.ocr_text, e.image_tags, e.link_title,
-                           a.name AS app_name
-                    FROM entries e LEFT JOIN apps a ON a.id = e.source_app_id
-                    WHERE e.id = ?
-                    """,
-                arguments: [id]
-            ) {
-                try FtsIndex.indexEntry(
-                    db: db, entryId: id,
-                    title: row["title"], text: row["text_preview"], appName: row["app_name"],
-                    ocrText: row["ocr_text"], imageTags: row["image_tags"], linkTitle: row["link_title"])
-            }
+            try Self.reindexFts(entryId: id, in: db)
             try PushQueue.enqueue(entryId: id, in: db, now: now)
             return true
         }
@@ -860,11 +898,14 @@ public struct EntryRepository {
         }
     }
 
-    /// Live text/link entries that need a (re-)embed: either they have no
-    /// `entry_embeddings` row yet, or their existing row doesn't match
-    /// the caller's current `modelId`/`revision` (a model upgrade or a
-    /// revision bump). Newest-first, mirroring `imagesNeedingAnalysis` —
-    /// the background embedder works through recent captures first.
+    /// Live text/link entries — plus any entry of another kind that
+    /// carries a sticky note (an annotated screenshot has no text of its
+    /// own; the note is its whole embedding input) — that need a
+    /// (re-)embed: either they have no `entry_embeddings` row yet, or
+    /// their existing row doesn't match the caller's current
+    /// `modelId`/`revision` (a model upgrade or a revision bump).
+    /// Newest-first, mirroring `imagesNeedingAnalysis` — the background
+    /// embedder works through recent captures first.
     public func entriesNeedingEmbedding(modelId: String, revision: Int64, limit: Int) throws -> [Int64] {
         try store.dbQueue.read { db in
             try Int64.fetchAll(
@@ -872,7 +913,7 @@ public struct EntryRepository {
                 sql: """
                     SELECT e.id FROM entries e
                     LEFT JOIN entry_embeddings v ON v.entry_id = e.id
-                    WHERE e.kind IN ('text', 'link') AND e.deleted_at IS NULL
+                    WHERE (e.kind IN ('text', 'link') OR e.note IS NOT NULL) AND e.deleted_at IS NULL
                       AND (v.entry_id IS NULL OR v.model_id != ? OR v.revision != ?)
                     ORDER BY e.created_at DESC
                     LIMIT ?

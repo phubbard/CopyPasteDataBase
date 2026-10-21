@@ -107,13 +107,7 @@ struct BackfillTitles: ParsableCommand {
                     arguments: [c.newTitle, c.newPreview, c.id]
                 )
                 // Re-index FTS5 so searching for the filename hits.
-                try FtsIndex.indexEntry(
-                    db: db,
-                    entryId: c.id,
-                    title: c.newTitle,
-                    text: c.newPreview,
-                    appName: nil
-                )
+                try EntryRepository.reindexFts(entryId: c.id, in: db)
                 // Push to CloudKit so iOS / other Macs pick up the
                 // cleaned values on next pull.
                 try PushQueue.enqueue(entryId: c.id, in: db, now: now)

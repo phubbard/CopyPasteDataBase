@@ -23,6 +23,7 @@ struct CpdbCommand: ParsableCommand {
             SearchCommand.self,
             Show.self,
             CopyCommand.self,
+            NoteCommand.self,
             Stats.self,
             RegenerateThumbnails.self,
             AnalyzeImages.self,

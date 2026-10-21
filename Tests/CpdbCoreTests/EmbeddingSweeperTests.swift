@@ -74,6 +74,29 @@ struct EmbeddingSweeperTests {
         #expect(report.skippedEmpty == 1)
     }
 
+    @Test("runOnce embeds an annotated image from its note alone")
+    func runOnceEmbedsNotedImage() async throws {
+        EmbeddingService.resetCacheForTesting()
+        let store = try Store.inMemory()
+        let id = try insertEntry(in: store, kind: .image, textPreview: nil)
+        let repo = EntryRepository(store: store)
+        let sweeper = EmbeddingSweeper(repository: repo)
+
+        // A bare screenshot has nothing to embed and isn't a candidate.
+        #expect(try await sweeper.runOnce(limit: 10).candidates == 0)
+
+        try repo.setNote(id: id, note: "whiteboard sketch of the sync architecture")
+        let report = try await sweeper.runOnce(limit: 10)
+        #expect(report.embedded == 1)
+        #expect(try repo.embedding(entryId: id) != nil)
+
+        // Editing the note drops the vector; the next pass re-embeds.
+        try repo.setNote(id: id, note: "lunch order")
+        #expect(try repo.embedding(entryId: id) == nil)
+        #expect(try await sweeper.runOnce(limit: 10).embedded == 1)
+        #expect(try repo.embedding(entryId: id) != nil)
+    }
+
     @Test("runOnce with no candidates is a no-op")
     func runOnceNoCandidates() async throws {
         EmbeddingService.resetCacheForTesting()

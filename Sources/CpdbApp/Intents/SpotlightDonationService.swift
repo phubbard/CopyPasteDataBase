@@ -48,6 +48,9 @@ struct SpotlightDonationPayload: Equatable {
     let contentText: String
     let date: Date
     let deepLink: URL?
+    /// The user's sticky note, if any — donated so System Search finds
+    /// the clip by what the user wrote about it.
+    let note: String?
 }
 
 /// Donates text/link entries into Spotlight (System Search) so they
@@ -254,7 +257,8 @@ final class SpotlightDonationService {
             title: ClipIntentSupport.displayTitle(for: row.entry, maxLength: 80),
             contentText: row.entry.textPreview ?? row.entry.title ?? "",
             date: Date(timeIntervalSince1970: row.entry.capturedAt),
-            deepLink: ClipDeepLink.url(forEntryId: id)
+            deepLink: ClipDeepLink.url(forEntryId: id),
+            note: row.entry.note
         )
     }
 
@@ -263,6 +267,10 @@ final class SpotlightDonationService {
         attrs.title = payload.title
         attrs.contentDescription = payload.contentText
         attrs.contentCreationDate = payload.date
+        // `comment` (kMDItemComment) is the attribute Spotlight indexes
+        // for free-text user annotations — the same slot a Finder
+        // comment occupies.
+        attrs.comment = payload.note
         // Non-file contentURL: tapping the result in System Search
         // opens this URL, which our `CFBundleURLTypes` registration
         // routes to `AppDelegate.application(_:open:)` →

@@ -622,6 +622,30 @@ Thumbnailer downscales raw bytes ≤ 4 MB; oversized / non-image
 content-types are rejected. The card renderer queries
 `previews.thumb_small` / `thumb_large` regardless of entry kind.
 
+## Sticky notes (v15)
+
+`entries.note TEXT` holds the user's free-text sticky note ("annotate a
+screenshot"); NULL means none and the column never holds `''` — blank or
+whitespace-only input is normalized to NULL on write. It is user data,
+not adopt-once enrichment: an edit bumps `modified_at`, resolves
+last-writer-wins on pull exactly like `pinned` (§Pinning), enqueues a
+push, and deletes the entry's `entry_embeddings` row so the re-embed
+folds the note in (an image with a note becomes embeddable; one whose
+note is cleared stops being). `entries_fts` gains a trailing `note`
+column — full layout `title, text, app_name, ocr_text, image_tags,
+link_title, note` — dropped and rebuilt with every live row reindexed by
+`v15_entry_notes`, and the note is always in search scope (the
+text/OCR/tag toggles don't gate it). On the CloudKit wire the Entry
+record carries a `note` String field whose ABSENCE is meaningful: a
+notes-aware sender always writes it (`""` when the entry has no note), so
+**absent = the sender predates notes, preserve the local note even if
+that record wins LWW** (otherwise a pin toggled on a not-yet-updated
+device would silently wipe notes), while **`""` = deliberate clear,
+clear the local note**; any client that syncs must keep the two apart,
+since collapsing them recreates the OCR-empty-overwrite bug class. The
+new field has to be deployed to the CloudKit Production schema before a
+release build can sync it.
+
 ## Schema evolution policy
 
 - **Never edit a shipped migration.** Add a new one.

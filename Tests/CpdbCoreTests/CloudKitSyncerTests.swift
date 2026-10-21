@@ -254,6 +254,37 @@ struct CloudKitSyncerTests {
         #expect(record[CKSchema.EntryField.deviceName] as? String == Self.device.name)
         #expect(record[CKSchema.EntryField.uuid] as? Data != nil)
         #expect(record[CKSchema.EntryField.contentHash] as? Data != nil)
+        // A notes-aware sender always ships the note field — "" when the
+        // entry has none — so peers can tell it from a pre-notes sender.
+        #expect(record[CKSchema.EntryField.note] as? String == "")
+    }
+
+    @Test("push carries the entry's sticky note on the wire")
+    func pushCarriesNote() async throws {
+        let (store, ids) = try seed(entryCount: 1)
+        try EntryRepository(store: store).setNote(id: ids[0], note: "call Dana before Friday")
+        let client = FakeCloudKitClient()
+        let syncer = makeSyncer(store: store, client: client)
+        _ = try await syncer.pushPendingChanges()
+
+        let record = try #require(await client.savedRecords.values.first)
+        #expect(record[CKSchema.EntryField.note] as? String == "call Dana before Friday")
+        #expect((record[CKSchema.EntryField.modifiedAt] as? NSNumber)?.doubleValue ?? 0 > 1_700_000_000)
+    }
+
+    @Test("clearing a note pushes an explicit empty string, not an absent field")
+    func pushOfClearedNoteIsExplicitEmpty() async throws {
+        let (store, ids) = try seed(entryCount: 1)
+        let repo = EntryRepository(store: store)
+        try repo.setNote(id: ids[0], note: "temporary")
+        try repo.setNote(id: ids[0], note: nil)
+        let client = FakeCloudKitClient()
+        let syncer = makeSyncer(store: store, client: client)
+        _ = try await syncer.pushPendingChanges()
+
+        let record = try #require(await client.savedRecords.values.first)
+        #expect(record.allKeys().contains(CKSchema.EntryField.note))
+        #expect(record[CKSchema.EntryField.note] as? String == "")
     }
 
     // MARK: - Failure paths
@@ -396,6 +427,45 @@ struct CloudKitSyncerTests {
             // Local UUID preserved — we don't overwrite from the wire.
             #expect(entry?.uuid == existingUUID)
         }
+    }
+
+    @Test("pull of a pre-notes record (no note field) keeps the local note even though the remote wins")
+    func pullFromPreNotesSenderPreservesNote() async throws {
+        let (store, ids) = try seed(entryCount: 1)
+        let repo = EntryRepository(store: store)
+        try repo.setNote(id: ids[0], note: "survive the old iPhone")
+        let hash = try await store.dbQueue.read { db in try Entry.fetchOne(db, key: ids[0])!.contentHash }
+
+        // An old client toggled the pin: newer modifiedAt, pinned, no note field.
+        let record = makeRecord(contentHash: hash, title: "entry 0")
+        record[CKSchema.EntryField.pinned] = 1 as NSNumber
+        record[CKSchema.EntryField.modifiedAt] = (Date().timeIntervalSince1970 + 60) as NSNumber
+        let client = FakeCloudKitClient()
+        await client.seedPull(changed: [record])
+        let report = try await makeSyncer(store: store, client: client).pullRemoteChanges()
+        #expect(report.updated == 1)
+
+        let entry = try #require(try await store.dbQueue.read { db in try Entry.fetchOne(db, key: ids[0]) })
+        #expect(entry.pinned)                                   // the remote's change landed
+        #expect(entry.note == "survive the old iPhone")          // the note did not vanish
+        #expect(try repo.note(id: ids[0]) == "survive the old iPhone")
+    }
+
+    @Test("pull of a notes-aware record with an empty note field clears the local note")
+    func pullOfExplicitEmptyNoteClears() async throws {
+        let (store, ids) = try seed(entryCount: 1)
+        let repo = EntryRepository(store: store)
+        try repo.setNote(id: ids[0], note: "cleared elsewhere")
+        let hash = try await store.dbQueue.read { db in try Entry.fetchOne(db, key: ids[0])!.contentHash }
+
+        let record = makeRecord(contentHash: hash, title: "entry 0")
+        record[CKSchema.EntryField.note] = "" as NSString
+        record[CKSchema.EntryField.modifiedAt] = (Date().timeIntervalSince1970 + 60) as NSNumber
+        let client = FakeCloudKitClient()
+        await client.seedPull(changed: [record])
+        _ = try await makeSyncer(store: store, client: client).pullRemoteChanges()
+
+        #expect(try repo.note(id: ids[0]) == nil)
     }
 
     @Test("pull tombstones a local entry when CloudKit reports the record deleted")

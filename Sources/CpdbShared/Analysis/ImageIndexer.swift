@@ -232,27 +232,10 @@ public enum ImageIndexer {
                     return
                 }
 
-                // Re-index FTS. We need title + text + app_name + new
-                // ocr/tags, so re-fetch the whole row.
-                if let row = try Row.fetchOne(
-                    db,
-                    sql: """
-                        SELECT e.title, e.text_preview, a.name AS app_name
-                        FROM entries e LEFT JOIN apps a ON a.id = e.source_app_id
-                        WHERE e.id = ?
-                    """,
-                    arguments: [entryId]
-                ) {
-                    try FtsIndex.indexEntry(
-                        db: db,
-                        entryId: entryId,
-                        title: row["title"],
-                        text: row["text_preview"],
-                        appName: row["app_name"],
-                        ocrText: ocrText,
-                        imageTags: tags
-                    )
-                }
+                // Re-index FTS from the row, which now carries the new
+                // ocr/tags alongside everything else searchable (a note
+                // can already be present on a pull-synced image).
+                try EntryRepository.reindexFts(entryId: entryId, in: db)
 
                 // Enqueue for CloudKit push in the SAME transaction as
                 // the analysis write. Analysis routinely finishes after

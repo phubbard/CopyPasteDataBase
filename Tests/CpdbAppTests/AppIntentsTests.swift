@@ -110,11 +110,14 @@ struct ClipDeepLinkTests {
 @Suite("SpotlightDonationService — donation payload builder")
 struct SpotlightDonationServiceTests {
 
-    private func makeRow(id: Int64, textPreview: String, capturedAt: Double = 1_700_000_000) -> EntryRepository.EntryRow {
+    private func makeRow(
+        id: Int64, textPreview: String, capturedAt: Double = 1_700_000_000, note: String? = nil
+    ) -> EntryRepository.EntryRow {
         var e = Entry(
             uuid: Data(repeating: 3, count: 16), createdAt: capturedAt, capturedAt: capturedAt,
             kind: .text, sourceDeviceId: 1, textPreview: textPreview,
-            contentHash: Data(repeating: 4, count: 32), totalSize: Int64(textPreview.utf8.count)
+            contentHash: Data(repeating: 4, count: 32), totalSize: Int64(textPreview.utf8.count),
+            note: note
         )
         e.id = id
         return EntryRepository.EntryRow(entry: e)
@@ -129,6 +132,13 @@ struct SpotlightDonationServiceTests {
         #expect(payload?.contentText == "Meeting notes\nmore detail")
         #expect(payload?.date == Date(timeIntervalSince1970: 1_700_000_000))
         #expect(payload?.deepLink == URL(string: "cpdb://clip/7"))
+        #expect(payload?.note == nil)
+    }
+
+    @Test("carries the entry's sticky note into the payload")
+    func payloadCarriesNote() {
+        let row = makeRow(id: 8, textPreview: "Invoice 4471", note: "reimbursable — send to Dana")
+        #expect(SpotlightDonationService.payload(for: row)?.note == "reimbursable — send to Dana")
     }
 
     @Test("returns nil for a row with no persisted id")
@@ -145,7 +155,8 @@ struct SpotlightDonationServiceTests {
     func searchableItemCarriesAttributes() {
         let payload = SpotlightDonationPayload(
             entryId: 9, title: "Title", contentText: "Body text",
-            date: Date(timeIntervalSince1970: 123), deepLink: URL(string: "cpdb://clip/9")
+            date: Date(timeIntervalSince1970: 123), deepLink: URL(string: "cpdb://clip/9"),
+            note: "pay by Friday"
         )
         let item = SpotlightDonationService.searchableItem(for: payload)
         #expect(item.uniqueIdentifier == "clip-9")
@@ -153,6 +164,16 @@ struct SpotlightDonationServiceTests {
         #expect(item.attributeSet.title == "Title")
         #expect(item.attributeSet.contentDescription == "Body text")
         #expect(item.attributeSet.contentURL == URL(string: "cpdb://clip/9"))
+        #expect(item.attributeSet.comment == "pay by Friday")
+    }
+
+    @Test("searchableItem(for:) leaves the comment attribute unset when there is no note")
+    func searchableItemOmitsAbsentNote() {
+        let payload = SpotlightDonationPayload(
+            entryId: 10, title: "Title", contentText: "Body text",
+            date: Date(timeIntervalSince1970: 123), deepLink: nil, note: nil
+        )
+        #expect(SpotlightDonationService.searchableItem(for: payload).attributeSet.comment == nil)
     }
 
     @Test("entryId(fromUniqueIdentifier:) recovers the id, and rejects foreign ids")

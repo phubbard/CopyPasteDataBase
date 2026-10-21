@@ -16,7 +16,8 @@ struct FtsIndexTests {
         text: String? = nil,
         ocr: String? = nil,
         tags: String? = nil,
-        appName: String? = nil
+        appName: String? = nil,
+        note: String? = nil
     ) throws -> Int64 {
         try store.dbQueue.write { db in
             var device = Device(identifier: "TEST", name: "Test", kind: "mac")
@@ -51,7 +52,8 @@ struct FtsIndexTests {
                 text: text,
                 appName: appName,
                 ocrText: ocr,
-                imageTags: tags
+                imageTags: tags,
+                note: note
             )
             return entry.id!
         }
@@ -139,6 +141,48 @@ struct FtsIndexTests {
             let hits = try FtsIndex.search(db: db, query: "anomaloustaglabel")
             let hit = try #require(hits.first { $0.entryId == id })
             #expect(hit.source == .tag)
+        }
+    }
+
+    @Test("match source: note-only hit attributes to .note")
+    func matchSourceNote() throws {
+        let store = try Store.inMemory()
+        let id = try seed(store: store, text: "unrelated body", note: "peculiarannotationword")
+        try store.dbQueue.read { db in
+            let hits = try FtsIndex.search(db: db, query: "peculiarannotationword")
+            let hit = try #require(hits.first { $0.entryId == id })
+            #expect(hit.source == .note)
+        }
+    }
+
+    @Test("match source: a query hitting the note and another column attributes to .multiple")
+    func matchSourceNoteAndText() throws {
+        let store = try Store.inMemory()
+        let id = try seed(store: store, text: "shared term in the body", note: "shared term in the note")
+        try store.dbQueue.read { db in
+            let hit = try #require(try FtsIndex.search(db: db, query: "shared").first { $0.entryId == id })
+            #expect(hit.source == .multiple)
+        }
+    }
+
+    @Test("scope filter: the content-column toggles never hide a note")
+    func scopeFilterKeepsNote() throws {
+        let store = try Store.inMemory()
+        let id = try seed(store: store, note: "uniquenotetoken")
+        try store.dbQueue.read { db in
+            let narrowest = try FtsIndex.search(
+                db: db, query: "uniquenotetoken", scope: .init(text: false, ocr: false, tags: true))
+            #expect(narrowest.contains { $0.entryId == id })
+        }
+    }
+
+    @Test("a note-less row is unaffected by the note column (no phantom .note attribution)")
+    func noteAbsentDoesNotChangeAttribution() throws {
+        let store = try Store.inMemory()
+        let id = try seed(store: store, text: "plainly textual", ocr: nil)
+        try store.dbQueue.read { db in
+            let hit = try #require(try FtsIndex.search(db: db, query: "textual").first { $0.entryId == id })
+            #expect(hit.source == .text)
         }
     }
 

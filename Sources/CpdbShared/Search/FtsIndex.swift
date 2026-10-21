@@ -3,17 +3,23 @@ import GRDB
 
 /// FTS5 index maintenance + querying.
 ///
-/// The virtual table has five columns since v2:
+/// The virtual table has seven columns since v15:
 ///
 /// - `title`      (column 0) — derived headline for every entry
 /// - `text`       (column 1) — `text_preview` (plain text)
 /// - `app_name`   (column 2) — joined from `apps.name`
 /// - `ocr_text`   (column 3) — Vision OCR extract for image entries
 /// - `image_tags` (column 4) — Vision classifier tags, comma-separated
+/// - `link_title` (column 5) — fetched page title for link entries (v8)
+/// - `note`       (column 6) — user-authored sticky note (v15)
 ///
-/// We populate all five explicitly rather than wiring triggers from
+/// We populate all seven explicitly rather than wiring triggers from
 /// `entries` / `apps` — the sources live in multiple tables and the
-/// indexer path is centralised here anyway.
+/// indexer path is centralised here anyway. `indexEntry` rewrites the
+/// whole row (DELETE + INSERT), so a writer that changes one column of an
+/// EXISTING row should go through `EntryRepository.reindexFts` rather than
+/// hand-assemble this call — an omitted argument (`linkTitle`, `note`)
+/// silently drops that column from search.
 public enum FtsIndex {
 
     // MARK: - Indexing
@@ -27,7 +33,8 @@ public enum FtsIndex {
         appName: String?,
         ocrText: String? = nil,
         imageTags: String? = nil,
-        linkTitle: String? = nil
+        linkTitle: String? = nil,
+        note: String? = nil
     ) throws {
         try db.execute(
             sql: "DELETE FROM entries_fts WHERE rowid = ?",
@@ -35,8 +42,8 @@ public enum FtsIndex {
         )
         try db.execute(
             sql: """
-                INSERT INTO entries_fts(rowid, title, text, app_name, ocr_text, image_tags, link_title)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO entries_fts(rowid, title, text, app_name, ocr_text, image_tags, link_title, note)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             arguments: [
                 entryId,
@@ -46,6 +53,7 @@ public enum FtsIndex {
                 ocrText ?? "",
                 imageTags ?? "",
                 linkTitle ?? "",
+                note ?? "",
             ]
         )
     }
@@ -86,6 +94,7 @@ public enum FtsIndex {
         case text         // matched text_preview (or fell through from title/app_name)
         case ocr          // matched ocr_text
         case tag          // matched image_tags
+        case note         // matched the user's sticky note
         case multiple     // matched more than one of the above
         /// Surfaced only by the popup's semantic re-rank (`PopupState`) —
         /// an entry the FTS pass never matched at all, pulled in purely
@@ -121,6 +130,9 @@ public enum FtsIndex {
         // kind=.link entries and is generally signal, not noise (a
         // page title is more like the entry's title than its body).
         cols.append("link_title")
+        // note is always in scope too: the user wrote it precisely so
+        // the entry could be found by it, so no toggle can hide it.
+        cols.append("note")
         let scoped = "{" + cols.joined(separator: " ") + "} : " + tokens
 
         // Sentinel markers for the per-column highlight() calls — NUL and
@@ -136,7 +148,8 @@ public enum FtsIndex {
                        snippet(entries_fts, -1, '[', ']', '…', 32) AS snip,
                        highlight(entries_fts, 1, ?, ?) AS t_hl,
                        highlight(entries_fts, 3, ?, ?) AS o_hl,
-                       highlight(entries_fts, 4, ?, ?) AS g_hl
+                       highlight(entries_fts, 4, ?, ?) AS g_hl,
+                       highlight(entries_fts, 6, ?, ?) AS n_hl
                 FROM entries_fts
                 WHERE entries_fts MATCH ?
                 ORDER BY bm25(entries_fts)
@@ -146,6 +159,7 @@ public enum FtsIndex {
                 startMark, endMark,   // column 1 (text)
                 startMark, endMark,   // column 3 (ocr_text)
                 startMark, endMark,   // column 4 (image_tags)
+                startMark, endMark,   // column 6 (note)
                 scoped,
                 limit,
             ]
@@ -157,13 +171,15 @@ public enum FtsIndex {
             let tHit = ((row["t_hl"] as String?) ?? "").contains(startMark)
             let oHit = ((row["o_hl"] as String?) ?? "").contains(startMark)
             let gHit = ((row["g_hl"] as String?) ?? "").contains(startMark)
-            let hits = [tHit, oHit, gHit].filter { $0 }.count
+            let nHit = ((row["n_hl"] as String?) ?? "").contains(startMark)
+            let hits = [tHit, oHit, gHit, nHit].filter { $0 }.count
             let source: MatchSource
-            switch (hits, tHit, oHit, gHit) {
-            case (0, _, _, _): source = .text   // fell through via title/app_name
-            case (1, true, _, _): source = .text
-            case (1, _, true, _): source = .ocr
-            case (1, _, _, true): source = .tag
+            switch (hits, tHit, oHit, gHit, nHit) {
+            case (0, _, _, _, _): source = .text   // fell through via title/app_name/link_title
+            case (1, true, _, _, _): source = .text
+            case (1, _, true, _, _): source = .ocr
+            case (1, _, _, true, _): source = .tag
+            case (1, _, _, _, true): source = .note
             default: source = .multiple
             }
             return Hit(entryId: entryId, snippet: snippet, source: source)
