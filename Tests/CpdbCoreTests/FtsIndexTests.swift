@@ -176,6 +176,19 @@ struct FtsIndexTests {
         }
     }
 
+    @Test("all three scope toggles off is the search-nothing state for every column, the note included")
+    func scopeAllOffFindsNothing() throws {
+        let store = try Store.inMemory()
+        _ = try seed(store: store, title: "headlineword", note: "uniquenotetoken")
+        try store.dbQueue.read { db in
+            let off = FtsIndex.SearchScope(text: false, ocr: false, tags: false)
+            let byNote = try FtsIndex.search(db: db, query: "uniquenotetoken", scope: off)
+            let byTitle = try FtsIndex.search(db: db, query: "headlineword", scope: off)
+            #expect(byNote.isEmpty)
+            #expect(byTitle.isEmpty)
+        }
+    }
+
     @Test("a note-less row is unaffected by the note column (no phantom .note attribution)")
     func noteAbsentDoesNotChangeAttribution() throws {
         let store = try Store.inMemory()

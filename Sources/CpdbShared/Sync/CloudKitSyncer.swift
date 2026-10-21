@@ -1232,10 +1232,13 @@ public actor CloudKitSyncer {
         let flavorsSnapshot = decodedFlavors
         let deletedSnapshot = deletedHashes
         let blobStore = blobs
-        let (pageInserted, pageUpdated, pageTombstoned) = try await store.dbQueue.write { db -> (Int, Int, Int) in
+        let (pageInserted, pageUpdated, pageTombstoned, embeddingsChanged) = try await store.dbQueue.write { db -> (Int, Int, Int, Bool) in
             var ins = 0, upd = 0, tomb = 0
+            var embeddingsChanged = false
             for d in entriesSnapshot {
-                let outcome = try Self.upsert(decoded: d, in: db, fallbackDeviceID: fallbackID, fallbackDeviceName: fallbackName, blobs: blobStore)
+                let outcome = try Self.upsert(
+                    decoded: d, in: db, fallbackDeviceID: fallbackID, fallbackDeviceName: fallbackName,
+                    blobs: blobStore, embeddingsChanged: &embeddingsChanged)
                 switch outcome {
                 case .inserted:  ins += 1
                 case .updated:   upd += 1
@@ -1256,7 +1259,7 @@ public actor CloudKitSyncer {
                     in: db
                 )
             }
-            return (ins, upd, tomb)
+            return (ins, upd, tomb, embeddingsChanged)
         }
 
         // A pulled entry can arrive with its embedding already attached
@@ -1268,9 +1271,13 @@ public actor CloudKitSyncer {
         // a semantic search that's silently missing every pulled entry
         // until an unrelated local capture happened to invalidate it.
         //
-        // A pulled note can also delete a now-stale local embedding row
-        // (`upsert`), so any record carrying the note field counts too.
-        if entriesSnapshot.contains(where: { $0.embedding != nil || $0.note != nil }) {
+        // A pulled note change can also DELETE a now-stale local
+        // embedding row. `upsert` reports whether any record actually
+        // saved or deleted an `entry_embeddings` row (not merely whether
+        // it carried a note/embedding field — after rollout nearly every
+        // record does, and a needless invalidation forces a full chunked
+        // reload of the vector buffer on the next semantic search).
+        if embeddingsChanged {
             await EmbeddingIndex.shared.invalidate()
         }
 
@@ -1411,6 +1418,25 @@ public actor CloudKitSyncer {
         fallbackDeviceName: String,
         blobs: BlobStore = BlobStore()
     ) throws -> UpsertOutcome {
+        var embeddingsChanged = false
+        return try upsert(
+            decoded: d, in: db, fallbackDeviceID: fallbackDeviceID,
+            fallbackDeviceName: fallbackDeviceName, blobs: blobs,
+            embeddingsChanged: &embeddingsChanged)
+    }
+
+    /// As above, additionally reporting through `embeddingsChanged` (set
+    /// to true, never reset) whether this record saved or deleted an
+    /// `entry_embeddings` row — the pull uses it to invalidate the
+    /// in-memory `EmbeddingIndex` only when its buffer is actually stale.
+    static func upsert(
+        decoded d: EntryRecordMapper.Decoded,
+        in db: Database,
+        fallbackDeviceID: String,
+        fallbackDeviceName: String,
+        blobs: BlobStore = BlobStore(),
+        embeddingsChanged: inout Bool
+    ) throws -> UpsertOutcome {
         // App — upsert by bundle id. Null bundle id (unknown source) →
         // no app row.
         var appId: Int64? = nil
@@ -1548,6 +1574,7 @@ public actor CloudKitSyncer {
             // takes the remote's, or `EmbeddingSweeper` re-embeds.
             if noteChanged {
                 try db.execute(sql: "DELETE FROM entry_embeddings WHERE entry_id = ?", arguments: [existing.id!])
+                if db.changesCount > 0 { embeddingsChanged = true }
             }
             if repushNote {
                 try PushQueue.enqueue(entryId: existing.id!, in: db)
@@ -1556,7 +1583,20 @@ public actor CloudKitSyncer {
             // only take the remote embedding if we don't already have
             // one locally. (Revision-based re-adoption is a decision for
             // the semantic-search feature work, not this foundation.)
-            if let embedding = d.embedding {
+            //
+            // ...and only a vector computed from the note this row ENDS UP
+            // with. The record's embedding was built from the note the
+            // record carries (absent/"" = text only), so when the note we
+            // kept differs — the record lost last-writer-wins to a newer
+            // local note whose `setNote` just deleted our vector, or an
+            // absent-field sender's text-only vector landed on a row that
+            // keeps its note — adopting would plant a stale vector that
+            // `entriesNeedingEmbedding` (model/revision only) never heals,
+            // and iOS has no sweeper at all. Leave the row absent instead:
+            // the Mac sweep re-embeds from the current note.
+            if let embedding = d.embedding,
+               existing.note == EntryRepository.normalizedNote(d.note)
+            {
                 let hasLocalEmbedding = try Bool.fetchOne(
                     db,
                     sql: "SELECT EXISTS(SELECT 1 FROM entry_embeddings WHERE entry_id = ?)",
@@ -1571,6 +1611,7 @@ public actor CloudKitSyncer {
                         vector: embedding.vector,
                         in: db
                     )
+                    embeddingsChanged = true
                 }
             }
             // FTS follows the RESOLVED liveness: a row that ends up live
@@ -1624,8 +1665,13 @@ public actor CloudKitSyncer {
             // partial-flavor capture). Resolve deterministically by
             // §5.3 — this MUST intercept the collision before the insert
             // below, or the uuid unique constraint aborts the page.
-            return try resolveUuidConflict(
+            let outcome = try resolveUuidConflict(
                 decoded: d, local: localByUuid, appId: appId, devId: devId, blobs: blobs, in: db)
+            // Rare path: it can adopt a note (deleting the stale vector) or
+            // coalesce onto a survivor. Treat any change as possibly having
+            // touched `entry_embeddings`.
+            if outcome != .unchanged { embeddingsChanged = true }
+            return outcome
         } else {
             // Cross-device dedup. Same text landing here from
             // CloudKit within a few seconds of a row we already have
@@ -1759,6 +1805,7 @@ public actor CloudKitSyncer {
                     vector: embedding.vector,
                     in: db
                 )
+                embeddingsChanged = true
             }
             Log.cli.info(
                 "pull: inserted id=\(entry.id ?? -1, privacy: .public) kind=\(d.kind.rawValue, privacy: .public) textprev=\"\(d.textPreview?.prefix(40) ?? "", privacy: .public)\""

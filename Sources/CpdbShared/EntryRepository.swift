@@ -511,10 +511,21 @@ public struct EntryRepository {
         }
     }
 
+    /// Longest sticky note `setNote` stores, in Unicode scalars (longer
+    /// input is truncated to this). The note rides in every CloudKit
+    /// push of its entry, in FTS and in the embedding input; unbounded
+    /// text (a pasted file, `cpdb note 5 "$(cat big.txt)"`) could push the
+    /// record past CloudKit's per-record size limit, and an entry whose
+    /// push can never succeed retries forever and blocks its pin and
+    /// delete state from syncing too. Cheap to bound now, hard to
+    /// retrofit once notes exist on the server. UI should enforce the
+    /// same limit up front rather than rely on the truncation.
+    public static let maxNoteLength = 4096
+
     /// Set, replace, or clear the user's sticky note on a live entry.
     /// `nil`, empty, and whitespace-only input all clear it (stored as
     /// NULL — the column never holds ""). Non-blank text is stored
-    /// verbatim.
+    /// verbatim, truncated to `maxNoteLength` scalars.
     ///
     /// A note is user data, so it follows `setPinned` rather than the
     /// enrichment setters: a real change bumps `modified_at` (so it wins
@@ -524,8 +535,14 @@ public struct EntryRepository {
     /// embedding, so `EmbeddingSweeper` re-embeds with the note folded in
     /// (`EmbeddingService.inputText`) — an image with a note becomes a
     /// sweep candidate; one whose note was cleared stops being one.
+    ///
+    /// The `setPinned` precedent has its consequence too: the bump makes
+    /// the edit the newest write to the record, so annotating an entry on
+    /// a device that hasn't yet pulled a sibling's NEWER delete or pin
+    /// toggle will, once pushed, win last-writer-wins and undo that
+    /// delete or pin (per-record LWW has no per-field timestamps).
     public func setNote(id: Int64, note: String?) throws {
-        let normalized = Self.normalizedNote(note)
+        let normalized = Self.normalizedNote(note.map(Self.cappedNote))
         let now = Date().timeIntervalSince1970
         let droppedEmbedding = try store.dbQueue.write { db -> Bool in
             try db.execute(
@@ -561,10 +578,22 @@ public struct EntryRepository {
 
     /// Blank (empty or whitespace-only) → nil; anything else unchanged.
     /// The single normalization point for notes: `setNote` on the way in,
-    /// and the pull path on a note that arrived over the wire.
+    /// and the pull path on a note that arrived over the wire. (Length is
+    /// bounded by `cappedNote` on the way in only — a pulled note is
+    /// stored as the sender wrote it, so this device never re-pushes a
+    /// truncated copy over a longer one a future client may produce.)
     static func normalizedNote(_ note: String?) -> String? {
         guard let note, !note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
         return note
+    }
+
+    /// `note` cut to `maxNoteLength` Unicode scalars. Scalars rather than
+    /// Characters so a single pathological grapheme cluster (a base
+    /// character with a million combining marks) can't dodge the bound.
+    static func cappedNote(_ note: String) -> String {
+        let scalars = note.unicodeScalars
+        guard scalars.count > maxNoteLength else { return note }
+        return String(String.UnicodeScalarView(scalars.prefix(maxNoteLength)))
     }
 
     /// Rewrite an entry's FTS row from its current `entries` + `apps`
@@ -573,6 +602,15 @@ public struct EntryRepository {
     /// so a caller that re-indexes by hand has to remember every column
     /// (`link_title`, `note`, …) or silently loses it from search. Does
     /// not check liveness: callers decide whether the row belongs in FTS.
+    ///
+    /// The `text` column is the one exception to "derive from `entries`":
+    /// `Ingestor` indexes the FULL plain text while `text_preview` is
+    /// capped at 2048 chars, so re-deriving it here would silently drop
+    /// everything past the cap from search every time a note, link title
+    /// or OCR result is written. The row's existing FTS text is kept when
+    /// it still extends the current preview (`FtsIndex.textToIndex`); a
+    /// caller that rewrites `text_preview` itself therefore gets the new
+    /// preview, not stale text.
     public static func reindexFts(entryId: Int64, in db: Database) throws {
         guard let row = try Row.fetchOne(
             db,
@@ -584,9 +622,12 @@ public struct EntryRepository {
                 """,
             arguments: [entryId]
         ) else { return }
+        let preview: String? = row["text_preview"]
         try FtsIndex.indexEntry(
             db: db, entryId: entryId,
-            title: row["title"], text: row["text_preview"], appName: row["app_name"],
+            title: row["title"],
+            text: try FtsIndex.textToIndex(db: db, entryId: entryId, textPreview: preview),
+            appName: row["app_name"],
             ocrText: row["ocr_text"], imageTags: row["image_tags"], linkTitle: row["link_title"],
             note: row["note"])
     }

@@ -13,6 +13,16 @@ import Foundation
 /// embedding invalidation, push-queue row) but never talks to CloudKit —
 /// the CLI has no CloudKit entitlement; the running app drains the queue
 /// and pushes.
+///
+/// A note longer than `EntryRepository.maxNoteLength` is rejected up
+/// front rather than silently truncated.
+///
+/// The CLI is a separate process, so it can't invalidate a running app's
+/// in-memory `EmbeddingIndex`: that buffer may keep serving the entry's
+/// old vector until the app next invalidates it (any capture, a pulled
+/// vector, or the embedding sweep — every 10–15 min — re-embedding the
+/// entry from its new note). FTS and the stored note are correct
+/// immediately; only the semantic ranking lags, and only briefly.
 struct NoteCommand: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "note",
@@ -31,6 +41,11 @@ struct NoteCommand: ParsableCommand {
     func validate() throws {
         if clear && !text.isEmpty {
             throw ValidationError("--clear can't be combined with note text.")
+        }
+        let length = text.joined(separator: " ").unicodeScalars.count
+        if length > EntryRepository.maxNoteLength {
+            throw ValidationError(
+                "note is \(length) characters; the limit is \(EntryRepository.maxNoteLength).")
         }
     }
 

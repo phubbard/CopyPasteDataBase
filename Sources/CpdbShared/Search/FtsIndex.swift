@@ -58,6 +58,27 @@ public enum FtsIndex {
         )
     }
 
+    /// The `text` column value to write when RE-indexing an existing row
+    /// whose other columns are being refreshed from `entries`.
+    ///
+    /// The capture path indexes the full plain text, but `entries` only
+    /// keeps `text_preview` (the first 2048 chars). Re-deriving `text` from
+    /// the preview would therefore shrink the row's searchable text to the
+    /// preview on every unrelated rewrite. So: keep the row's existing FTS
+    /// text when it extends the preview (the preview is a prefix of it —
+    /// the invariant the capture path establishes); otherwise — no FTS row
+    /// yet (a restore after tombstoning, which removes it), or text that
+    /// no longer matches the preview because a writer changed
+    /// `text_preview` — use the preview.
+    static func textToIndex(db: Database, entryId: Int64, textPreview: String?) throws -> String? {
+        guard let preview = textPreview, !preview.isEmpty else { return textPreview }
+        guard let existing = try String.fetchOne(
+            db, sql: "SELECT text FROM entries_fts WHERE rowid = ?", arguments: [entryId]),
+              existing.hasPrefix(preview)
+        else { return preview }
+        return existing
+    }
+
     /// Remove an entry's FTS row. Called on hard delete.
     public static func removeEntry(db: Database, entryId: Int64) throws {
         try db.execute(
@@ -71,7 +92,11 @@ public enum FtsIndex {
     /// Which columns the search should consider. Title and app name are
     /// always included — the toggles only gate the content-ish columns
     /// (`text`, `ocr_text`, `image_tags`) because those are what produce
-    /// meaningful distinct match sources.
+    /// meaningful distinct match sources. `link_title` and `note` are
+    /// likewise never gated by an individual toggle. The one exception to
+    /// "always included" is every toggle off (`isEnabled == false`): that
+    /// is the explicit search-nothing state and returns no hits at all,
+    /// title, app name, link title and note included.
     public struct SearchScope: Sendable, Equatable, Codable {
         public var text: Bool
         public var ocr: Bool
@@ -131,7 +156,9 @@ public enum FtsIndex {
         // page title is more like the entry's title than its body).
         cols.append("link_title")
         // note is always in scope too: the user wrote it precisely so
-        // the entry could be found by it, so no toggle can hide it.
+        // the entry could be found by it, so no individual toggle can
+        // hide it. (All three toggles off short-circuits above, for
+        // every column alike.)
         cols.append("note")
         let scoped = "{" + cols.joined(separator: " ") + "} : " + tokens
 

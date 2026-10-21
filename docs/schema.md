@@ -626,25 +626,57 @@ content-types are rejected. The card renderer queries
 
 `entries.note TEXT` holds the user's free-text sticky note ("annotate a
 screenshot"); NULL means none and the column never holds `''` — blank or
-whitespace-only input is normalized to NULL on write. It is user data,
-not adopt-once enrichment: an edit bumps `modified_at`, resolves
-last-writer-wins on pull exactly like `pinned` (§Pinning), enqueues a
-push, and deletes the entry's `entry_embeddings` row so the re-embed
-folds the note in (an image with a note becomes embeddable; one whose
-note is cleared stops being). `entries_fts` gains a trailing `note`
-column — full layout `title, text, app_name, ocr_text, image_tags,
-link_title, note` — dropped and rebuilt with every live row reindexed by
-`v15_entry_notes`, and the note is always in search scope (the
-text/OCR/tag toggles don't gate it). On the CloudKit wire the Entry
-record carries a `note` String field whose ABSENCE is meaningful: a
-notes-aware sender always writes it (`""` when the entry has no note), so
-**absent = the sender predates notes, preserve the local note even if
-that record wins LWW** (otherwise a pin toggled on a not-yet-updated
-device would silently wipe notes), while **`""` = deliberate clear,
-clear the local note**; any client that syncs must keep the two apart,
-since collapsing them recreates the OCR-empty-overwrite bug class. The
-new field has to be deployed to the CloudKit Production schema before a
-release build can sync it.
+whitespace-only input is normalized to NULL on write. `setNote` truncates
+to `EntryRepository.maxNoteLength` (4096 Unicode scalars) so a note can't
+grow a CloudKit record past its size limit; a pulled note is stored as
+the sender wrote it. It is user data, not adopt-once enrichment: an edit
+bumps `modified_at`, resolves last-writer-wins on pull exactly like
+`pinned` (§Pinning), enqueues a push, and deletes the entry's
+`entry_embeddings` row so the re-embed folds the note in (an image with a
+note becomes embeddable; one whose note is cleared stops being). As with
+`pinned`, LWW is per record, so annotating on a device that has not yet
+pulled a sibling's newer delete or pin toggle wins LWW once pushed and
+undoes it.
+
+`entries_fts` gains a trailing `note` column — full layout `title, text,
+app_name, ocr_text, image_tags, link_title, note` — rebuilt by
+`v15_entry_notes`. The rebuild copies the old index's `text` column
+rather than re-deriving it: capture indexes the FULL plain text while
+`entries.text_preview` is capped at 2048 chars, so a rebuild from the
+preview would drop everything past char 2048 from search. For the same
+reason `EntryRepository.reindexFts` (used by every writer that changes
+one searchable column) keeps the row's existing FTS text when it still
+extends the preview. The note is never gated by an individual scope
+toggle (text/OCR/tags); with all three off, search returns nothing for
+every column alike.
+
+On the CloudKit wire the Entry record carries a `note` String field
+whose ABSENCE is meaningful: a notes-aware sender always writes it (`""`
+when the entry has no note), so **absent = the sender predates notes,
+preserve the local note even if that record wins LWW** (otherwise a pin
+toggled on a not-yet-updated device would silently wipe notes), while
+**`""` = deliberate clear, clear the local note**; any client that syncs
+must keep the two apart, since collapsing them recreates the
+OCR-empty-overwrite bug class. A record's embedding is adopted only when
+the note the row ends up with equals the note the record carries (absent
+and `""` both mean none): the vector was built from that note, so a
+record that lost LWW, or a pre-notes sender's text-only vector landing on
+a row that keeps its note, must not plant a stale vector.
+
+> **Release gate — CloudKit Production schema.** Because every
+> notes-aware push writes `note` (unlike `chipsJson`/`ai*`/`embedding*`,
+> which are written only when set), a build that ships before the
+> `Entry.note` field is deployed to the **Production** schema has EVERY
+> entry push rejected per record (a batch-atomic CKError 22 over an
+> internal 2024, no field name surfaced); they stay in the retry queue
+> and nothing syncs until it is deployed. Deploying is a manual step in
+> the CloudKit Console ("Deploy Schema Changes to Production" —
+> `cktool` can export/import the development schema but cannot deploy
+> to production). Do it BEFORE cutting the release, in the app's own
+> container (`iCloud.net.phfactor.cpdb`; the container picker has bitten
+> before when another app's container with a similarly-named record type
+> was selected), and expect a few minutes of transient errors right
+> after the deploy while the server propagates.
 
 ## Schema evolution policy
 

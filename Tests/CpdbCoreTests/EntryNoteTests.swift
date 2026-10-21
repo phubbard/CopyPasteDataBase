@@ -248,6 +248,119 @@ struct EntryNoteTests {
         #expect(try search(store, "keepsake").contains { $0.entryId == id })
     }
 
+    // MARK: - Long text: FTS text outlives the 2048-char preview
+
+    /// A text entry as capture leaves it: `text_preview` is the first 2048
+    /// chars, but the FTS `text` column holds the FULL plain text.
+    private func insertLongText(_ store: Store, dev: Int64, hash: UInt8) throws -> Int64 {
+        let full = String(repeating: "lorem ", count: 600) + "zebrafinch"
+        #expect(full.count > 2048)
+        let id = try insert(store, dev: dev, hash: hash, textPreview: String(full.prefix(2048)))
+        try store.dbQueue.write { db in
+            try FtsIndex.indexEntry(db: db, entryId: id, title: nil, text: full, appName: nil)
+        }
+        #expect(try search(store, "zebrafinch").contains { $0.entryId == id })
+        return id
+    }
+
+    @Test("annotating a long text entry keeps the part past the preview cap searchable")
+    func setNoteKeepsTextPastPreviewCap() throws {
+        let (store, dev) = try store()
+        let id = try insertLongText(store, dev: dev, hash: 60)
+        let repo = EntryRepository(store: store)
+
+        try repo.setNote(id: id, note: "annotated")
+        #expect(try search(store, "zebrafinch").contains { $0.entryId == id })
+        #expect(try search(store, "annotated").contains { $0.entryId == id })
+
+        try repo.setNote(id: id, note: nil)
+        #expect(try search(store, "zebrafinch").contains { $0.entryId == id })
+    }
+
+    @Test("other reindex paths (link title, OCR-style rewrites) keep the full FTS text too")
+    func reindexFtsKeepsFullText() throws {
+        let (store, dev) = try store()
+        let id = try insertLongText(store, dev: dev, hash: 61)
+        try EntryRepository(store: store).setLinkMetadata(entryId: id, title: "Some Title")
+        #expect(try search(store, "zebrafinch").contains { $0.entryId == id })
+        #expect(try search(store, "title").contains { $0.entryId == id })
+    }
+
+    @Test("reindexFts takes a REWRITTEN text_preview instead of keeping stale FTS text")
+    func reindexFtsFollowsRewrittenPreview() throws {
+        let (store, dev) = try store()
+        // Like `cpdb backfill-titles`: the preview changes, then the row is re-indexed.
+        let id = try insert(store, dev: dev, hash: 62, textPreview: "file:///tmp/staleword.txt")
+        try store.dbQueue.write { db in
+            try db.execute(sql: "UPDATE entries SET text_preview = ? WHERE id = ?", arguments: ["freshword", id])
+            try EntryRepository.reindexFts(entryId: id, in: db)
+        }
+        #expect(try search(store, "staleword").isEmpty)
+        #expect(try search(store, "freshword").contains { $0.entryId == id })
+
+        // Preview cleared entirely: the old FTS text must not linger either.
+        try store.dbQueue.write { db in
+            try db.execute(sql: "UPDATE entries SET text_preview = NULL WHERE id = ?", arguments: [id])
+            try EntryRepository.reindexFts(entryId: id, in: db)
+        }
+        #expect(try search(store, "freshword").isEmpty)
+    }
+
+    @Test("reindexFts with no existing FTS row (restore) falls back to the preview")
+    func reindexFtsWithoutRowUsesPreview() throws {
+        let (store, dev) = try store()
+        let id = try insert(store, dev: dev, hash: 63, textPreview: "previewonlyword")
+        try store.dbQueue.write { db in
+            try FtsIndex.removeEntry(db: db, entryId: id)
+            try EntryRepository.reindexFts(entryId: id, in: db)
+        }
+        #expect(try search(store, "previewonlyword").contains { $0.entryId == id })
+    }
+
+    // MARK: - Length bound
+
+    @Test("setNote truncates to maxNoteLength scalars; a note at the limit is stored verbatim")
+    func setNoteCapsLength() throws {
+        let (store, dev) = try store()
+        let id = try insert(store, dev: dev, hash: 64)
+        let repo = EntryRepository(store: store)
+        let limit = EntryRepository.maxNoteLength
+
+        let exact = String(repeating: "a", count: limit)
+        try repo.setNote(id: id, note: exact)
+        #expect(try repo.note(id: id) == exact)
+
+        try repo.setNote(id: id, note: exact + "TAILWORD")
+        // Same stored value as the at-limit note, so the over-long edit is a no-op.
+        #expect(try repo.note(id: id) == exact)
+        #expect(try search(store, "tailword").isEmpty)
+
+        let huge = String(repeating: "word ", count: 200_000)   // ~1 MB
+        try repo.setNote(id: id, note: huge)
+        #expect(try repo.note(id: id)?.unicodeScalars.count == limit)
+    }
+
+    @Test("truncation counts scalars, so a long run of combining marks can't dodge the cap")
+    func setNoteCapsPathologicalGrapheme() throws {
+        let (store, dev) = try store()
+        let id = try insert(store, dev: dev, hash: 65)
+        let repo = EntryRepository(store: store)
+        // ONE Character (a base letter plus a flood of combining acute accents).
+        let flood = "e" + String(repeating: "\u{0301}", count: 100_000)
+        #expect(flood.count == 1)
+        try repo.setNote(id: id, note: flood)
+        #expect(try repo.note(id: id)?.unicodeScalars.count == EntryRepository.maxNoteLength)
+    }
+
+    @Test("a note that is only whitespace after truncation clears instead of storing blanks")
+    func setNoteCappedToBlankClears() throws {
+        let (store, dev) = try store()
+        let id = try insert(store, dev: dev, hash: 66, note: "existing")
+        let repo = EntryRepository(store: store)
+        try repo.setNote(id: id, note: String(repeating: " ", count: EntryRepository.maxNoteLength) + "hidden")
+        #expect(try repo.note(id: id) == nil)
+    }
+
     // MARK: - Coalesce
 
     @Test("EntryCoalesce adopts a donor's note only when the survivor has none")

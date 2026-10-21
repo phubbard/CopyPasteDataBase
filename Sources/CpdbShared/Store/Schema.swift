@@ -592,10 +592,18 @@ enum Schema {
             //          notes, preserve", "" = deliberate clear.)
             try db.execute(sql: "ALTER TABLE entries ADD COLUMN note TEXT;")
 
-            // FTS5 doesn't support ALTER. Drop + recreate with the new
-            // column appended, then reindex every live row. Same dance as
-            // v8's link_title addition.
-            try db.execute(sql: "DROP TABLE entries_fts;")
+            // FTS5 doesn't support ALTER. Set the old table aside, create
+            // the new one with the column appended, repopulate every live
+            // row, then drop the old one. Same dance as v8's link_title
+            // addition — except the `text` column is COPIED from the old
+            // index rather than re-derived: `Ingestor` indexes the FULL
+            // plain text there while `entries.text_preview` is capped at
+            // 2048 chars, so rebuilding from the preview would silently
+            // drop everything past char 2048 from search for every long
+            // local text entry. The old text is used whenever the old row
+            // has any; the preview is only the fallback for a live entry
+            // that was somehow never indexed.
+            try db.execute(sql: "ALTER TABLE entries_fts RENAME TO entries_fts_v14;")
             try db.execute(sql: """
                 CREATE VIRTUAL TABLE entries_fts USING fts5(
                     title,
@@ -608,31 +616,23 @@ enum Schema {
                     tokenize='porter unicode61 remove_diacritics 2'
                 );
             """)
-            let rows = try Row.fetchAll(db, sql: """
-                SELECT e.id, e.title, e.text_preview, a.name AS app_name,
-                       e.ocr_text, e.image_tags, e.link_title, e.note
+            try db.execute(sql: """
+                INSERT INTO entries_fts(rowid, title, text, app_name, ocr_text, image_tags, link_title, note)
+                SELECT e.id,
+                       COALESCE(e.title, ''),
+                       CASE WHEN COALESCE(old.text, '') != '' THEN old.text
+                            ELSE COALESCE(e.text_preview, '') END,
+                       COALESCE(a.name, ''),
+                       COALESCE(e.ocr_text, ''),
+                       COALESCE(e.image_tags, ''),
+                       COALESCE(e.link_title, ''),
+                       COALESCE(e.note, '')
                 FROM entries e
                 LEFT JOIN apps a ON a.id = e.source_app_id
+                LEFT JOIN entries_fts_v14 old ON old.rowid = e.id
                 WHERE e.deleted_at IS NULL
             """)
-            for row in rows {
-                try db.execute(
-                    sql: """
-                        INSERT INTO entries_fts(rowid, title, text, app_name, ocr_text, image_tags, link_title, note)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    arguments: [
-                        row["id"] as Int64,
-                        (row["title"] as String?) ?? "",
-                        (row["text_preview"] as String?) ?? "",
-                        (row["app_name"] as String?) ?? "",
-                        (row["ocr_text"] as String?) ?? "",
-                        (row["image_tags"] as String?) ?? "",
-                        (row["link_title"] as String?) ?? "",
-                        (row["note"] as String?) ?? "",
-                    ]
-                )
-            }
+            try db.execute(sql: "DROP TABLE entries_fts_v14;")
         }
     }
 }

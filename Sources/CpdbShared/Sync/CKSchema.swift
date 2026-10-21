@@ -124,6 +124,12 @@ public enum CKSchema {
         //     not-yet-updated device must not wipe notes);
         //   - ""     → deliberate clear. Clear the local note.
         // Same failure class as the historical OCR-empty-overwrite bug.
+        //
+        // RELEASE GATE: because EVERY push writes this field (the others
+        // above are written only when set), shipping before it is deployed
+        // to the CloudKit Production schema rejects every entry push, not
+        // just the rare record that uses it. See docs/schema.md
+        // "Sticky notes" and the CHANGELOG [Unreleased] entry.
         public static let note               = "note"             // String ("" = no note / cleared)
     }
 

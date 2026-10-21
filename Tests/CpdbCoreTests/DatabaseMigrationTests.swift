@@ -329,6 +329,65 @@ struct DatabaseMigrationTests {
         }
     }
 
+    @Test("v15 upgrade keeps FTS text past the 2048-char preview cap, and indexes a never-indexed live row from its preview")
+    func v15KeepsFullFtsText() throws {
+        let queue = try DatabaseQueue()
+        let migrator = makeMigrator()
+        try migrator.migrate(queue, upTo: "v14_recency_index")
+
+        // Capture indexes the FULL plain text into FTS but stores only the
+        // first 2048 chars as text_preview. A word at offset ~3600 is
+        // searchable pre-upgrade and must stay so.
+        let full = String(repeating: "lorem ", count: 600) + "zebrafinch"
+        let preview = String(full.prefix(2048))
+        #expect(full.count > 2048 && !preview.contains("zebrafinch"))
+
+        let (longId, unindexedId) = try queue.write { db -> (Int64, Int64) in
+            try db.execute(sql: "INSERT INTO devices (identifier, name, kind) VALUES ('D14', 'M', 'mac')")
+            func insert(_ byte: UInt8, preview: String) throws -> Int64 {
+                try db.execute(
+                    sql: """
+                        INSERT INTO entries (uuid, created_at, captured_at, kind, source_device_id,
+                                             text_preview, content_hash, total_size)
+                        VALUES (?, 1, 1, 'text', 1, ?, ?, 1)
+                        """,
+                    arguments: [Data(repeating: byte, count: 16), preview, Data(repeating: byte, count: 32)])
+                return db.lastInsertedRowID
+            }
+            let longId = try insert(0x81, preview: preview)
+            try db.execute(
+                sql: """
+                    INSERT INTO entries_fts(rowid, title, text, app_name, ocr_text, image_tags, link_title)
+                    VALUES (?, '', ?, '', '', '', '')
+                    """,
+                arguments: [longId, full])
+            // A live row that never made it into FTS at all.
+            return (longId, try insert(0x82, preview: "orphanword"))
+        }
+        #expect(try queue.read { db in
+            try Int64.fetchAll(db, sql: "SELECT rowid FROM entries_fts WHERE entries_fts MATCH 'zebrafinch'")
+        } == [longId])
+
+        try migrator.migrate(queue)
+
+        try queue.read { db in
+            let deep = try Int64.fetchAll(db, sql: "SELECT rowid FROM entries_fts WHERE entries_fts MATCH 'zebrafinch'")
+            #expect(deep == [longId], "the tail of a long text entry must survive the FTS rebuild")
+            let ftsLength = try Int.fetchOne(db, sql: "SELECT length(text) FROM entries_fts WHERE rowid = ?", arguments: [longId])
+            #expect(ftsLength == full.count)
+            // entries.text_preview itself is untouched.
+            let stored = try String.fetchOne(db, sql: "SELECT text_preview FROM entries WHERE id = ?", arguments: [longId])
+            #expect(stored == preview)
+            // The repair path: a live row with no old FTS row falls back to its preview.
+            let orphan = try Int64.fetchAll(db, sql: "SELECT rowid FROM entries_fts WHERE entries_fts MATCH 'orphanword'")
+            #expect(orphan == [unindexedId])
+            // The old table is gone, not left behind next to the new one.
+            let leftovers = try Int.fetchOne(
+                db, sql: "SELECT COUNT(*) FROM sqlite_master WHERE name LIKE 'entries_fts_v14%'")
+            #expect(leftovers == 0)
+        }
+    }
+
     @Test("running v15 again is a no-op: the rebuilt FTS and stored notes are untouched")
     func v15SecondRunIsNoOp() throws {
         let queue = try DatabaseQueue()

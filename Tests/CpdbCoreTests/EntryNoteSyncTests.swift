@@ -93,13 +93,32 @@ struct EntryNoteSyncTests {
     /// A pulled record for the same content as `insertLocal(hash:)`.
     /// `note: nil` is the ABSENT wire field; `""` is the explicit clear.
     private func decoded(
-        hash: UInt8, modifiedAt: Double, note: String?, pinned: Bool = false
+        hash: UInt8, modifiedAt: Double, note: String?, pinned: Bool = false,
+        embedding: EntryRecordMapper.EmbeddingInfo? = nil
     ) -> EntryRecordMapper.Decoded {
         EntryRecordMapper.Decoded(
             uuid: Data(repeating: hash, count: 16), createdAt: 100, capturedAt: 100,
             kind: .text, textPreview: "body", contentHash: Data(repeating: hash, count: 32),
             totalSize: 1, source: .init(deviceIdentifier: "remote", deviceName: "Remote"),
-            pinned: pinned, hashVersion: 2, identityTag: "text", modifiedAt: modifiedAt, note: note)
+            pinned: pinned, hashVersion: 2, identityTag: "text", modifiedAt: modifiedAt, note: note,
+            embedding: embedding)
+    }
+
+    /// A vector as a sibling would ship it (distinct bytes, so tests can
+    /// tell it from the locally-saved `Data([1])`).
+    private let remoteVector = EntryRecordMapper.EmbeddingInfo(
+        modelId: "nl-v1", revision: 1, dims: 1, vector: Data([9]))
+
+    /// `applyPull`, additionally reporting whether the record saved or
+    /// deleted an `entry_embeddings` row (the pull's index-invalidation signal).
+    private func applyPullReportingEmbeddings(_ store: Store, _ d: EntryRecordMapper.Decoded) throws -> Bool {
+        try store.dbQueue.write { db in
+            var changed = false
+            _ = try CloudKitSyncer.upsert(
+                decoded: d, in: db, fallbackDeviceID: "dev", fallbackDeviceName: "Dev",
+                embeddingsChanged: &changed)
+            return changed
+        }
     }
 
     private func applyPull(_ store: Store, _ d: EntryRecordMapper.Decoded) throws -> CloudKitSyncer.UpsertOutcome {
@@ -186,6 +205,103 @@ struct EntryNoteSyncTests {
         let id = try insertLocal(store, dev: dev, hash: 6, modifiedAt: 100, note: "same", embedded: true)
         _ = try applyPull(store, decoded(hash: 6, modifiedAt: 200, note: "same"))
         #expect(try EntryRepository(store: store).embedding(entryId: id) != nil)
+    }
+
+    // MARK: - Pull: which embedding may be adopted
+
+    @Test("a record that LOST last-writer-wins can't plant a vector built from its older note")
+    func staleRemoteVectorNotAdoptedWhenRemoteLost() throws {
+        let (store, dev) = try store()
+        // Local edited the note at t=300; setNote already deleted the vector (none here).
+        let id = try insertLocal(store, dev: dev, hash: 40, modifiedAt: 300, note: "N1")
+        // A stale sibling record (t=200) with the OLD note and a vector built from it.
+        let changed = try applyPullReportingEmbeddings(
+            store, decoded(hash: 40, modifiedAt: 200, note: "N0", embedding: remoteVector))
+        #expect(try row(store, id)["note"] as String? == "N1")
+        #expect(try EntryRepository(store: store).embedding(entryId: id) == nil)   // left for the sweep
+        #expect(!changed)
+    }
+
+    @Test("an absent-field (pre-notes) sender's text-only vector isn't planted on a row that keeps its note")
+    func textOnlyVectorNotAdoptedOverKeptNote() throws {
+        let (store, dev) = try store()
+        let id = try insertLocal(store, dev: dev, hash: 41, modifiedAt: 100, note: "kept note")
+        let changed = try applyPullReportingEmbeddings(
+            store, decoded(hash: 41, modifiedAt: 200, note: nil, pinned: true, embedding: remoteVector))
+        #expect(try row(store, id)["note"] as String? == "kept note")   // preserved…
+        #expect(try row(store, id)["pinned"] as Int64 == 1)             // …remote did win
+        #expect(try EntryRepository(store: store).embedding(entryId: id) == nil)
+        #expect(!changed)
+    }
+
+    @Test("a vector for a note-less record is adopted onto a note-less row (absent and \"\" both mean none)")
+    func vectorAdoptedWhenBothHaveNoNote() throws {
+        for wire in [nil, ""] as [String?] {
+            let (store, dev) = try store()
+            let id = try insertLocal(store, dev: dev, hash: 42, modifiedAt: 100, note: nil)
+            let changed = try applyPullReportingEmbeddings(
+                store, decoded(hash: 42, modifiedAt: 200, note: wire, embedding: remoteVector))
+            #expect(try EntryRepository(store: store).embedding(entryId: id)?.vector == Data([9]))
+            #expect(changed)
+        }
+    }
+
+    @Test("a winning remote note takes its own vector in place of the stale local one")
+    func winningNoteBringsItsVector() throws {
+        let (store, dev) = try store()
+        let id = try insertLocal(store, dev: dev, hash: 43, modifiedAt: 100, note: "old words", embedded: true)
+        let changed = try applyPullReportingEmbeddings(
+            store, decoded(hash: 43, modifiedAt: 200, note: "fresh words", embedding: remoteVector))
+        #expect(try row(store, id)["note"] as String? == "fresh words")
+        #expect(try EntryRepository(store: store).embedding(entryId: id)?.vector == Data([9]))
+        #expect(changed)
+    }
+
+    @Test("a losing record whose note MATCHES the local one may still supply the missing vector")
+    func matchingNoteVectorAdoptedEvenWhenRemoteLost() throws {
+        let (store, dev) = try store()
+        let id = try insertLocal(store, dev: dev, hash: 44, modifiedAt: 300, note: "same")
+        let changed = try applyPullReportingEmbeddings(
+            store, decoded(hash: 44, modifiedAt: 200, note: "same", embedding: remoteVector))
+        #expect(try EntryRepository(store: store).embedding(entryId: id)?.vector == Data([9]))
+        #expect(changed)
+    }
+
+    // MARK: - Pull: the index-invalidation signal
+
+    @Test("the embeddings-changed signal fires only when a vector row was actually deleted or saved")
+    func embeddingsChangedSignal() throws {
+        // Note-carrying record, nothing embedding-related changes: no signal.
+        do {
+            let (store, dev) = try store()
+            _ = try insertLocal(store, dev: dev, hash: 45, modifiedAt: 100, note: "same", embedded: true)
+            #expect(try !applyPullReportingEmbeddings(store, decoded(hash: 45, modifiedAt: 200, note: "same")))
+        }
+        // The record ships a vector but the row already has one: not adopted, no signal.
+        do {
+            let (store, dev) = try store()
+            _ = try insertLocal(store, dev: dev, hash: 46, modifiedAt: 100, note: "same", embedded: true)
+            #expect(try !applyPullReportingEmbeddings(
+                store, decoded(hash: 46, modifiedAt: 200, note: "same", embedding: remoteVector)))
+        }
+        // A note change that deletes an existing vector: signal.
+        do {
+            let (store, dev) = try store()
+            _ = try insertLocal(store, dev: dev, hash: 47, modifiedAt: 100, note: "old", embedded: true)
+            #expect(try applyPullReportingEmbeddings(store, decoded(hash: 47, modifiedAt: 200, note: "new")))
+        }
+        // A note change with no vector to delete: nothing in the buffer went stale.
+        do {
+            let (store, dev) = try store()
+            _ = try insertLocal(store, dev: dev, hash: 48, modifiedAt: 100, note: "old")
+            #expect(try !applyPullReportingEmbeddings(store, decoded(hash: 48, modifiedAt: 200, note: "new")))
+        }
+        // A brand-new row inserted with its vector: signal.
+        do {
+            let (store, _) = try store()
+            #expect(try applyPullReportingEmbeddings(
+                store, decoded(hash: 49, modifiedAt: 100, note: "", embedding: remoteVector)))
+        }
     }
 
     @Test("a blank remote note (whitespace-only) is treated as a clear, never stored")

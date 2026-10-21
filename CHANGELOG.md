@@ -10,6 +10,21 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+- **Sticky notes on entries (core, no UI yet).** A free-text note on any
+  clipboard entry, e.g. to annotate a screenshot, searchable by keyword
+  (FTS `note` column; new `.note` match-source badge) and semantically
+  (the note is folded into the embedding input, so a screenshot gets a
+  vector from its note alone). Syncs over CloudKit with last-writer-wins
+  like pins; a not-yet-updated device's pin toggle can't wipe notes.
+  `cpdb note <id> [text… | --clear]` reads, sets, or clears one (max
+  4096 characters). Schema v15; the upgrade keeps long text entries
+  fully searchable.
+  **Release gate: deploy the new `note` field on the `Entry` record type
+  to the CloudKit *Production* schema before shipping a build with this.**
+  Every push now writes `note`, so without it every entry push is
+  rejected and nothing syncs (details in `docs/schema.md`, "Sticky
+  notes").
+
 - **Fix: Sparkle feed no longer breaks when a Windows release is
   newest.** `SUFeedURL` pointed at `releases/latest/download/appcast.xml`,
   but macOS and Windows releases share one GitHub namespace — whenever a
