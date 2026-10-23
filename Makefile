@@ -158,16 +158,17 @@ build-app: verify-version stamp-build
 	# ClipAppShortcuts' phrases discoverable to Shortcuts/Siri/
 	# Spotlight) isn't produced by `swift build` — Xcode normally runs
 	# `appintentsmetadataprocessor` as an invisible build phase, which
-	# plain SwiftPM has no equivalent of. This reproduces it: a
-	# release-config, host-arch-only compile pass (metadata is derived
-	# from Swift declarations, not object code, so it doesn't need to
-	# match $(BUILD_CONFIG)/$(SWIFT_ARCH_FLAGS)) feeding the processor
-	# by hand. See scripts/build-app-intents-metadata.sh for why it
-	# has to be done this way. Release-only: a debug `build-app` (dev
-	# iteration, not something anyone installs) skips it rather than
-	# paying for an extra release build every time.
+	# plain SwiftPM has no equivalent of. This runs it by hand on the
+	# `.swiftconstvalues` dump that SwiftPM's Swift Build backend leaves
+	# next to the objects of the build above (SWIFT_BUILD_ARGS keeps the
+	# script's own no-op `swift build` on the same arch set, so it can't
+	# relink a universal binary down to one slice). See
+	# scripts/build-app-intents-metadata.sh. Release-only: the script
+	# reads the single whole-module dump of a release build (debug
+	# builds get per-file dumps instead); a debug `build-app` (dev
+	# iteration, not something anyone installs) skips it.
 	@if [ "$(BUILD_CONFIG)" = "release" ]; then \
-	    scripts/build-app-intents-metadata.sh; \
+	    SWIFT_BUILD_ARGS="$(SWIFT_ARCH_FLAGS)" scripts/build-app-intents-metadata.sh; \
 	else \
 	    echo "warning: BUILD_CONFIG=$(BUILD_CONFIG) — skipping App Intents metadata extraction (release only); this build's Shortcuts/Siri/Spotlight actions won't be discoverable"; \
 	fi

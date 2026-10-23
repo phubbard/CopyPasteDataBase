@@ -4,42 +4,59 @@
 # intents and `ClipAppShortcuts` phrases.
 #
 # Xcode runs `appintentsmetadataprocessor` as an invisible build phase
-# whenever a target imports AppIntents; plain `swift build` never does.
-# Reproducing that outside Xcode needs two things the processor
-# consumes:
-#   1. A `.swiftconstvalues` file — the Swift frontend's structured
+# whenever a target imports AppIntents; SwiftPM never runs the
+# processor itself. Reproducing that outside Xcode needs two things
+# the processor consumes:
+#   1. A `.swiftconstvalues` file — the Swift compiler's structured
 #      dump of every AppIntent/AppEnum/AppEntity/AppShortcutsProvider
-#      declaration's shape. Only comes from a *whole-module* frontend
-#      job (one job = one valid `-emit-const-values-path` output),
-#      which is what `-c release` already builds with — see the
-#      `appIntentsConstValuesFlags` gate in Package.swift for how that
-#      flag pair reaches the compiler.
-#   2. The exact frontend command line SwiftPM used, since
-#      `appintentsmetadataprocessor --source-file-list` must name
-#      precisely the files that job compiled. There's no supported way
-#      to ask SwiftPM for that command without asking it to run the
-#      job — so this script forces CpdbApp's module to rebuild, parses
-#      the printed command out of `swift build --verbose`, and runs a
-#      cleaned copy of it a second time.
+#      declaration's shape.
+#   2. A `--source-file-list` naming exactly the Swift files the
+#      module was compiled from.
 #
-#      That second run strips SwiftPM's own
-#      `-supplementary-output-file-map` — empirically, its presence
-#      makes the compiler silently ignore `-emit-const-values-path`
-#      (no error, no file). Everything else about the line is left
-#      alone, so it recompiles the same sources with the same flags —
-#      redundant, but CpdbApp is one target among many in this
-#      package and the whole build is already the slow, infrequent
-#      release/signing path (`make build-app`), not the dev loop.
+# How those two get produced changed with Xcode 27 (Swift 6.4):
+#
+#   Before: `swift build` drove the "native" build system, which knew
+#   nothing about const values. This script forced a CpdbApp recompile
+#   with `-Xfrontend -emit-const-values-path` (injected through an
+#   env-gated `unsafeFlags` block in Package.swift), scraped the
+#   whole-module frontend command out of `swift build --verbose`, and
+#   re-ran a cleaned copy of it to get one combined dump.
+#
+#   Now: SwiftPM's default build system is Swift Build — the same
+#   engine Xcode uses (the native one is deprecated). Like Xcode, it
+#   notices that CpdbApp imports AppIntents and itself passes the
+#   driver's `-emit-const-values -const-gather-protocols-list …`,
+#   pointing the module-wide `const-values` entry of the target's
+#   output file map at `CpdbApp-primary.swiftconstvalues`. So every
+#   plain `swift build -c release` already leaves exactly the dump
+#   the processor wants next to the object files, and the old
+#   machinery is not just redundant but fatal: its extra
+#   `-emit-const-values-path` collides with the engine's own and the
+#   release compile dies with "this mode does not support emitting
+#   extracted const values". (The frontend flag itself isn't removed
+#   — raw swiftc/-frontend still accept it — it just can't coexist
+#   with the driver-level flag.) The Package.swift gate is gone; this
+#   script now only has to find the engine's outputs and hand them to
+#   the processor.
 #
 # Output: Metadata.appintents landing at $METADATA_OUT (default
 # .build/appintents/output/Metadata.appintents) — copy that into
 # Contents/Resources/ of the .app bundle.
 #
-# Only supports `-c release` (see point 1 above). Only extracts for
-# the host architecture — App Intents metadata is derived from Swift
-# declarations, not object code, so it doesn't vary by arch; a
-# universal (arm64 + x86_64) `build-app-universal` still only needs
-# one extraction pass.
+# Env:
+#   SWIFT_BUILD_ARGS  extra `swift build` arguments, e.g. the Makefile's
+#                     `--arch arm64 --arch x86_64`. They must match the
+#                     product build that precedes this script: Swift
+#                     Build shares one Products/ dir across arch sets,
+#                     so a host-arch-only build here would relink an
+#                     already-built universal CpdbApp down to one slice.
+#   METADATA_OUT      where to write the bundle (see above).
+#
+# Only supports `-c release` (the Makefile only asks for it there).
+# Only reads the host architecture's slice — App Intents metadata is
+# derived from Swift declarations, not object code, so it doesn't vary
+# by arch; a universal (arm64 + x86_64) build still needs just one
+# extraction pass.
 
 set -euo pipefail
 
@@ -47,10 +64,14 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 BUILD_CONFIG="release"
+CONFIG_DIR="Release"       # Swift Build's spelling of BUILD_CONFIG in Intermediates paths
 MODULE_NAME="CpdbApp"
 DEPLOYMENT_TARGET="14.0"   # keep in sync with Package.swift's .macOS(.v14)
 WORK_DIR="$ROOT/.build/appintents"
 METADATA_OUT="${METADATA_OUT:-$WORK_DIR/output}"
+# Deliberately unquoted below so "--arch a --arch b" splits into words.
+SWIFT_BUILD_ARGS="${SWIFT_BUILD_ARGS:-}"
+HOST_ARCH="$(uname -m)"
 
 mkdir -p "$WORK_DIR"
 
@@ -58,93 +79,52 @@ TOOLCHAIN_DIR="$(dirname "$(dirname "$(dirname "$(xcrun --find swiftc)")")")"
 SDK_ROOT="$(xcrun --show-sdk-path --sdk macosx)"
 XCODE_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :ProductBuildVersion' /Applications/Xcode.app/Contents/version.plist 2>/dev/null || echo unknown)"
 
-# Flatten Xcode's `{"version":1,"constValueProtocols":[…]}` envelope
-# to the bare JSON array `-const-gather-protocols-file` actually wants
-# (see Package.swift for why — verified against this toolchain).
-PROTOCOLS_SRC="$TOOLCHAIN_DIR/usr/share/swift/SwiftConstantValues/AppIntents.json"
-PROTOCOLS_FILE="$WORK_DIR/protocols.json"
-if [ ! -f "$PROTOCOLS_SRC" ]; then
-    echo "error: $PROTOCOLS_SRC not found — Xcode toolchain layout changed?" >&2
+# A no-op when the Makefile just built this product; makes the script
+# safe to run standalone. The const-values file is an output of the
+# module's compile job, so it's regenerated whenever any source's
+# content changes — don't second-guess it with mtimes: Swift Build
+# skips the recompile (leaving the dump older than its sources) when
+# a source was merely touched or an upstream module rebuilt without
+# an interface change.
+echo "==> building $MODULE_NAME ($BUILD_CONFIG) so its const values are current"
+# shellcheck disable=SC2086
+swift build -c "$BUILD_CONFIG" $SWIFT_BUILD_ARGS --product "$MODULE_NAME" >/dev/null \
+    || { echo "error: swift build failed — rerun it by hand for the log" >&2; exit 1; }
+
+# shellcheck disable=SC2086
+BIN_DIR="$(swift build -c "$BUILD_CONFIG" $SWIFT_BUILD_ARGS --product "$MODULE_NAME" --show-bin-path)"
+# Swift Build layout: <out>/Products/Release and <out>/Intermediates.noindex
+INTERMEDIATES="$(dirname "$(dirname "$BIN_DIR")")/Intermediates.noindex"
+OBJ_DIR="$(find "$INTERMEDIATES" -type d \
+    -path "*/$CONFIG_DIR/$MODULE_NAME-*.build/Objects-normal/$HOST_ARCH" 2>/dev/null | head -1 || true)"
+if [ -z "$OBJ_DIR" ] || [ ! -f "$OBJ_DIR/$MODULE_NAME-OutputFileMap.json" ]; then
+    echo "error: couldn't find $MODULE_NAME's $HOST_ARCH $CONFIG_DIR build directory under $INTERMEDIATES" >&2
+    echo "       (bin path was $BIN_DIR — is SwiftPM still using the Swift Build backend?)" >&2
     exit 1
 fi
-/usr/bin/python3 -c "
+
+# Ask the module's output file map where the engine put the const
+# values rather than guessing a filename: the module-wide entry is
+# keyed by the empty string.
+CONST_VALUES_FILE="$(/usr/bin/python3 -c "
 import json, sys
-d = json.load(open(sys.argv[1]))
-json.dump(d['constValueProtocols'], open(sys.argv[2], 'w'))
-" "$PROTOCOLS_SRC" "$PROTOCOLS_FILE"
-
-CONST_VALUES_FILE="$WORK_DIR/CpdbApp.swiftconstvalues"
-rm -f "$CONST_VALUES_FILE"
-
-echo "==> building CpdbApp ($BUILD_CONFIG) so dependencies are cached"
-swift build -c "$BUILD_CONFIG" --product "$MODULE_NAME" >/dev/null
-
-# Force SwiftPM to recompile just this target so the next --verbose
-# build actually prints its frontend command (an up-to-date target
-# prints nothing).
-BIN_DIR="$(swift build -c "$BUILD_CONFIG" --product "$MODULE_NAME" --show-bin-path)"
-MODULE_BUILD_DIR="$(dirname "$BIN_DIR")/$MODULE_NAME.build"
-rm -rf "$MODULE_BUILD_DIR"
-rm -f "$BIN_DIR/Modules/$MODULE_NAME.swiftmodule"*
-
-echo "==> capturing the real compile command (extraction flags enabled)"
-VERBOSE_LOG="$WORK_DIR/verbose.log"
-CPDB_EXTRACT_APPINTENTS=1 \
-CPDB_APPINTENTS_CONSTVALUES_PATH="$CONST_VALUES_FILE" \
-CPDB_APPINTENTS_PROTOCOLS_FILE="$PROTOCOLS_FILE" \
-    swift build -c "$BUILD_CONFIG" --product "$MODULE_NAME" --verbose > "$VERBOSE_LOG" 2>&1 \
-    || { echo "error: swift build failed — see $VERBOSE_LOG" >&2; tail -40 "$VERBOSE_LOG" >&2; exit 1; }
-
-# The one whole-module frontend job for CpdbApp: anchored on its entry
-# point file, which every build of this target compiles, rather than
-# an arbitrary source file that might move.
-FRONTEND_LINE_FILE="$WORK_DIR/frontend_line.txt"
-grep -E '\-frontend -c ' "$VERBOSE_LOG" | grep -F 'Sources/CpdbApp/CpdbAppMain.swift' | head -1 > "$FRONTEND_LINE_FILE" || true
-if [ ! -s "$FRONTEND_LINE_FILE" ]; then
-    echo "error: couldn't find CpdbApp's frontend job in $VERBOSE_LOG (did the build actually recompile it?)" >&2
+print(json.load(open(sys.argv[1])).get('', {}).get('const-values', ''))
+" "$OBJ_DIR/$MODULE_NAME-OutputFileMap.json")"
+if [ -z "$CONST_VALUES_FILE" ]; then
+    echo "error: $MODULE_NAME's output file map has no const-values entry — Swift Build didn't request" >&2
+    echo "       const extraction; does the target still import AppIntents?" >&2
     exit 1
 fi
-
-# The captured line is long enough to exceed argv limits, so every
-# script below reads it from this file rather than as an argument.
-CLEAN_CMD_FILE="$WORK_DIR/frontend_cmd.sh"
-SOURCE_LIST="$WORK_DIR/sources.txt"
-TARGET_TRIPLE_FILE="$WORK_DIR/target_triple.txt"
-/usr/bin/python3 -c "
-import re
-line = open('$FRONTEND_LINE_FILE').read()
-
-# Strip SwiftPM's own supplementary-output-file-map — its presence
-# makes the compiler silently drop -emit-const-values-path.
-clean = re.sub(r'-supplementary-output-file-map \S+', '', line)
-open('$CLEAN_CMD_FILE', 'w').write(clean)
-
-# Pull the file list SwiftPM actually compiled (between '-frontend -c'
-# and the first flag) straight from the same line, so
-# --source-file-list matches reality instead of a hand-rolled glob.
-m = re.search(r'-frontend -c (.*?) -supplementary-output-file-map', line)
-files = m.group(1).split() if m else []
-open('$SOURCE_LIST', 'w').write('\n'.join(files) + '\n')
-
-m = re.search(r'-target (\S+)', line)
-open('$TARGET_TRIPLE_FILE', 'w').write(m.group(1) if m else '')
-"
-if [ ! -s "$SOURCE_LIST" ]; then
-    echo "error: extracted an empty source file list from the frontend job" >&2
-    exit 1
-fi
-
-TARGET_TRIPLE="$(cat "$TARGET_TRIPLE_FILE")"
-if [ -z "$TARGET_TRIPLE" ]; then
-    echo "error: couldn't recover -target from the captured frontend job" >&2
-    exit 1
-fi
-
-echo "==> re-running the compile with const-values extraction wired up"
-bash "$CLEAN_CMD_FILE"
-
 if [ ! -s "$CONST_VALUES_FILE" ]; then
-    echo "error: $CONST_VALUES_FILE was not produced — App Intents metadata extraction failed" >&2
+    echo "error: $CONST_VALUES_FILE is missing or empty — App Intents metadata extraction failed" >&2
+    exit 1
+fi
+
+# The file list the engine compiled from, in the one-path-per-line
+# format the processor wants — matches reality without a hand-rolled glob.
+SOURCE_LIST="$OBJ_DIR/$MODULE_NAME.SwiftFileList"
+if [ ! -s "$SOURCE_LIST" ]; then
+    echo "error: $SOURCE_LIST is missing or empty" >&2
     exit 1
 fi
 
@@ -162,8 +142,7 @@ xcrun appintentsmetadataprocessor \
     --xcode-version "$XCODE_VERSION" \
     --platform-family macOS \
     --deployment-target "$DEPLOYMENT_TARGET" \
-    --target-triple "$TARGET_TRIPLE" \
-    --binary-file "$BIN_DIR/$MODULE_NAME" \
+    --target-triple "$HOST_ARCH-apple-macos$DEPLOYMENT_TARGET" \
     --source-file-list "$SOURCE_LIST" \
     --swift-const-vals-list "$CONST_VALS_LIST" \
     --no-app-shortcuts-localization \
@@ -174,5 +153,17 @@ if [ ! -d "$METADATA_OUT/Metadata.appintents" ]; then
     echo "error: appintentsmetadataprocessor did not produce Metadata.appintents at $METADATA_OUT" >&2
     exit 1
 fi
+
+# The processor exits 0 even when it finds nothing to describe, and an
+# app with an empty bundle quietly loses its Shortcuts/Spotlight
+# actions — so refuse an empty result instead of shipping one.
+/usr/bin/python3 -c "
+import json, sys
+d = json.load(open(sys.argv[1]))
+n_actions, n_entities, n_shortcuts = len(d.get('actions', {})), len(d.get('entities', {})), len(d.get('autoShortcuts', []))
+if n_actions == 0:
+    sys.exit('error: extracted Metadata.appintents describes no actions — expected ClipIntents.swift\'s intents')
+print(f'    {n_actions} actions, {n_entities} entities, {n_shortcuts} app shortcuts')
+" "$METADATA_OUT/Metadata.appintents/extract.actionsdata"
 
 echo "==> Metadata.appintents ready at $METADATA_OUT/Metadata.appintents"
