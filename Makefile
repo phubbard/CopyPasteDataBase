@@ -17,18 +17,22 @@ RELEASE_DIR      = $(BUILD_DIR)/release-artifacts
 # automatically; for fast dev iteration `make build-app` /
 # `make build-cli` stay host-arch-only by default.
 #
-# Multi-arch swift-build emits to `.build/apple/Products/$(BUILD_CONFIG)/`
-# instead of `.build/$(BUILD_CONFIG)/`, hence the SWIFT_BUILD_OUTPUT_DIR
-# computation below — every cp/copy step downstream resolves against
-# this so we don't accidentally ship the host-arch slice.
+# Where products land: SwiftPM's default Swift Build backend (Xcode 27+)
+# puts every arch set in the same `.build/out/Products/<Config>/` dir,
+# reached via the stable `.build/<config>` symlink — a universal build
+# is just a fat binary there, which is also why a later host-arch-only
+# build of the same product would relink it down to one slice. The
+# deprecated native backend used `.build/apple/Products/<Config>/` for
+# multi-arch builds instead; that path no longer exists, and every
+# cp/copy step downstream resolves against SWIFT_BUILD_OUTPUT so we
+# don't accidentally ship a stale or host-arch-only slice.
 UNIVERSAL ?= 0
 ifeq ($(UNIVERSAL),1)
 SWIFT_ARCH_FLAGS    = --arch arm64 --arch x86_64
-SWIFT_BUILD_OUTPUT  = $(BUILD_DIR)/apple/Products/$(shell echo $(BUILD_CONFIG) | awk '{print toupper(substr($$0,1,1)) tolower(substr($$0,2))}')
 else
 SWIFT_ARCH_FLAGS    =
-SWIFT_BUILD_OUTPUT  = $(BUILD_DIR)/$(BUILD_CONFIG)
 endif
+SWIFT_BUILD_OUTPUT  = $(BUILD_DIR)/$(BUILD_CONFIG)
 
 # Source of truth for the version. Parsed out of Version.swift so every
 # Makefile target that cares (release zip filename, verify-version) stays
@@ -298,7 +302,7 @@ release: verify-version
 	rm -rf $(RELEASE_DIR)
 	mkdir -p $(RELEASE_DIR)
 	/usr/bin/ditto -c -k --keepParent $(APP_BUNDLE_DIR) $(RELEASE_DIR)/cpdb-v$(VERSION).app.zip
-	cp $(BUILD_DIR)/apple/Products/Release/cpdb-cli $(RELEASE_DIR)/cpdb
+	cp $(BUILD_DIR)/release/cpdb-cli $(RELEASE_DIR)/cpdb
 	cd $(RELEASE_DIR) && shasum -a 256 cpdb-v$(VERSION).app.zip cpdb > SHA256SUMS
 	@echo
 	@echo "Architectures (must show both arm64 + x86_64):"
