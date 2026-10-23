@@ -10,6 +10,8 @@ human-readable — what's in `[Unreleased]` is what ships.
 
 ## [Unreleased]
 
+## [3.4.0] – 2026-10-22
+
 - **Sticky notes on entries.** A free-text note on any clipboard entry,
   e.g. to annotate a screenshot, searchable by keyword (FTS `note`
   column; `note` match-source badge) and semantically (the note is
